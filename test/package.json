@@ -1,0 +1,9 @@
+{
+  "name": "scratchos-test",
+  "private": true,
+  "description": "Headless test harness for ScratchOS (TurboWarp runtime via @turbowarp/packager + Playwright)",
+  "dependencies": {
+    "@turbowarp/packager": "3.13.0",
+    "playwright-core": "^1.48.0"
+  }
+}
