@@ -760,11 +760,28 @@ proc clip_line(xa, ya, xb, yb, c, sz) {
     gfx_line(xa + t0 * dx, ya + t0 * dy, xa + t1 * dx, ya + t1 * dy, c, sz);
 }
 
+// visible rectangle of the window being drawn (glyphs must lie inside it)
+var cv_x0 = 0;
+var cv_y0 = 0;
+var cv_x1 = 0;
+var cv_y1 = 0;
+
+// Stamps cannot be partially clipped: a glyph touching the clip rect is
+// stamped whole, provided it lies inside the window's visible rectangle.
+// Its pixels outside the clip rect are identical to what is already there.
 proc clip_glyph(x, y, code, fg, bg) {
     if (bg >= 0) { clip_fill(x, y, 8, 16, bg); }
-    if (x >= cl_x0 && y >= cl_y0 && x + 8 <= cl_x1 && y + 16 <= cl_y1 && code != 32) {
+    if (code != 32 && x < cl_x1 && x + 8 > cl_x0 && y < cl_y1 && y + 16 > cl_y0
+        && x >= cv_x0 && y >= cv_y0 && x + 8 <= cv_x1 && y + 16 <= cv_y1) {
         gfx_glyph(x, y, code, fg);
     }
+}
+
+proc set_vis(k) {
+    cv_x0 = vrc_x[k];
+    cv_y0 = vrc_y[k];
+    cv_x1 = vrc_x[k] + vrc_w[k];
+    cv_y1 = vrc_y[k] + vrc_h[k];
 }
 
 // draw primitive at display-list position p of window w, clipped to cl_*
@@ -833,6 +850,7 @@ proc canvas_draw_new(w, p) {
             cl_y0 = vrc_y[k];
             cl_x1 = vrc_x[k] + vrc_w[k];
             cl_y1 = vrc_y[k] + vrc_h[k];
+            set_vis(k);
             canvas_prim(w, h, p);
         }
     }
@@ -842,6 +860,7 @@ proc canvas_draw_new(w, p) {
 proc canvas_repaint(w) {
     for k = 1 to len(vrc_win) {
         if (vrc_win[k] == w) {
+            set_vis(k);
             canvas_repaint_clip(w, vrc_x[k], vrc_y[k], vrc_w[k], vrc_h[k]);
         }
     }
@@ -859,6 +878,7 @@ proc canvas_repaint_rect(w, x, y, rw, rh) {
             if (y > y0) { y0 = y; }
             if (x + rw < x1) { x1 = x + rw; }
             if (y + rh < y1) { y1 = y + rh; }
+            set_vis(k);
             if (x1 > x0 && y1 > y0) { canvas_repaint_clip(w, x0, y0, x1 - x0, y1 - y0); }
         }
     }
@@ -898,8 +918,14 @@ proc wm_tick() {
     if (wm_need == 1) { wm_update(); }
 }
 
+// the 8 px below the cell grid extend the taskbar
+proc wm_draw_strip(x, w) {
+    gfx_fill(x, 352, w, 8, 7);
+}
+
 proc wm_update() {
     wm_need = 0;
+    if (wm_full == 1) { wm_draw_strip(0, 480); }
     wm_compose();
     wm_diff();
     wm_redraw_dirty();
@@ -1196,6 +1222,7 @@ proc wm_pointer() {
         if (m_x != ptr_x || m_y != ptr_y) {
             // repair what was under the old pointer
             wm_redraw_rect_cells(ptr_x, ptr_y, 8, 16);
+            if (ptr_y + 16 > 352) { wm_draw_strip(ptr_x, 8); }
         }
     }
     gfx_color(0);

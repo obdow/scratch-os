@@ -68,6 +68,16 @@ async function main() {
       await p.keyboard.down('Control'); await h.sleep(30); await tap(c.slice(6)); await p.keyboard.up('Control'); await h.sleep(30);
       continue;
     }
+    if (c.startsWith('@move=')) {
+      const box = await (await p.$('canvas')).boundingBox();
+      const v = c.split('=')[1].split(',').map(Number);
+      const sx = box.width / 480, sy = box.height / 360;
+      for (let k = 0; k <= 24; k++) {
+        await p.mouse.move(box.x + (v[0] + (v[2] - v[0]) * k / 24) * sx, box.y + (v[1] + (v[3] - v[1]) * k / 24) * sy);
+        await h.sleep(35);
+      }
+      continue;
+    }
     if (c.startsWith('@click=') || c.startsWith('@drag=')) {
       const box = await (await p.$('canvas')).boundingBox();
       const v = c.split('=')[1].split(',').map(Number);
