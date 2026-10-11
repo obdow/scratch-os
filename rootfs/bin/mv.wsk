@@ -1,0 +1,9 @@
+-- mv - move / rename files.  usage: mv source... dest
+if #arg < 2 then io.error("usage: mv source... dest\n") exit(1) end
+local dest = arg[#arg]
+local status = 0
+for i = 1, #arg - 1 do
+  local ok, err = fs.rename(arg[i], dest)
+  if not ok then io.error("\e[91mmv: " .. arg[i] .. ": " .. err .. "\e[0m\n") status = 1 end
+end
+exit(status)

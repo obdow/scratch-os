@@ -1,0 +1,23 @@
+-- rm - remove files or directories.  usage: rm [-r] [-f] path...
+local rec, force = false, false
+local status = 0
+local targets = {}
+for i = 1, #arg do
+  local a = arg[i]
+  if a == "-r" or a == "-R" then rec = true
+  elseif a == "-f" then force = true
+  elseif a == "-rf" or a == "-fr" then rec = true force = true
+  else targets[#targets + 1] = a end
+end
+if #targets == 0 then io.error("usage: rm [-r] [-f] path...\n") exit(1) end
+for _, t in ipairs(targets) do
+  if not fs.exists(t) then
+    if not force then io.error("\e[91mrm: " .. t .. ": no such file or directory\e[0m\n") status = 1 end
+  elseif fs.isdir(t) and not rec then
+    io.error("\e[91mrm: " .. t .. ": is a directory (use -r)\e[0m\n") status = 1
+  else
+    local ok, err = fs.remove(t, rec)
+    if not ok then io.error("\e[91mrm: " .. t .. ": " .. err .. "\e[0m\n") status = 1 end
+  end
+end
+exit(status)

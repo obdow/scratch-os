@@ -1,0 +1,28 @@
+-- tree - show a directory tree
+local root = arg[1] or "."
+local dirs, files = 0, 0
+local function walk(path, prefix)
+  local names = fs.list(path)
+  for i, n in ipairs(names) do
+    local last = i == #names
+    local full = path .. "/" .. n
+    if path == "/" then full = "/" .. n end
+    local branch = "├── "
+    if last then branch = "└── " end
+    if fs.isdir(full) then
+      dirs = dirs + 1
+      print(prefix .. branch .. "\e[94m" .. n .. "\e[0m")
+      local ext = "│   "
+      if last then ext = "    " end
+      walk(full, prefix .. ext)
+    else
+      files = files + 1
+      print(prefix .. branch .. n)
+    end
+  end
+end
+if not fs.isdir(root) then io.error("tree: " .. root .. ": not a directory\n") exit(1) end
+print("\e[94m" .. root .. "\e[0m")
+walk(root, "")
+print("")
+print(dirs .. " directories, " .. files .. " files")

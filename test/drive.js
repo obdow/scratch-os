@@ -23,14 +23,42 @@ async function main() {
   fs.mkdirSync(outdir, { recursive: true });
   const h = await launch(sb3);
   const p = h.page;
-  const tap = async (k) => { await p.keyboard.down(k); await h.sleep(35); await p.keyboard.up(k); await h.sleep(35); };
+  const tap = async (k) => { await p.keyboard.down(k); await h.sleep(60); await p.keyboard.up(k); await h.sleep(30); };
   // wait for the keyboard clones, skip the boot animation, wait for the kernel loop
   for (let i = 0; i < 200 && (await h.read('Stage', 'kb_ready')) != 1; i++) await h.sleep(50);
   if (!opts.includes('--noskip')) await tap('Escape');
   for (let i = 0; i < 400 && !((await h.read('Kernel', 'frames')) > 0); i++) await h.sleep(50);
   await h.sleep(waitMs);
   let n = 0;
-  const shot = async () => { n++; await h.shot(path.join(outdir, String(n).padStart(2, '0') + '.png')); };
+  const textMode = opts.includes('--text');
+  const dump = async () => {
+    const rows = await p.evaluate(() => {
+      const t = vm.runtime.getSpriteTargetByName('Kernel');
+      const L = (name) => Object.values(t.variables).find((l) => l.name === name && l.type === 'list').value;
+      const V = (name) => Object.values(t.variables).find((v) => v.name === name && v.type !== 'list').value;
+      const tty = (V('gui') == 1) ? (L('tty_win').findIndex((w, i) => L('tty_used')[i] == 1 && w > 0) + 1 || 1) : V('con');
+      const ch = L('cell_ch'), base = +L('tty_base')[tty - 1], top = +L('tty_top')[tty - 1];
+      const w = +L('tty_w')[tty - 1], h = +L('tty_h')[tty - 1];
+      const cp = L('cp437');
+      const out = [];
+      for (let r = 0; r < h; r++) {
+        let line = '';
+        for (let c = 0; c < w; c++) {
+          const code = +ch[base + ((r + top) % h) * w + c];
+          line += code === 0 || code === 32 ? ' ' : (cp[code] || '?');
+        }
+        out.push(line.replace(/\s+$/, ''));
+      }
+      return out;
+    });
+    console.log(rows.join('\n').replace(/\n+$/, ''));
+    console.log('-'.repeat(60));
+  };
+  const shot = async () => {
+    n++;
+    if (textMode) { await dump(); if (!opts.includes('--png')) return; }
+    await h.shot(path.join(outdir, String(n).padStart(2, '0') + '.png'));
+  };
   await shot();
   for (const c of cmds) {
     if (c.startsWith('@sleep=')) { await h.sleep(+c.slice(7)); continue; }

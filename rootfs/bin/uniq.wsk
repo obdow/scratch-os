@@ -1,0 +1,14 @@
+-- uniq - drop repeated adjacent lines.  usage: uniq [-c]
+local cnt = arg[1] == "-c"
+local prev, n = nil, 0
+local function flush()
+  if prev ~= nil then
+    if cnt then print(string.format("%7d %s", n, prev)) else print(prev) end
+  end
+end
+while true do
+  local l = io.read()
+  if l == nil then break end
+  if l == prev then n = n + 1 else flush() prev = l n = 1 end
+end
+flush()

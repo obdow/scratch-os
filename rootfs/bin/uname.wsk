@@ -1,0 +1,6 @@
+-- uname - system information.  usage: uname [-a]
+if arg[1] == "-a" then
+  print(sys.version() .. " " .. sys.hostname() .. " scratch-kernel #1 PREEMPT Scratch-VM TurboWarp")
+else
+  print("ScratchOS")
+end

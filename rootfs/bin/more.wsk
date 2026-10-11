@@ -1,0 +1,25 @@
+-- more - page through text.  usage: more [file]   keys: space/enter/q
+local lines
+if arg[1] then
+  local data, err = fs.read(arg[1])
+  if data == nil then io.error("more: " .. arg[1] .. ": " .. err .. "\n") exit(1) end
+  lines = string.lines(data)
+else
+  lines = io.lines()
+end
+local w, h = term.size()
+local page = h - 1
+local i = 1
+term.raw(true)
+while i <= #lines do
+  local stop = math.min(#lines, i + page - 1)
+  for k = i, stop do print(lines[k]) end
+  i = stop + 1
+  if i > #lines then break end
+  io.write("\e[30;47m--More-- (" .. math.floor((i - 1) * 100 / #lines) .. "%)\e[0m")
+  local key = term.waitkey()
+  io.write("\r\e[K")
+  if key == "q" or key == "escape" then break end
+  if key == "enter" or key == "down arrow" then page = 1 else page = h - 1 end
+end
+term.raw(false)

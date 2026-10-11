@@ -1,0 +1,11 @@
+-- tee - copy standard input to a file and to standard output.  usage: tee [-a] file
+local append = arg[1] == "-a"
+local file = arg[#arg]
+if file == nil or file == "-a" then io.error("usage: tee [-a] file\n") exit(1) end
+if not append then fs.write(file, "") end
+while true do
+  local l = io.read()
+  if l == nil then break end
+  print(l)
+  fs.append(file, l .. "\n")
+end

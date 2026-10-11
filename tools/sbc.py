@@ -968,25 +968,23 @@ class SpriteGen:
             self.set_sub(bid, 'SUBSTACK', rhs_pre)
             self.pre.append(bid)
             return self.var_val(t)
-        # Scratch quirk: any numerically-zero value compares equal to a whitespace-only
-        # string ("0" = "" and 0 = " " are true).  Emit a safe comparison instead.
+        # Scratch/TurboWarp quirk: a numerically-zero value ("0", 0) compares equal to a
+        # whitespace-only string, and TurboWarp even treats a constant "\t" or " " as 0.
+        # So `x == W` (W whitespace) is compiled as  len(x) == len(W) && contains(W, x),
+        # which only uses string operations; `x == ""` becomes len(x) == 0.
         if op in ('==', '!=') and (self.is_ws_lit(a) or self.is_ws_lit(b)):
             x, lit = (b, a) if self.is_ws_lit(a) else (a, b)
+            w = lit.a[0]
             xv = self.expr(x)
-            if lit.a[0] == '':
-                lb = self.mk('operator_length', {'STRING': ('str', xv)})
-                eq = self.mk('operator_equals', {'OPERAND1': ('str', ('blk', lb, False)), 'OPERAND2': ('str', ('lit', 0))})
-            else:
-                xv2 = self.expr(x) if xv[0] == 'blk' else xv
-                if xv[0] == 'blk':
-                    # avoid evaluating twice: stash in a temp
-                    t = self.tmp()
-                    self.pre.append(self.set_var_stmt(self.vars[t], xv))
-                    xv = xv2 = self.var_val(t)
-                e1 = self.mk('operator_equals', {'OPERAND1': ('str', xv), 'OPERAND2': ('str', ('lit', lit.a[0]))})
-                z = self.mk('operator_equals', {'OPERAND1': ('str', xv2), 'OPERAND2': ('str', ('lit', 0))})
-                nz = self.mk('operator_not', {'OPERAND': ('bool', ('blk', z, True))})
-                eq = self.mk('operator_and', {'OPERAND1': ('bool', ('blk', e1, True)), 'OPERAND2': ('bool', ('blk', nz, True))})
+            if xv[0] == 'blk':
+                t = self.tmp()
+                self.pre.append(self.set_var_stmt(self.vars[t], xv))
+                xv = self.var_val(t)
+            lb = self.mk('operator_length', {'STRING': ('str', xv)})
+            eq = self.mk('operator_equals', {'OPERAND1': ('str', ('blk', lb, False)), 'OPERAND2': ('str', ('lit', len(w)))})
+            if w != '':
+                cb = self.mk('operator_contains', {'STRING1': ('str', ('lit', w)), 'STRING2': ('str', xv)})
+                eq = self.mk('operator_and', {'OPERAND1': ('bool', ('blk', eq, True)), 'OPERAND2': ('bool', ('blk', cb, True))})
             if op == '==':
                 return ('blk', eq, True)
             return ('blk', self.mk('operator_not', {'OPERAND': ('bool', ('blk', eq, True))}), True)

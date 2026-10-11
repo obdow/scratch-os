@@ -1,0 +1,11 @@
+-- rmdir - remove empty directories
+local status = 0
+for i = 1, #arg do
+  if not fs.isdir(arg[i]) then
+    io.error("rmdir: " .. arg[i] .. ": not a directory\n") status = 1
+  else
+    local ok, err = fs.remove(arg[i])
+    if not ok then io.error("\e[91mrmdir: " .. arg[i] .. ": " .. err .. "\e[0m\n") status = 1 end
+  end
+end
+exit(status)

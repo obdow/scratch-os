@@ -1,0 +1,41 @@
+WHISKER(1)                 ScratchOS Manual
+
+NAME
+    whisker - the ScratchOS programming language (.wsk files)
+
+SYNOPSIS
+    run prog.wsk [args]     prog.wsk [args]     whisker (REPL)
+
+DESCRIPTION
+    Whisker is a Lua-like language compiled to bytecode by the kernel
+    and run on a preemptive virtual machine.  Programs in /bin are
+    Whisker programs; read them with `cat /bin/ls.wsk`.
+
+    -- comments            --[[ block comments ]]
+    local x = 10          global = "visible everywhere"
+    if a then .. elseif b then .. else .. end
+    while c do .. end     repeat .. until c
+    for i = 1, 10, 2 do .. end
+    for k, v in pairs(t) do .. end       for i, v in ipairs(t) do .. end
+    break   continue   return a, b
+    function f(a, b) .. end     local function g() .. end
+    t = {1, 2, x = 3, ["k"] = 4}   t.x   t[1]   #t   obj:method()
+    ok, err = pcall(f)    error("msg")    load("return 1+1")
+    operators: + - * / // % ^ ..  == ~= < > <= >=  and or not  #
+
+DIFFERENCES FROM LUA
+    * functions can use their own locals, globals and top-level
+      locals of the program, but not locals of an enclosing function
+    * no metatables; generic for supports pairs() and ipairs()
+    * string keys of tables ignore letter case
+
+LIBRARIES (see `man lib`)
+    print tostring tonumber type error pcall assert select unpack
+    sleep exit load require
+    string.*  math.*  table.*  io.*  os.*  fs.*  proc.*  term.*
+    gui.*  gfx.*  sys.*
+
+PERMISSIONS
+    Programs start without rights.  Using a capability (files, proc,
+    gui, system) asks the user once; declare needs up front with a
+    first-line comment:   --@caps gui files

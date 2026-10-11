@@ -1,0 +1,27 @@
+LIB(3)                     ScratchOS Manual
+
+STRING   len sub upper lower find rep byte char format split trim
+         reverse startswith endswith replace lines pad contains
+         (also as methods: s:upper(), s:sub(2, 4) ...)
+MATH     floor ceil abs sqrt sin cos tan asin acos atan atan2 exp log
+         pow random max min fmod round tointeger   pi huge
+TABLE    insert remove concat sort unpack keys count copy find reverse
+IO       write(...) read() -> line|nil  readall()  lines()  error(...)
+OS       time clock millis date getenv setenv exit sleep pid args uptime
+FS       read write append list exists isdir mkdir remove(p, rec)
+         rename copy stat cwd chdir abs name dir
+PROC     spawn(cmd) -> pid   wait(pid) -> code   kill(pid)  list()
+         run(cmd) -> output, code     alive(pid)   pid()
+TERM     clear color(fg, bg) goto(x, y) size() -> w, h  raw(on)
+         getkey() waitkey() cursor(on) put(x, y, s, fg, bg) getpos()
+GUI      window(title, w, h) -> win   close(win)  event(win)
+         waitevent(win)  size(win) title(win, s) active()
+         terminal(cmd) opens a terminal window running cmd
+GFX      clear(win, c) pixel(win, x, y, c) line(win, x1, y1, x2, y2, c)
+         rect fill(win, x, y, w, h, c) circle/disc(win, x, y, r, c)
+         text(win, x, y, s, fg, bg)
+SYS      version uptime mem shutdown reboot caps hostname gc request
+         procs date
+
+COLOURS  0 black 1 blue 2 green 3 cyan 4 red 5 magenta 6 brown 7 grey
+         8 dark grey 9-15 bright versions (15 white, 14 yellow)

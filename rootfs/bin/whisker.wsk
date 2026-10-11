@@ -1,0 +1,21 @@
+-- whisker - interactive Whisker interpreter (REPL)
+print("\e[93m" .. sys.version() .. " - Whisker interactive\e[0m")
+print("Type expressions or statements.  'exit' quits.")
+local n = 0
+while true do
+  io.write("\e[96mwsk>\e[0m ")
+  local line = io.read()
+  if line == nil or line == "exit" or line == "quit" then break end
+  if line ~= "" then
+    n = n + 1
+    local f, err = load("return " .. line)
+    if f == nil then f, err = load(line) end
+    if f == nil then
+      print("\e[91m" .. err .. "\e[0m")
+    else
+      local ok, res = pcall(f)
+      if not ok then print("\e[91m" .. tostring(res) .. "\e[0m")
+      elseif res ~= nil then print(res) end
+    end
+  end
+end

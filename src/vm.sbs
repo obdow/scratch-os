@@ -28,6 +28,7 @@ list seg_refs;       // running processes using it
 list seg_nglob;
 list seg_caps;       // capabilities declared with --@caps
 list seg_path;
+list seg_glnames;    // global names ("\x01"-separated)
 
 list nr_v;           // native results
 list nr_t;
@@ -51,13 +52,14 @@ var vm_total = 0;    // instructions executed since boot
 proc vm_init() {
     clear(CODE);
     clear(seg_key); clear(seg_start); clear(seg_len); clear(seg_refs); clear(seg_nglob);
-    clear(seg_caps); clear(seg_path);
+    clear(seg_caps); clear(seg_path); clear(seg_glnames);
     clear(STK); clear(STT); clear(CSK);
     repeat (MAX_PROC * STACK_SIZE) { add(STK, ""); add(STT, 0); }
     repeat (MAX_PROC * CS_SIZE) { add(CSK, 0); }
     heap_init();
     clear(p_capq);
-    repeat (MAX_PROC) { add(p_capq, ""); }
+    clear(p_glnames);
+    repeat (MAX_PROC) { add(p_capq, ""); add(p_glnames, ""); }
     vm_slot = 0;
     vm_total = 0;
 }
@@ -91,6 +93,7 @@ proc seg_alloc(n) {
     add(seg_nglob, 0);
     add(seg_caps, "");
     add(seg_path, "");
+    add(seg_glnames, "");
     return len(seg_key);
 }
 
@@ -115,6 +118,7 @@ proc vm_load(ino) {
     seg_nglob[sg] = len(gl_names);
     seg_caps[sg] = c_caps;
     seg_path[sg] = fs_path(ino);
+    seg_glnames[sg] = gl_names_encode();
     return sg;
 }
 
@@ -169,15 +173,22 @@ proc vm_spawn(parent, ino) {
     // capabilities: policy grants + declared requests
     p_caps[s] = caps_for_path(p_path[s]);
     p_capq[s] = seg_caps[sg];
+    p_glnames[s] = seg_glnames[sg];
     return s;
 }
 
 list p_capq;     // declared capabilities still to be requested (per slot)
+list p_glnames;  // global names of the running program (grows with load())
 
 proc vm_release(s) {
     local sg = p_seg[s];
     if (sg > 0) { seg_refs[sg] = seg_refs[sg] - 1; }
     p_seg[s] = 0;
+    // segments created by load()/require() belong to the process
+    local own = "\x02" .. p_pid[s];
+    for i = 1 to len(seg_key) {
+        if (seg_key[i] == own) { seg_key[i] = "\x01free"; seg_refs[i] = 0; }
+    }
     table_free_owner(p_pid[s]);
     p_glob[s] = 0;
 }
@@ -786,12 +797,12 @@ proc vm_exec(quantum, stop_level) recursive {
                 vm_pc += 1;
             }
             case OP_JMP: {
-                vm_pc = vm_cbase + CODE[vm_pc + 1];
+                vm_pc += CODE[vm_pc + 1];
             }
             case OP_JF: {
                 local jt = STT[vm_sp];
                 if (jt == TNIL || (jt == TBOOL && STK[vm_sp] == 0)) {
-                    vm_pc = vm_cbase + CODE[vm_pc + 1];
+                    vm_pc += CODE[vm_pc + 1];
                 } else {
                     vm_pc += 2;
                 }
@@ -799,7 +810,7 @@ proc vm_exec(quantum, stop_level) recursive {
             }
             case OP_JT: {
                 if (vm_truthy(STK[vm_sp], STT[vm_sp]) == 1) {
-                    vm_pc = vm_cbase + CODE[vm_pc + 1];
+                    vm_pc += CODE[vm_pc + 1];
                 } else {
                     vm_pc += 2;
                 }
@@ -807,7 +818,7 @@ proc vm_exec(quantum, stop_level) recursive {
             }
             case OP_JFK: {
                 if (vm_truthy(STK[vm_sp], STT[vm_sp]) == 0) {
-                    vm_pc = vm_cbase + CODE[vm_pc + 1];
+                    vm_pc += CODE[vm_pc + 1];
                 } else {
                     vm_sp -= 1;
                     vm_pc += 2;
@@ -815,7 +826,7 @@ proc vm_exec(quantum, stop_level) recursive {
             }
             case OP_JTK: {
                 if (vm_truthy(STK[vm_sp], STT[vm_sp]) == 1) {
-                    vm_pc = vm_cbase + CODE[vm_pc + 1];
+                    vm_pc += CODE[vm_pc + 1];
                 } else {
                     vm_sp -= 1;
                     vm_pc += 2;
@@ -884,7 +895,7 @@ proc vm_exec(quantum, stop_level) recursive {
             }
             case OP_FUNC: {
                 vm_sp += 1;
-                STK[vm_sp] = vm_cbase + CODE[vm_pc + 1];
+                STK[vm_sp] = vm_pc + CODE[vm_pc + 1];
                 STT[vm_sp] = TFUN;
                 vm_pc += 2;
             }
@@ -901,7 +912,7 @@ proc vm_exec(quantum, stop_level) recursive {
                 } else {
                     local fi = STK[fs];
                     if ((STK[fs + 2] > 0 && fi > STK[fs + 1]) || (STK[fs + 2] <= 0 && fi < STK[fs + 1])) {
-                        vm_pc = vm_cbase + CODE[vm_pc + 2];
+                        vm_pc += CODE[vm_pc + 2];
                     } else {
                         vm_pc += 3;
                     }
@@ -944,7 +955,7 @@ proc vm_iter(op) {
         idx += 1;
         table_get(h, idx, TNUM);
         if (ht_r == TNIL) {
-            vm_pc = vm_cbase + CODE[vm_pc + 2];
+            vm_pc += CODE[vm_pc + 2];
             return;
         }
         STK[ts + 1] = idx;
@@ -959,7 +970,7 @@ proc vm_iter(op) {
         idx += 1;
         if (idx > total) {
             STK[ts + 1] = idx;
-            vm_pc = vm_cbase + CODE[vm_pc + 2];
+            vm_pc += CODE[vm_pc + 2];
             return;
         }
         if (idx <= an) {

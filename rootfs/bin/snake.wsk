@@ -1,0 +1,79 @@
+-- snake - the classic game.  Arrow keys steer, q quits.
+local W, H = term.size()
+local AW, AH = W, H - 1          -- arena (row 1 = score bar)
+term.raw(true)
+term.cursor(false)
+term.clear()
+local snake = {{x = 10, y = 10}, {x = 9, y = 10}, {x = 8, y = 10}}
+local dx, dy = 1, 0
+local food = nil
+local score = 0
+local best = tonumber(fs.read("/tmp/.snake_best") or "0") or 0
+local alive = true
+
+local function cell(x, y) return x .. "," .. y end
+
+local function place_food()
+  while true do
+    local fx, fy = math.random(2, AW - 1), math.random(3, AH)
+    local free = true
+    for _, s in ipairs(snake) do if s.x == fx and s.y == fy then free = false end end
+    if free then food = {x = fx, y = fy} return end
+  end
+end
+
+local function bar()
+  term.put(1, 1, string.format(" SNAKE   score %-5d best %-5d   arrows: steer  q: quit ", score, best) .. "    ", 0, 2)
+end
+
+-- border
+for x = 1, AW do term.put(x, 2, "▀", 2) term.put(x, H, "▄", 2) end
+for y = 2, H do term.put(1, y, "█", 2) term.put(AW, y, "█", 2) end
+place_food()
+term.put(food.x, food.y, "♥", 12)
+for i, s in ipairs(snake) do term.put(s.x, s.y, "█", 10) end
+bar()
+
+while alive do
+  local t = os.millis()
+  local k = term.getkey()
+  while k do
+    if k == "up arrow" and dy == 0 then dx, dy = 0, -1
+    elseif k == "down arrow" and dy == 0 then dx, dy = 0, 1
+    elseif k == "left arrow" and dx == 0 then dx, dy = -1, 0
+    elseif k == "right arrow" and dx == 0 then dx, dy = 1, 0
+    elseif k == "q" or k == "escape" then alive = false end
+    k = term.getkey()
+  end
+  local head = snake[1]
+  local nx, ny = head.x + dx, head.y + dy
+  if nx <= 1 or nx >= AW or ny <= 2 or ny >= H then alive = false end
+  for i = 1, #snake - 1 do
+    if snake[i].x == nx and snake[i].y == ny then alive = false end
+  end
+  if alive then
+    table.insert(snake, 1, {x = nx, y = ny})
+    term.put(head.x, head.y, "█", 2)
+    term.put(nx, ny, "█", 10)
+    if nx == food.x and ny == food.y then
+      score = score + 10
+      place_food()
+      term.put(food.x, food.y, "♥", 12)
+      bar()
+    else
+      local tail = table.remove(snake)
+      term.put(tail.x, tail.y, " ", 7)
+    end
+  end
+  local delay = math.max(0.04, 0.12 - #snake * 0.002)
+  sleep(delay)
+end
+if score > best then fs.write("/tmp/.snake_best", tostring(score)) end
+term.put(W // 2 - 6, H // 2, "  GAME OVER  ", 15, 4)
+term.put(W // 2 - 9, H // 2 + 1, "  score: " .. score .. "  (key)  ", 15, 4)
+sleep(0.5)
+term.waitkey()
+term.raw(false)
+term.cursor(true)
+term.color(7, 0)
+term.clear()

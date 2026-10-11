@@ -1,0 +1,10 @@
+-- man - show a manual page from /usr/share/man.  usage: man topic
+local topic = arg[1]
+if topic == nil then
+  print("usage: man topic")
+  print("topics: " .. table.concat(fs.list("/usr/share/man"), " "):replace(".txt", ""))
+  exit(1)
+end
+local text = fs.read("/usr/share/man/" .. topic .. ".txt")
+if text == nil then io.error("No manual entry for " .. topic .. "\n") exit(1) end
+proc.wait(proc.spawn("more /usr/share/man/" .. topic .. ".txt"))

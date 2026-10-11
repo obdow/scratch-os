@@ -1,0 +1,50 @@
+-- find - search for files.  usage: find [dir] [-name PATTERN] [-type f|d]
+-- PATTERN may contain * and ? wildcards
+local root = "."
+local pat = nil
+local typ = nil
+local i = 1
+while i <= #arg do
+  if arg[i] == "-name" then pat = arg[i + 1] i = i + 2
+  elseif arg[i] == "-type" then typ = arg[i + 1] i = i + 2
+  else root = arg[i] i = i + 1 end
+end
+
+-- glob match (iterative with backtracking)
+local function glob(p, s)
+  local pi, si, star, mark = 1, 1, 0, 0
+  while si <= #s do
+    local pc = p:sub(pi, pi)
+    if pi <= #p and (pc == "?" or pc == s:sub(si, si)) then
+      pi = pi + 1 si = si + 1
+    elseif pi <= #p and pc == "*" then
+      star = pi mark = si pi = pi + 1
+    elseif star > 0 then
+      pi = star + 1 mark = mark + 1 si = mark
+    else
+      return false
+    end
+  end
+  while pi <= #p and p:sub(pi, pi) == "*" do pi = pi + 1 end
+  return pi > #p
+end
+
+local function visit(path, name, isdir)
+  if pat and not glob(pat, name) then return end
+  if typ == "f" and isdir then return end
+  if typ == "d" and not isdir then return end
+  print(path)
+end
+
+local function walk(path)
+  for _, n in ipairs(fs.list(path)) do
+    local full = path .. "/" .. n
+    if path == "/" then full = "/" .. n end
+    local d = fs.isdir(full)
+    visit(full, n, d)
+    if d then walk(full) end
+  end
+end
+if not fs.isdir(root) then io.error("find: " .. root .. ": not a directory\n") exit(1) end
+visit(root, fs.name(root), true)
+walk(root)

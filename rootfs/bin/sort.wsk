@@ -1,0 +1,27 @@
+-- sort - sort lines.  usage: sort [-r] [-n] [-u] [file]
+local rev, numeric, uniq, file = false, false, false, nil
+for i = 1, #arg do
+  local a = arg[i]
+  if a == "-r" then rev = true elseif a == "-n" then numeric = true elseif a == "-u" then uniq = true
+  else file = a end
+end
+local lines
+if file then
+  local data, err = fs.read(file)
+  if data == nil then io.error("sort: " .. file .. ": " .. err .. "\n") exit(1) end
+  lines = string.lines(data)
+  if lines[#lines] == "" then table.remove(lines) end
+else
+  lines = io.lines()
+end
+if numeric then
+  table.sort(lines, function(a, b) return (tonumber(a) or 0) < (tonumber(b) or 0) end)
+else
+  table.sort(lines)
+end
+if rev then table.reverse(lines) end
+local prev = nil
+for _, l in ipairs(lines) do
+  if not uniq or l ~= prev then print(l) end
+  prev = l
+end

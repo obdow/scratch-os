@@ -1,0 +1,50 @@
+-- grep - print lines containing a string
+-- usage: grep [-i] [-n] [-v] [-c] TEXT [file...]
+local icase, num, invert, count = false, false, false, false
+local rest = {}
+for i = 1, #arg do
+  local a = arg[i]
+  if a == "-i" then icase = true elseif a == "-n" then num = true
+  elseif a == "-v" then invert = true elseif a == "-c" then count = true
+  else rest[#rest + 1] = a end
+end
+if #rest == 0 then io.error("usage: grep [-i] [-n] [-v] [-c] TEXT [file...]\n") exit(2) end
+local pat = rest[1]
+if icase then pat = pat:lower() end
+local found = 0
+local function scan(lines, label)
+  local c = 0
+  for n, line in ipairs(lines) do
+    local hay = line
+    if icase then hay = hay:lower() end
+    local hit = string.find(hay, pat) ~= nil
+    if invert then hit = not hit end
+    if hit then
+      c = c + 1
+      if not count then
+        local pre = ""
+        if label then pre = "\e[95m" .. label .. "\e[0m:" end
+        if num then pre = pre .. "\e[92m" .. n .. "\e[0m:" end
+        print(pre .. line)
+      end
+    end
+  end
+  if count then
+    if label then print(label .. ":" .. c) else print(c) end
+  end
+  found = found + c
+end
+if #rest == 1 then
+  scan(io.lines(), nil)
+else
+  for i = 2, #rest do
+    local data, err = fs.read(rest[i])
+    if data == nil then io.error("grep: " .. rest[i] .. ": " .. err .. "\n")
+    else
+      local label = nil
+      if #rest > 2 then label = rest[i] end
+      scan(string.lines(data), label)
+    end
+  end
+end
+if found > 0 then exit(0) else exit(1) end

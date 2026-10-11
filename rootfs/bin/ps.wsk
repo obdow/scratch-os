@@ -1,0 +1,7 @@
+-- ps - list processes
+print("\e[97m  PID  PPID STATE   CPU      TIME  COMMAND\e[0m")
+for _, p in ipairs(proc.list()) do
+  local name = p.name
+  if #name > 24 then name = name:sub(1, 24) end
+  print(string.format("%5d %5d %-6s %6d %8.1fs  %s", p.pid, p.ppid, p.state, p.cpu, p.time, name))
+end

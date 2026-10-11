@@ -315,7 +315,9 @@ proc proc_status(pid) {
 // is any process of process group g still alive?
 proc pgid_alive(g) {
     for s = 1 to MAX_PROC {
-        if (p_state[s] != PS_FREE && p_pgid[s] == g && p_kind[s] != PK_SHELL) { return 1; }
+        if (p_state[s] != PS_FREE && p_pgid[s] == g && p_kind[s] != PK_INIT) {
+            if (p_kind[s] != PK_SHELL || sh_inter[s] == 0) { return 1; }
+        }
     }
     return 0;
 }
@@ -332,10 +334,10 @@ proc tty_interrupt(t) {
     local fg = tty_fgpid[t];
     local s = proc_slot(fg);
     if (s == 0) { return 0; }
-    if (p_kind[s] == PK_SHELL || p_kind[s] == PK_INIT) { return 0; }
+    if (p_kind[s] == PK_INIT || (p_kind[s] == PK_SHELL && sh_inter[s] == 1)) { return 0; }
     local g = p_pgid[s];
     for k = 1 to MAX_PROC {
-        if (p_state[k] != PS_FREE && p_pgid[k] == g && p_kind[k] != PK_SHELL && p_kind[k] != PK_INIT) {
+        if (p_state[k] != PS_FREE && p_pgid[k] == g && p_kind[k] != PK_INIT && !(p_kind[k] == PK_SHELL && sh_inter[k] == 1)) {
             proc_exit(k, 130);
         }
     }

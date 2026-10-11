@@ -1,0 +1,34 @@
+-- cat - concatenate files to standard output
+-- usage: cat [-n] [file...]   (no file: read standard input)
+local number = false
+local files = {}
+for i = 1, #arg do
+  if arg[i] == "-n" then number = true else files[#files + 1] = arg[i] end
+end
+local n = 0
+local function out(line)
+  n = n + 1
+  if number then io.write(string.format("%5d  ", n)) end
+  print(line)
+end
+if #files == 0 then
+  while true do
+    local line = io.read()
+    if line == nil then break end
+    out(line)
+  end
+  exit(0)
+end
+local status = 0
+for _, f in ipairs(files) do
+  local data, err = fs.read(f)
+  if data == nil then
+    io.error("\e[91mcat: " .. f .. ": " .. err .. "\e[0m\n")
+    status = 1
+  elseif number then
+    for _, line in ipairs(string.lines(data)) do out(line) end
+  else
+    io.write(data)
+  end
+end
+exit(status)

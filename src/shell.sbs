@@ -45,7 +45,7 @@ var sh_err = "";
 
 list builtins = ["cd", "pwd", "echo", "exit", "export", "unset", "set", "env", "history", "help",
                  "clear", "jobs", "fg", "kill", "source", ".", "true", "false", "type", "which",
-                 "wait", "startx", "shutdown", "reboot", "halt", "caps", "sh", "logout", "uptime"];
+                 "wait", "startx", "shutdown", "reboot", "halt", "caps", "logout", "uptime"];
 
 proc shell_init() {
     clear(sh_state); clear(sh_rest); clear(sh_conn); clear(sh_status); clear(sh_wait);
@@ -214,6 +214,7 @@ proc sh_expand_var(s, line, i) {
     }
     while (j <= n && is_name_char(line[j]) == 1) { name = name .. line[j]; j += 1; }
     if (len(name) == 0) { sh_err = "$"; return j; }
+    if (name == "PWD") { sh_err = fs_path(p_cwd[s]); return j; }
     sh_err = env_get(name);
     return j;
 }
@@ -346,7 +347,17 @@ proc sh_pipeline(s, bg, cmdline) {
                 local op = tok_v[i];
                 if (i + 1 >= stop || tok_t[i + 1] == 1) { sh_errmsg(s, "sh: syntax error near '" .. op .. "'"); bad = 1; break; }
                 local target = tok_v[i + 1];
-                if (op == "<") {
+                if (target == "/dev/null") {
+                    if (op == "<") {
+                        local np = pipe_new();
+                        cin_k = FD_PIPE;
+                        cin_i = np;
+                    } else if (op == ">" || op == ">>") {
+                        out_k = FD_NULL;
+                    } else {
+                        err_k = FD_NULL;
+                    }
+                } else if (op == "<") {
                     local ino = fs_lookup(target, p_cwd[s]);
                     if (ino == 0 || fs_type[ino] == FT_DIR) { sh_errmsg(s, "sh: " .. target .. ": " .. fs_err); bad = 1; break; }
                     // feed file content through a pipe
@@ -393,7 +404,7 @@ proc sh_pipeline(s, bg, cmdline) {
             } else if (index(builtins, name) > 0 && ncmd == 1 && bg == 0) {
                 status = sh_builtin(s, out_k, out_i, err_k, err_i);
                 sh_status[s] = status;
-            } else if (index(builtins, name) > 0 && name != "sh") {
+            } else if (index(builtins, name) > 0) {
                 // builtin inside a pipeline: run now, output goes to the pipe
                 status = sh_builtin(s, out_k, out_i, err_k, err_i);
             } else {
@@ -661,7 +672,15 @@ proc sh_builtin(s, out_k, out_i, err_k, err_i) {
         local rc = 0;
         for i = 2 to len(sh_argv) {
             local a = sh_argv[i];
-            if (a[1] != "-") {
+            if (a[1] == "%") {
+                local jn = substr(a, 2, len(a));
+                if (jn >= 1 && jn <= len(job_pgid)) {
+                    local g = job_pgid[jn];
+                    for k = 1 to MAX_PROC {
+                        if (p_state[k] != PS_FREE && p_pgid[k] == g && k != s) { proc_kill(k, 143); }
+                    }
+                } else { fd_write(err_k, err_i, "kill: " .. a .. ": no such job\n"); rc = 1; }
+            } else if (a[1] != "-") {
                 local ks = proc_slot(a);
                 if (ks == 0) { fd_write(err_k, err_i, "kill: (" .. a .. ") - no such process\n"); rc = 1; }
                 else if (p_kind[ks] == PK_INIT) { fd_write(err_k, err_i, "kill: cannot kill init\n"); rc = 1; }

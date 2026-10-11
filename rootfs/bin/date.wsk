@@ -1,0 +1,2 @@
+-- date - print the current date and time
+print(os.date())

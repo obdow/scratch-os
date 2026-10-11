@@ -1,0 +1,39 @@
+-- top - live process monitor (q to quit)
+term.raw(true)
+term.cursor(false)
+local last = {}
+while true do
+  local m = sys.mem()
+  local ps = proc.list()
+  term.clear()
+  term.color(15, 1)
+  io.write(string.format(" top - up %ds  %d processes  heap %d  code %d", math.floor(sys.uptime()), #ps, m.heap, m.code))
+  io.write(string.rep(" ", 60 - 57) .. "\n")
+  term.color(7, 0)
+  print("")
+  term.color(0, 7)
+  print("  PID USER   STATE  CPU/s     MEM   TIME  COMMAND           ")
+  term.color(7, 0)
+  local now = {}
+  for _, p in ipairs(ps) do
+    local d = p.cpu - (last[p.pid] or p.cpu)
+    now[p.pid] = p.cpu
+    local name = p.name
+    if #name > 18 then name = name:sub(1, 18) end
+    print(string.format("%5d %-6s %-6s %5d %7d %6.0fs  %s", p.pid, "user", p.state, d, p.mem, p.time, name))
+  end
+  last = now
+  term.goto(1, 22)
+  io.write("\e[90mq: quit\e[0m")
+  local t = os.millis()
+  local quit = false
+  while os.millis() - t < 1000 do
+    local k = term.getkey()
+    if k == "q" or k == "escape" then quit = true break end
+    sleep(0.05)
+  end
+  if quit then break end
+end
+term.cursor(true)
+term.raw(false)
+term.clear()

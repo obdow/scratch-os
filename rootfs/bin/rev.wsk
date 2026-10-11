@@ -1,0 +1,6 @@
+-- rev - reverse each line
+while true do
+  local l = io.read()
+  if l == nil then break end
+  print(l:reverse())
+end

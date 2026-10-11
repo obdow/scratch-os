@@ -1,0 +1,11 @@
+-- cowsay - a talking cow
+local msg = table.concat(arg, " ")
+if msg == "" then msg = io.read() or "Moo." end
+print(" " .. string.rep("_", #msg + 2))
+print("< " .. msg .. " >")
+print(" " .. string.rep("-", #msg + 2))
+print("        \\   ^__^")
+print("         \\  (oo)\\_______")
+print("            (__)\\       )\\/\\")
+print("                ||----w |")
+print("                ||     ||")

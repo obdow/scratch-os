@@ -1,0 +1,14 @@
+CAPS(7)                    ScratchOS Manual
+
+    Capabilities protect sensitive operations:
+      files    modify files outside /home and /tmp
+      proc     kill processes a program did not start
+      gui      open windows on the desktop
+      system   shut down or restart
+
+    The first time a program needs one, ScratchOS asks:
+      (y)es for this run, (n)o, (a)lways (remembered in /etc/caps)
+
+    caps                     show the policy and running programs
+    caps grant PATH CAP      always allow
+    caps revoke PATH [CAP]   remove from the policy

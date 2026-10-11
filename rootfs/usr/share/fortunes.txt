@@ -1,0 +1,19 @@
+There are 10 kinds of people: those who understand binary and those who don't.
+%
+Everything is drawn with the pen. Even this sentence.
+%
+A clone a day keeps the ask block away.
+%
+Programs must be written for people to read, and only incidentally for machines to execute.
+%
+The best way to predict the future is to implement it.
+%
+Simplicity is prerequisite for reliability.
+%
+Any sufficiently advanced Scratch project is indistinguishable from an operating system.
+%
+In theory, there is no difference between theory and practice. In practice, there is.
+%
+First, solve the problem. Then, write the code.
+%
+It works on my green flag.

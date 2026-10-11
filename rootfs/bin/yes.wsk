@@ -1,0 +1,3 @@
+-- yes - print a string forever (stop with Ctrl+C)
+local s = arg[1] or "y"
+while true do print(s) end

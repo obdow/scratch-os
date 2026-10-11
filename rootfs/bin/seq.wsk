@@ -1,0 +1,5 @@
+-- seq - print a sequence of numbers.  usage: seq [first [step]] last
+local a, b, c = 1, 1, tonumber(arg[1] or "10")
+if #arg == 2 then a = tonumber(arg[1]) c = tonumber(arg[2]) end
+if #arg >= 3 then a = tonumber(arg[1]) b = tonumber(arg[2]) c = tonumber(arg[3]) end
+for i = a, c, b do print(i) end

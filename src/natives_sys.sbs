@@ -139,6 +139,7 @@ proc nat_sys(id) {
                     tset_n(h2, "size", len(fs_data[ino6]));
                     tset_n(h2, "mtime", floor(fs_mtime[ino6] * 86400 + 946684800));
                     tset_n(h2, "inode", ino6);
+                    tset_s(h2, "date", fmt_days2000(fs_mtime[ino6]));
                     tset_b(h2, "protected", fs_protected(ino6));
                     nat_rett(h2);
                 }
@@ -485,4 +486,24 @@ proc atan2(y, x) {
     if (y > 0) { return 1.5707963267948966; }
     if (y < 0) { return -1.5707963267948966; }
     return 0;
+}
+
+// "YYYY-MM-DD HH:MM" from a days-since-2000 timestamp
+proc fmt_days2000(d) {
+    local days = floor(d);
+    local secs = floor((d - days) * 86400);
+    // civil-from-days (Howard Hinnant), day 0 = 2000-03-01 based
+    local z = days + 10957 + 719468;
+    local era = floor(z / 146097);
+    local doe = z - era * 146097;
+    local yoe = floor((doe - floor(doe / 1460) + floor(doe / 36524) - floor(doe / 146096)) / 365);
+    local y = yoe + era * 400;
+    local doy = doe - (365 * yoe + floor(yoe / 4) - floor(yoe / 100));
+    local mp = floor((5 * doy + 2) / 153);
+    local dd = doy - floor((153 * mp + 2) / 5) + 1;
+    local mm = mp + 3;
+    if (mm > 12) { mm -= 12; }
+    if (mm <= 2) { y += 1; }
+    return y .. "-" .. pad_left_char(mm, 2, "0") .. "-" .. pad_left_char(dd, 2, "0") .. " "
+        .. pad_left_char(floor(secs / 3600), 2, "0") .. ":" .. pad_left_char(floor(secs / 60) % 60, 2, "0");
 }

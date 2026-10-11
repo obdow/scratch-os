@@ -1,0 +1,3 @@
+-- fortune - print a random saying
+local all = string.split(fs.read("/usr/share/fortunes.txt") or "No fortune today.", "%\n")
+print(string.trim(all[math.random(#all)]))

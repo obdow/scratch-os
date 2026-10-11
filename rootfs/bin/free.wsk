@@ -1,0 +1,8 @@
+-- free - memory usage
+local m = sys.mem()
+print("                total       used       free")
+print(string.format("Heap cells %10d %10d %10d", m.heap_max, m.heap, m.heap_max - m.heap))
+print(string.format("Code cells %10d %10d %10d", m.code_max, m.code, m.code_max - m.code))
+print(string.format("Tables     %10s %10d", "-", m.tables))
+print(string.format("Files      %10s %10d  (%d bytes)", "-", m.files, m.file_bytes))
+print(string.format("GC runs: %d   instructions executed: %d", m.gc_runs, m.instructions))

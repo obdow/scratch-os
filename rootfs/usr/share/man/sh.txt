@@ -1,0 +1,21 @@
+SH(1)                      ScratchOS Manual
+
+NAME
+    sh - the ScratchOS command shell
+
+SYNTAX
+    cmd args             'quoted'  "quoted $VAR"  \x  # comment
+    a | b                pipe            a > f  a >> f  a < f  2> f
+    a ; b   a && b   a || b   a &       sequence / and / or / background
+    NAME=value  $NAME  ${NAME}  $?  $$  ~
+
+BUILTINS
+    cd pwd echo [-n] [-e] exit export unset set env history help clear
+    jobs fg kill type which wait source startx shutdown reboot halt
+    caps uptime true false sh run
+
+KEYS
+    Up/Down history   Left/Right/Home/End/Backspace/Delete editing
+    Ctrl+C interrupts the running program
+
+    Scripts: files ending in .sh run line by line (sh script.sh)

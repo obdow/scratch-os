@@ -1,0 +1,19 @@
+-- calc - evaluate arithmetic: calc 2+3*4   (or interactive with no args)
+local function eval(expr)
+  local f, err = load("return " .. expr)
+  if f == nil then return "error: " .. err end
+  local ok, v = pcall(f)
+  if not ok then return "error: " .. tostring(v) end
+  return tostring(v)
+end
+if #arg > 0 then
+  print(eval(table.concat(arg, " ")))
+else
+  print("calc - enter expressions, empty line to quit (math.* available)")
+  while true do
+    io.write("= ")
+    local l = io.read()
+    if l == nil or l == "" then break end
+    print(eval(l))
+  end
+end

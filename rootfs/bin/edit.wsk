@@ -1,0 +1,234 @@
+-- edit - full-screen text editor
+-- usage: edit [file]
+-- keys: arrows, Home/End, PgUp/PgDn, Enter (auto-indent), Backspace, Delete
+--       Esc opens the menu: Save, Quit, eXit (save+quit), Find, Goto line, Run
+--       Ctrl+X saves and quits
+local file = arg[1]
+local lines = {""}
+if file and fs.exists(file) then
+  if fs.isdir(file) then io.error("edit: " .. file .. " is a directory\n") exit(1) end
+  lines = string.lines(fs.read(file))
+  if #lines > 1 and lines[#lines] == "" then table.remove(lines) end
+  if #lines == 0 then lines = {""} end
+end
+local W, H = term.size()
+local TH = H - 2            -- text rows
+local cx, cy = 1, 1         -- cursor column / line (1-based)
+local top, left = 1, 1      -- first visible line / column
+local dirty = false
+local msg = "Esc: menu   Ctrl+X: save & quit"
+local running = true
+local FG, BG = 15, 1        -- text colours (white on blue)
+
+local function pad(s, n)
+  if #s >= n then return s:sub(1, n) end
+  return s .. string.rep(" ", n - #s)
+end
+
+local function draw_line(row)
+  local i = top + row - 1
+  local text = ""
+  if i <= #lines then text = lines[i]:sub(left, left + W - 1) else text = "" end
+  if i > #lines then
+    term.put(1, row, pad("~", W), 9, BG)
+  else
+    term.put(1, row, pad(text, W), FG, BG)
+  end
+end
+
+local function draw_all()
+  for r = 1, TH do draw_line(r) end
+end
+
+local function draw_status()
+  local name = file or "[untitled]"
+  local mod = ""
+  if dirty then mod = " *" end
+  local right = string.format("Ln %d, Col %d ", cy, cx)
+  local leftpart = " " .. name .. mod
+  term.put(1, H - 1, pad(leftpart, W - #right) .. right, 0, 3)
+  term.put(1, H, pad(" " .. msg, W), 14, 0)
+end
+
+local function place_cursor()
+  term.goto(cx - left + 1, cy - top + 1)
+end
+
+-- keep the cursor inside the window; returns true if the view scrolled
+local function scroll()
+  local moved = false
+  if cy < top then top = cy moved = true end
+  if cy > top + TH - 1 then top = cy - TH + 1 moved = true end
+  if cx < left then left = cx moved = true end
+  if cx > left + W - 1 then left = cx - W + 1 moved = true end
+  return moved
+end
+
+local function clamp_x()
+  if cx > #lines[cy] + 1 then cx = #lines[cy] + 1 end
+  if cx < 1 then cx = 1 end
+end
+
+-- read a line of input on the message row
+local function ask(prompt)
+  local buf = ""
+  while true do
+    term.put(1, H, pad(" " .. prompt .. buf .. "_", W), 15, 0)
+    local k = term.waitkey()
+    if k == "enter" then return buf end
+    if k == "escape" then return nil end
+    if k == "backspace" then buf = buf:sub(1, #buf - 1)
+    elseif #k == 1 then buf = buf .. k end
+  end
+end
+
+local function save()
+  if file == nil then
+    file = ask("Save as: ")
+    if file == nil or file == "" then file = nil msg = "Not saved." return false end
+  end
+  local ok, err = fs.write(file, table.concat(lines, "\n") .. "\n")
+  if ok then
+    dirty = false
+    msg = "Saved " .. file .. " (" .. #lines .. " lines)"
+    return true
+  end
+  msg = "Error: " .. tostring(err)
+  return false
+end
+
+local function confirm_quit()
+  if not dirty then running = false return end
+  local a = ask("Unsaved changes. Save first? (y/n/Esc) ")
+  if a == nil then msg = "Cancelled." return end
+  if a == "y" or a == "Y" then
+    if save() then running = false end
+  else
+    running = false
+  end
+end
+
+local function find()
+  local q = ask("Find: ")
+  if q == nil or q == "" then return end
+  local n = #lines
+  for step = 0, n do
+    local i = (cy - 1 + step) % n + 1
+    local from = 1
+    if step == 0 then from = cx + 1 end
+    local p = string.find(lines[i], q, from)
+    if p then
+      cy = i cx = p
+      msg = "Found '" .. q .. "'"
+      return
+    end
+  end
+  msg = "'" .. q .. "' not found"
+end
+
+local function menu()
+  local k = ask("[S]ave [Q]uit e[X]it [F]ind [G]oto [R]un: ")
+  if k == nil then msg = "" return end
+  k = k:lower()
+  if k == "s" then save()
+  elseif k == "q" then confirm_quit()
+  elseif k == "x" then if save() then running = false end
+  elseif k == "f" then find()
+  elseif k == "g" then
+    local n = tonumber(ask("Go to line: ") or "")
+    if n then cy = math.max(1, math.min(#lines, n)) cx = 1 end
+  elseif k == "r" then
+    if save() and file then
+      term.raw(false)
+      term.color(7, 0)
+      term.clear()
+      print("\e[93m--- running " .. file .. " ---\e[0m")
+      proc.wait(proc.spawn("run " .. file))
+      print("\e[93m--- press a key to return to the editor ---\e[0m")
+      term.raw(true)
+      term.waitkey()
+      msg = "Back from " .. file
+    end
+  end
+end
+
+local function key(k)
+  local line = lines[cy]
+  if #k == 1 then
+    lines[cy] = line:sub(1, cx - 1) .. k .. line:sub(cx)
+    cx = cx + 1
+    dirty = true
+    return "line"
+  elseif k == "enter" then
+    local indent = ""
+    local j = 1
+    while line:sub(j, j) == " " do indent = indent .. " " j = j + 1 end
+    lines[cy] = line:sub(1, cx - 1)
+    table.insert(lines, cy + 1, indent .. line:sub(cx))
+    cy = cy + 1
+    cx = #indent + 1
+    dirty = true
+    return "all"
+  elseif k == "backspace" then
+    if cx > 1 then
+      lines[cy] = line:sub(1, cx - 2) .. line:sub(cx)
+      cx = cx - 1
+      dirty = true
+      return "line"
+    elseif cy > 1 then
+      cx = #lines[cy - 1] + 1
+      lines[cy - 1] = lines[cy - 1] .. line
+      table.remove(lines, cy)
+      cy = cy - 1
+      dirty = true
+      return "all"
+    end
+  elseif k == "delete" then
+    if cx <= #line then
+      lines[cy] = line:sub(1, cx - 1) .. line:sub(cx + 1)
+      dirty = true
+      return "line"
+    elseif cy < #lines then
+      lines[cy] = line .. lines[cy + 1]
+      table.remove(lines, cy + 1)
+      dirty = true
+      return "all"
+    end
+  elseif k == "left arrow" then
+    if cx > 1 then cx = cx - 1 elseif cy > 1 then cy = cy - 1 cx = #lines[cy] + 1 end
+  elseif k == "right arrow" then
+    if cx <= #line then cx = cx + 1 elseif cy < #lines then cy = cy + 1 cx = 1 end
+  elseif k == "up arrow" then
+    if cy > 1 then cy = cy - 1 clamp_x() end
+  elseif k == "down arrow" then
+    if cy < #lines then cy = cy + 1 clamp_x() end
+  elseif k == "home" then cx = 1
+  elseif k == "end" then cx = #line + 1
+  elseif k == "page up" then cy = math.max(1, cy - TH) clamp_x()
+  elseif k == "page down" then cy = math.min(#lines, cy + TH) clamp_x()
+  elseif k == "escape" then menu() return "all"
+  elseif k == "^x" then if save() then running = false end
+  elseif k == "^s" then save()
+  end
+  return "none"
+end
+
+term.raw(true)
+term.clear()
+draw_all()
+draw_status()
+place_cursor()
+while running do
+  local k = term.waitkey()
+  local what = key(k)
+  if scroll() or what == "all" then
+    draw_all()
+  elseif what == "line" then
+    draw_line(cy - top + 1)
+  end
+  draw_status()
+  place_cursor()
+end
+term.raw(false)
+term.color(7, 0)
+term.clear()

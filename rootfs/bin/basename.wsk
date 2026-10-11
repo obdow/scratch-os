@@ -1,0 +1,2 @@
+-- basename - strip directory from a path
+if arg[1] then print(fs.name(arg[1])) end

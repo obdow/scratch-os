@@ -230,6 +230,14 @@ proc nat_core(id, w, dest, retpc) {
             vm_exited = 1;
             proc_exit(vm_slot, code);
         }
+        case N_LOAD: {
+            local src = nat_str(1, "load");
+            if (vm_raised == 0) {
+                local f = vm_load_chunk(src, "");
+                if (f == 0) { nat_retnil(); nat_rets(vm_err); } else { nat_ret(f, TFUN); }
+            }
+        }
+        case N_REQUIRE: { nat_require(); }
         // ---- string ----
         case N_STRING_LEN: { nat_retn(len(nat_str(1, "len"))); }
         case N_STRING_SUB: {
@@ -484,6 +492,7 @@ proc nat_core(id, w, dest, retpc) {
             // read until EOF; lines() returns a table of lines
             nat_readall(id);
         }
+        case N_IO_ISATTY: { nat_retb(p_out_k[vm_slot] == FD_TTY); }
         // ---- os ----
         case N_OS_TIME: { nat_retn(floor(days2000() * 86400 + 946684800)); }
         case N_OS_CLOCK: { nat_retn(now_secs() - p_start[vm_slot]); }
@@ -762,4 +771,83 @@ proc table_sort(h) {
     if (vm_raised == 1 || vm_running == 0) { return; }
     b = tb_ab[h];
     for i = 1 to n { HV[b + i] = srt_v[i]; HT[b + i] = srt_t[i]; }
+}
+
+// compile a chunk for the running process; returns its function address or 0.
+// extra: additional global name to declare first (used by require)
+proc vm_load_chunk(src, extra) {
+    local s = vm_slot;
+    local names = p_glnames[s];
+    if (len(extra) > 0) { names = names .. extra .. "\x01"; }
+    if (wcompile_ex(src, names, 1) == 0) {
+        vm_err = c_errmsg;
+        return 0;
+    }
+    local sg = seg_alloc(len(cb));
+    if (sg == 0) { vm_err = "out of code memory"; return 0; }
+    local b = seg_start[sg] - 1;
+    for k = 1 to len(cb) { CODE[b + k] = cb[k]; }
+    seg_key[sg] = "\x02" .. p_pid[s];
+    seg_refs[sg] = 1;
+    seg_path[sg] = "(load)";
+    // grow the globals table to cover new names
+    p_glnames[s] = gl_names_encode();
+    local g = p_glob[s];
+    local n = len(gl_names);
+    if (n > tb_an[g]) {
+        if (n > tb_ac[g]) { table_grow_arr(g, n); }
+        local ab = tb_ab[g];
+        for k = tb_an[g] + 1 to n { HV[ab + k] = ""; HT[ab + k] = TNIL; }
+        tb_an[g] = n;
+    }
+    return seg_start[sg];
+}
+
+// global slot of a name in the running program (0 if absent)
+proc vm_global_slot(name) {
+    local names = p_glnames[vm_slot];
+    local cur = "";
+    local k = 0;
+    for i = 1 to len(names) {
+        if (names[i] == "\x01") {
+            k += 1;
+            if (cur == name && streq(cur, name) == 1) { return k; }
+            cur = "";
+        } else { cur = cur .. names[i]; }
+    }
+    return 0;
+}
+
+// require(name): load /lib/name.wsk (or ./name.wsk) once, return its result
+proc nat_require() {
+    local name = nat_str(1, "require");
+    if (vm_raised == 1) { return; }
+    local key = "__mod_" .. name;
+    local gs = vm_global_slot(key);
+    if (gs > 0) {
+        local gp = tb_ab[p_glob[vm_slot]] + gs;
+        if (HT[gp] != TNIL) { nat_ret(HV[gp], HT[gp]); return; }
+    }
+    local ino = fs_lookup("/lib/" .. name .. ".wsk", 1);
+    if (ino == 0) { ino = fs_lookup(name .. ".wsk", p_cwd[vm_slot]); }
+    if (ino == 0) { ino = fs_lookup(name, p_cwd[vm_slot]); }
+    if (ino == 0 || fs_type[ino] == FT_DIR) { vm_raise("module '" .. name .. "' not found"); return; }
+    local f = vm_load_chunk(fs_data[ino], key);
+    if (f == 0) { vm_raise("error loading module '" .. name .. "': " .. vm_err); return; }
+    // run the module body now
+    local pos = vm_sp + 1;
+    STK[pos] = f;
+    STT[pos] = TFUN;
+    vm_sp = pos;
+    vm_call_sync(pos, 0);
+    if (vm_running == 0 || vm_raised == 1) { return; }
+    local rv = STK[pos];
+    local rt = STT[pos];
+    vm_sp = pos - 1;
+    if (rt == TNIL) { rv = 1; rt = TBOOL; }
+    gs = vm_global_slot(key);
+    local gp2 = tb_ab[p_glob[vm_slot]] + gs;
+    HV[gp2] = rv;
+    HT[gp2] = rt;
+    nat_ret(rv, rt);
 }

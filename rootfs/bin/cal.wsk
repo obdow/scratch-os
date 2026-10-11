@@ -1,0 +1,28 @@
+-- cal - show this month's calendar
+local d = os.date()
+local y = tonumber(d:sub(1, 4))
+local m = tonumber(d:sub(6, 7))
+local today = tonumber(d:sub(9, 10))
+local names = {"January", "February", "March", "April", "May", "June", "July",
+  "August", "September", "October", "November", "December"}
+local days = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31}
+if (y % 4 == 0 and y % 100 ~= 0) or y % 400 == 0 then days[2] = 29 end
+-- Zeller-style weekday of the 1st (0 = Sunday)
+local function weekday(yy, mm, dd)
+  local t = {0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4}
+  if mm < 3 then yy = yy - 1 end
+  return (yy + yy // 4 - yy // 100 + yy // 400 + t[mm] + dd) % 7
+end
+local title = names[m] .. " " .. y
+print(string.rep(" ", (20 - #title) // 2) .. "\e[97m" .. title .. "\e[0m")
+print("Su Mo Tu We Th Fr Sa")
+local line = string.rep("   ", weekday(y, m, 1))
+local col = weekday(y, m, 1)
+for dd = 1, days[m] do
+  local s = string.format("%2d", dd)
+  if dd == today then s = "\e[30;47m" .. s .. "\e[0m" end
+  line = line .. s .. " "
+  col = col + 1
+  if col == 7 then print(line) line = "" col = 0 end
+end
+if line ~= "" then print(line) end

@@ -1,0 +1,15 @@
+-- guess.wsk - guess the number
+local secret = math.random(1, 100)
+local tries = 0
+print("I'm thinking of a number between 1 and 100.")
+while true do
+  io.write("Your guess: ")
+  local g = tonumber(io.read() or "")
+  if g == nil then print("That's not a number.")
+  else
+    tries = tries + 1
+    if g < secret then print("Higher!")
+    elseif g > secret then print("Lower!")
+    else print("Correct! " .. tries .. " tries.") break end
+  end
+end

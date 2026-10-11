@@ -10,7 +10,7 @@ The order defines the native id (1-based).  build.py exports:
 NATIVES = [
     # base library
     'print', 'tostring', 'tonumber', 'type', 'error', 'pcall', 'assert', 'select', 'rawequal',
-    'unpack', 'sleep', 'exit',
+    'unpack', 'sleep', 'exit', 'load', 'require',
     # string
     'string.len', 'string.sub', 'string.upper', 'string.lower', 'string.find', 'string.rep',
     'string.byte', 'string.char', 'string.format', 'string.split', 'string.trim', 'string.reverse',
@@ -24,7 +24,7 @@ NATIVES = [
     'table.insert', 'table.remove', 'table.concat', 'table.sort', 'table.unpack', 'table.keys',
     'table.count', 'table.copy', 'table.find', 'table.reverse',
     # io (standard streams)
-    'io.write', 'io.read', 'io.readall', 'io.lines', 'io.error',
+    'io.write', 'io.read', 'io.readall', 'io.lines', 'io.error', 'io.isatty',
     # os
     'os.time', 'os.clock', 'os.date', 'os.getenv', 'os.setenv', 'os.exit', 'os.sleep', 'os.pid',
     'os.args', 'os.uptime', 'os.millis',

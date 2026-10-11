@@ -1,0 +1,10 @@
+-- touch - create empty files or update their time
+for i = 1, #arg do
+  local f = arg[i]
+  if fs.exists(f) then
+    fs.append(f, "")
+  else
+    local ok, err = fs.write(f, "")
+    if not ok then io.error("touch: " .. f .. ": " .. err .. "\n") end
+  end
+end

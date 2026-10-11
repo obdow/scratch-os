@@ -1,0 +1,8 @@
+-- kill - terminate processes (the shell also has a built-in kill)
+for i = 1, #arg do
+  local pid = tonumber(arg[i])
+  if pid then
+    local ok, err = proc.kill(pid)
+    if not ok then io.error("kill: " .. arg[i] .. ": " .. tostring(err) .. "\n") end
+  end
+end

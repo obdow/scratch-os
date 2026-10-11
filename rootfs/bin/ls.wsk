@@ -1,0 +1,86 @@
+-- ls - list directory contents
+-- usage: ls [-l] [-a] [-1] [path...]
+local long, all, one = false, false, false
+local paths = {}
+for i = 1, #arg do
+  local a = arg[i]
+  if a:startswith("-") and #a > 1 then
+    for k = 2, #a do
+      local c = a:sub(k, k)
+      if c == "l" then long = true elseif c == "a" then all = true elseif c == "1" then one = true
+      else io.error("ls: unknown option -" .. c .. "\n") exit(2) end
+    end
+  else
+    paths[#paths + 1] = a
+  end
+end
+if #paths == 0 then paths[1] = "." end
+if not io.isatty() then one = true end
+
+local function colour(name, st)
+  if st.type == "dir" then return "\e[94m" .. name .. "\e[0m" end
+  if name:endswith(".wsk") or name:endswith(".sh") then return "\e[92m" .. name .. "\e[0m" end
+  if name:endswith(".txt") or name:endswith(".md") then return "\e[37m" .. name .. "\e[0m" end
+  return name
+end
+
+local function human(n)
+  if n < 1024 then return tostring(n) end
+  return string.format("%.1fK", n / 1024)
+end
+
+local status = 0
+for p = 1, #paths do
+  local path = paths[p]
+  local st, err = fs.stat(path)
+  if st == nil then
+    io.error("\e[91mls: " .. path .. ": " .. err .. "\e[0m\n")
+    status = 1
+  else
+    local names = {}
+    local base = path
+    if st.type == "dir" then
+      names = fs.list(path)
+    else
+      names = {path}
+      base = nil
+    end
+    if #paths > 1 and st.type == "dir" then print(path .. ":") end
+    local shown = {}
+    for _, n in ipairs(names) do
+      if all or not n:startswith(".") then shown[#shown + 1] = n end
+    end
+    if long then
+      for _, n in ipairs(shown) do
+        local full = n
+        if base then full = base .. "/" .. n end
+        local s = fs.stat(full)
+        local t = "-"
+        if s.type == "dir" then t = "d" end
+        local rw = "rw"
+        if s.protected then rw = "r-" end
+        print(string.format("%s%s %6s %s %s", t, rw, human(s.size), s.date, colour(n, s)))
+      end
+    elseif one then
+      for _, n in ipairs(shown) do print(n) end
+    else
+      -- columns
+      local w = 0
+      for _, n in ipairs(shown) do if #n > w then w = #n end end
+      w = w + 2
+      local cols = math.max(1, math.floor(60 / w))
+      local line = ""
+      local col = 0
+      for _, n in ipairs(shown) do
+        local full = n
+        if base then full = base .. "/" .. n end
+        local s = fs.stat(full)
+        line = line .. colour(n, s) .. string.rep(" ", w - #n)
+        col = col + 1
+        if col == cols then print(line) line = "" col = 0 end
+      end
+      if col > 0 then print(line) end
+    end
+  end
+end
+exit(status)

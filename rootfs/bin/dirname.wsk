@@ -1,0 +1,2 @@
+-- dirname - strip the last component of a path
+if arg[1] then print(fs.dir(arg[1])) end
