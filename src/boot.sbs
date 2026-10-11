@@ -97,10 +97,10 @@ proc boot_seq() nowarp {
     tty_write(con, "\e[2J\e[H");
     boot_t0 = now_secs();
     klog(OS_NAME .. " " .. OS_VERSION .. " (" .. KERNEL_NAME .. ") #1 PREEMPT");
-    klog("Command line: root=/dev/sb3 console=tty1 font=vga8x16");
-    klog("Pen framebuffer: 480x360, 60x22 text console, 16 colours");
+    klog("cmdline: root=/dev/sb3 console=tty1 font=vga8x16");
+    klog("pen fb: 480x360 px, 60x22 cells, 16 colours");
     boot_pause(0.05);
-    klog("Memory: 200000 list cells per segment, heap ready");
+    klog("memory: 200000 cells per list, heap ready");
     fs_init();
     fs_load_rootfs();
     boot_pause(0.05);
@@ -119,7 +119,7 @@ proc boot_seq() nowarp {
     kok("Loaded capability policy (/etc/caps)");
     boot_pause(0.05);
     wm_init();
-    kok("Started window manager (run 'startx' for the desktop)");
+    kok("Started window manager (type 'startx')");
     boot_pause(0.05);
     kok("Reached target Multi-User System");
     boot_pause(0.15);

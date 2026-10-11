@@ -442,6 +442,14 @@ proc tty_key(t, ev) {
     }
     if (ev == "enter") {
         tty_line_cursor(t, len(line));
+        local endp = tty_px[t] + len(line);
+        if (len(line) > 0 && endp % tty_w[t] == 0) {
+            // the line exactly filled the last row: the cursor is in the
+            // pending-wrap position, so one newline is enough
+            tty_cy[t] = tty_py[t] + endp / tty_w[t] - 1;
+            if (tty_cy[t] > tty_h[t] - 1) { tty_cy[t] = tty_h[t] - 1; }
+            tty_cx[t] = tty_w[t];
+        }
         tty_newline(t);
         add(tin_tty, t);
         add(tin_line, line);

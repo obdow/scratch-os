@@ -1,0 +1,134 @@
+# ScratchOS
+
+An operating system built in Scratch. It has a BIOS and boot sequence, a
+Unix-like shell, preemptive multitasking, an in-memory file system, a
+capability-based permission system, a mouse-driven window manager, and
+its own programming language, **Whisker**. Whisker is compiled to bytecode
+and run on a virtual machine, all inside one Scratch project.
+
+Every pixel is drawn with the **pen**. Text is stamped glyph by glyph from
+the IBM VGA 8×16 font (code page 437) in the 16-colour VGA palette. Keyboard
+input uses **one clone per key** instead of `ask` blocks.
+
+**Run it:** open `ScratchOS.sb3` in [TurboWarp](https://turbowarp.org/)
+(File → Load from your computer) and click the green flag.
+
+> TurboWarp is required. Its compiler makes the VM fast enough, and it can
+> detect Backspace, Shift, Ctrl, Escape, Home/End and Page Up/Down, which
+> vanilla Scratch cannot. The project sets 60 FPS and turns off sprite
+> fencing through TurboWarp's project settings.
+
+## What you can do
+
+```
+user@scratchos:~$ ls -l /bin                 # the programs, written in Whisker
+user@scratchos:~$ cat /bin/hello.wsk         # read their source
+user@scratchos:~$ find / -name *.txt | sort -r | head -n 3
+user@scratchos:~$ edit hello2.wsk            # full-screen editor (Esc for the menu)
+user@scratchos:~$ hello2.wsk                 # run your program
+user@scratchos:~$ whisker                    # interactive Whisker REPL
+user@scratchos:~$ yes > /dev/null &          # background job; `jobs`, `kill %1`
+user@scratchos:~$ top                        # live process monitor
+user@scratchos:~$ startx                     # the desktop
+```
+
+| Area | Features |
+|---|---|
+| Boot | BIOS POST with memory test, boot manager, kernel log, `init` (pid 1) running `/etc/rc`, motd. Press Esc to skip the animations. |
+| Shell | pipes `\|`, redirection `> >> < 2>`, `;` `&&` `\|\|` `&`, quoting, `$VAR` `$?` `$$` `~`, history (↑/↓), line editing, Ctrl+C, job control (`jobs`, `fg`, `kill %n`), scripts (`sh file.sh`, `source`) |
+| Programs | `ls cat cp mv rm mkdir rmdir touch tree find grep wc head tail sort uniq rev tee seq yes basename dirname sleep date cal ps top kill free uname whoami hostname man more edit whisker calc cowsay fortune bench matrix snake hello` |
+| Desktop | overlapping windows (drag, resize, minimise, maximise, close), taskbar with clock, Start menu, desktop icons, terminal windows, permission dialogs, error dialogs |
+| GUI apps | Files (file manager), Paint, Task Manager, Clock, About, plus terminal apps like Text Editor and Snake |
+| Language | Whisker: Lua-like syntax, tables, functions, methods, `pcall`/`error`, multiple returns, `load`/`require`, 140+ built-in functions |
+| Permissions | programs ask before using `files`, `proc`, `gui` or `system` capabilities: (y)es / (n)o / (a)lways; policy in `/etc/caps` |
+
+Type `help`, `man scratchos`, `man whisker`, `man lib` or `man sh` inside the OS.
+
+### Keys
+
+Up/Down history · Left/Right/Home/End/Backspace/Delete editing ·
+Ctrl+C interrupt · Esc skips the boot animations and opens the editor menu ·
+Ctrl+Space opens the Start menu on the desktop. The browser has no Tab key
+for the page, so there is no tab completion, and the editor auto-indents
+instead.
+
+## Whisker in 30 seconds
+
+```lua
+-- shapes.wsk
+local Shape = {}
+function Shape.new(kind, size)
+  local s = {kind = kind, size = size}
+  function s:area()
+    if self.kind == "square" then return self.size ^ 2 end
+    return math.pi * self.size ^ 2
+  end
+  return s
+end
+
+local list = {Shape.new("square", 3), Shape.new("circle", 2)}
+table.sort(list, function(a, b) return a:area() < b:area() end)
+for _, s in ipairs(list) do
+  print(string.format("%-7s area %6.2f", s.kind, s:area()))
+end
+```
+
+Graphics on the desktop:
+
+```lua
+--@caps gui
+local win = gui.window("Hello", 200, 100)
+gfx.clear(win, 1)
+gfx.disc(win, 100, 50, 30, 14)
+gfx.text(win, 60, 80, "Hello!", 15)
+repeat local e = gui.waitevent(win) until e.type == "close"
+```
+
+See [docs/WHISKER.md](docs/WHISKER.md) for the full language and library reference.
+
+## How it is built
+
+Hand-placing tens of thousands of blocks is not practical, so the kernel is
+written in **SBS**, a small C-like language. `tools/sbc.py` compiles it into
+ordinary Scratch blocks. The output is a normal project you can open and edit
+in the Scratch/TurboWarp editor, about 23,000 blocks in total.
+
+```
+build.py            build entry point -> ScratchOS.sb3
+src/*.sbs           the kernel (Kernel sprite) and keyboard (Keyboard sprite)
+rootfs/             files baked into the file system image (/bin, /etc, /home, /usr)
+tools/sbc.py        SBS -> Scratch 3 compiler
+tools/assets.py     glyph / rectangle costumes from the VGA font
+tools/natives.py    the Whisker system-call table
+assets/font/        IBM VGA 8x16 font (VileR, CC BY-SA 4.0)
+test/               headless TurboWarp harness (Playwright) and regression test
+docs/               architecture, SBS and Whisker documentation
+```
+
+Requirements: Python 3 with Pillow. To build:
+
+```
+python3 build.py                 # writes ScratchOS.sb3
+```
+
+To test (Node 18+ and a Chromium for Playwright):
+
+```
+cd test && npm install
+node regress.js ../ScratchOS.sb3                          # boots the OS, runs commands, checks output
+node drive.js ../ScratchOS.sb3 out --text -- "ls" "ps"    # type commands, dump the screen
+```
+
+Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the pieces fit:
+the stamp text engine, clone keyboard, scheduler, VM, heap/GC, the window
+manager's cell compositor, and the Scratch quirks that had to be worked around.
+
+## Credits
+
+* Font: IBM VGA 8×16 from VileR's
+  [VGA text mode fonts](https://github.com/viler-int10h/vga-text-mode-fonts)
+  collection (the same data as *Px437 IBM VGA 8x16* in
+  [The Ultimate Oldschool PC Font Pack](https://int10h.org/oldschool-pc-fonts/),
+  CC BY-SA 4.0).
+* Runs on [TurboWarp](https://turbowarp.org/). Testing uses the
+  [TurboWarp packager](https://github.com/TurboWarp/packager)'s scaffolding.
