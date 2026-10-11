@@ -28,7 +28,8 @@ break   continue                        -- `continue` is a Whisker addition
 
 function add(a, b) return a + b end
 local function fib(n) if n < 2 then return n end return fib(n-1) + fib(n-2) end
-local q, r = divmod(7, 2)              -- multiple return values
+local function divmod(a, b) return a // b, a % b end
+local q, r = divmod(7, 2)              -- multiple return values: 3, 1
 local f = function(v) return v * 2 end
 
 local obj = {count = 0}
