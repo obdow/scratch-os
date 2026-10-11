@@ -4,6 +4,9 @@ EDIT(1)                    ScratchOS Manual
 
     Arrows, Home/End, PgUp/PgDn move.  Enter splits lines and keeps the
     indentation (there is no Tab key in the browser).
-    Esc opens the menu:  S save   Q quit   X save+quit   F find
-                         G go to line   R save and run the program
+    Esc opens the menu:  S save   O open another file   Q quit
+                         X save+quit   F find   G go to line
+                         R save and run the program
+    On the desktop, Files opens any file in the editor: double-click it
+    or use the Edit button (Run starts .wsk programs).
     Ctrl+X saves and quits.

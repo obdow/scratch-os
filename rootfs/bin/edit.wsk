@@ -1,7 +1,7 @@
 -- edit - full-screen text editor
 -- usage: edit [file]
 -- keys: arrows, Home/End, PgUp/PgDn, Enter (auto-indent), Backspace, Delete
---       Esc opens the menu: Save, Quit, eXit (save+quit), Find, Goto line, Run
+--       Esc opens the menu: Save, Open, Quit, eXit (save+quit), Find, Goto line, Run
 --       Ctrl+X saves and quits
 local file = arg[1]
 local lines = {""}
@@ -126,11 +126,39 @@ local function find()
   msg = "'" .. q .. "' not found"
 end
 
+local function load_file(name)
+  local data, err = fs.read(name)
+  if data == nil then
+    if fs.exists(name) then msg = "Error: " .. tostring(err) return false end
+    data = ""   -- a new file
+  end
+  file = name
+  lines = string.lines(data)
+  if #lines > 1 and lines[#lines] == "" then table.remove(lines) end
+  if #lines == 0 then lines = {""} end
+  cx, cy, top, left = 1, 1, 1, 1
+  dirty = false
+  msg = "Opened " .. name .. " (" .. #lines .. " lines)"
+  return true
+end
+
+local function open_prompt()
+  if dirty then
+    local a = ask("Unsaved changes will be lost. Continue? (y/n) ")
+    if a ~= "y" and a ~= "Y" then msg = "Cancelled." return end
+  end
+  local name = ask("Open file: ")
+  if name == nil or name == "" then msg = "" return end
+  if fs.isdir(name) then msg = name .. " is a directory" return end
+  load_file(name)
+end
+
 local function menu()
-  local k = ask("[S]ave [Q]uit e[X]it [F]ind [G]oto [R]un: ")
+  local k = ask("[S]ave [O]pen [Q]uit e[X]it [F]ind [G]oto [R]un: ")
   if k == nil then msg = "" return end
   k = k:lower()
-  if k == "s" then save()
+  if k == "o" then open_prompt()
+  elseif k == "s" then save()
   elseif k == "q" then confirm_quit()
   elseif k == "x" then if save() then running = false end
   elseif k == "f" then find()
@@ -206,6 +234,11 @@ local function key(k)
   elseif k == "end" then cx = #line + 1
   elseif k == "page up" then cy = math.max(1, cy - TH) clamp_x()
   elseif k == "page down" then cy = math.min(#lines, cy + TH) clamp_x()
+  elseif k == "resize" then
+    W, H = term.size()
+    TH = H - 2
+    term.clear()
+    return "all"
   elseif k == "escape" then menu() return "all"
   elseif k == "^x" then if save() then running = false end
   elseif k == "^s" then save()

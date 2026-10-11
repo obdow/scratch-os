@@ -636,6 +636,9 @@ proc tty_resize(t, nw, want_h) {
     if (nw == w && nh == h) { return; }
     if (tty_mode[t] == 1) {
         tty_resize_copy(t, nw, nh);
+        // full-screen programs redraw themselves when they see this key event
+        local fs = proc_slot(tty_fgpid[t]);
+        if (fs > 0) { add(kq_pid, p_pid[fs]); add(kq_ev, "resize"); }
         return;
     }
     local a = tty_attr[t];

@@ -1,7 +1,9 @@
 -- files - graphical file manager
 --@caps gui files
--- click selects, double-click opens; keys: arrows, Enter, Backspace (up),
--- Delete (remove), n (new folder), q (quit)
+-- click selects, double-click opens (folders are entered, files open in the
+-- editor).  Toolbar: Up, Edit, Run (.wsk programs), New folder, Delete.
+-- keys: arrows, Enter (open), e (edit), r (run), Backspace (up), Delete,
+--       n (new folder), q (quit)
 local W, H = 400, 272
 local win = gui.window("Files", W, H)
 local cwd = fs.abs(os.getenv("HOME") or "/")
@@ -10,6 +12,8 @@ local sel, top = 1, 1
 local ROWS = (H - 48) // 16
 local lastclick, lastsel = 0, 0
 local status = ""
+local BUTTONS = {" Up ", " Edit ", " Run ", " New folder ", " Delete "}
+local bx = {}          -- x position of each toolbar button
 
 local function load()
   local names = fs.list(cwd) or {}
@@ -33,10 +37,12 @@ local function draw()
   gfx.clear(win, 15)
   -- toolbar
   gfx.fill(win, 0, 0, W, 16, 7)
-  local buttons = {" Up ", " Open ", " New folder ", " Delete "}
   local x = 4
-  for _, b in ipairs(buttons) do
-    gfx.fill(win, x, 1, #b * 8, 14, 8)
+  for i, b in ipairs(BUTTONS) do
+    bx[i] = x
+    local bg = 8
+    if b == " Run " and not (items[sel] and items[sel].name:endswith(".wsk")) then bg = 7 end
+    gfx.fill(win, x, 1, #b * 8, 14, bg)
     gfx.text(win, x, 0, b, 15)
     x = x + #b * 8 + 8
   end
@@ -73,6 +79,29 @@ local function ensure_visible()
   if sel > top + ROWS - 1 then top = sel - ROWS + 1 end
 end
 
+local function go_up()
+  if cwd ~= "/" then
+    cwd = fs.dir(cwd)
+    sel, top = 1, 1
+    status = ""
+    load()
+  end
+end
+
+local function edit(it)
+  if it == nil or it.dir then return end
+  gui.terminal("edit " .. it.path)
+  status = "Editing " .. it.name
+end
+
+local function run(it)
+  if it == nil or it.dir then return end
+  if not it.name:endswith(".wsk") then status = it.name .. " is not a program" return end
+  gui.terminal("run " .. it.path)
+  status = "Started " .. it.name
+end
+
+-- double-click / Enter: enter folders, open files in the editor
 local function open(it)
   if it == nil then return end
   if it.dir then
@@ -80,12 +109,8 @@ local function open(it)
     sel, top = 1, 1
     status = ""
     load()
-  elseif it.name:endswith(".wsk") then
-    gui.terminal("run " .. it.path)
-    status = "Started " .. it.name
   else
-    gui.terminal("edit " .. it.path)
-    status = "Editing " .. it.name
+    edit(it)
   end
 end
 
@@ -116,10 +141,15 @@ while running do
   if e.type == "close" then running = false
   elseif e.type == "mousedown" then
     if e.y < 16 then
-      if e.x < 40 then open(items[1]) if items[1] and items[1].name ~= ".." then cwd = fs.dir(cwd) load() end
-      elseif e.x < 100 then open(items[sel])
-      elseif e.x < 204 then newfolder()
-      elseif e.x < 276 then delete(items[sel]) end
+      local hit = 0
+      for i, b in ipairs(BUTTONS) do
+        if bx[i] and e.x >= bx[i] and e.x < bx[i] + #b * 8 then hit = i end
+      end
+      if hit == 1 then go_up()
+      elseif hit == 2 then edit(items[sel])
+      elseif hit == 3 then run(items[sel])
+      elseif hit == 4 then newfolder()
+      elseif hit == 5 then delete(items[sel]) end
     elseif e.y >= 32 and e.y < H - 16 then
       local i = top + (e.y - 32) // 16
       if items[i] then
@@ -135,7 +165,9 @@ while running do
     elseif k == "page up" then sel = math.max(1, sel - ROWS)
     elseif k == "page down" then sel = math.min(#items, sel + ROWS)
     elseif k == "enter" then open(items[sel])
-    elseif k == "backspace" then if cwd ~= "/" then cwd = fs.dir(cwd) sel, top = 1, 1 load() end
+    elseif k == "e" then edit(items[sel])
+    elseif k == "r" then run(items[sel])
+    elseif k == "backspace" then go_up()
     elseif k == "delete" then delete(items[sel])
     elseif k == "n" then newfolder()
     elseif k == "q" or k == "escape" then running = false
