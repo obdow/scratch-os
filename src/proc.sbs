@@ -33,6 +33,7 @@ const FD_TTY = 0;
 const FD_PIPE = 1;
 const FD_NULL = 2;
 const FD_FILE = 3;
+const FD_MSG = 4;     // message box on the desktop (stderr of GUI programs)
 
 const MAX_PIPE = 64;
 
@@ -186,6 +187,8 @@ proc fd_write(kind, id, s) {
         if (id > 0 && tty_used[id] == 1) { tty_write(id, s); }
     } else if (kind == FD_PIPE) {
         pipe_write(id, s);
+    } else if (kind == FD_MSG) {
+        msg_write(s);
     } else if (kind == FD_FILE) {
         if (fs_used[id] == 1) {
             fs_data[id] = fs_data[id] .. s;

@@ -1,0 +1,1412 @@
+// ===========================================================================
+// wm.sbs - the window manager / desktop (included inside sprite Kernel)
+//
+// Everything is aligned to the 8x16 character grid (60 x 22 cells).  The
+// screen is described by:
+//   own[i]          who owns cell i: 0 desktop, -1 taskbar, -2 start menu,
+//                   -3 dialog, or a window id
+//   ui_ch / ui_at   glyph + colour for every cell that is not window content
+//                   (ui_ch = -1 marks content: drawn by a tty or a canvas)
+// wm_compose() rebuilds these, compares them with the previous frame and
+// redraws only the cells that changed.
+//
+// Window kinds:
+//   WK_TERM    terminal: content is a tty (shell or text program)
+//   WK_CANVAS  graphics: content is drawn by a Whisker program with gfx.*;
+//              primitives are kept in a display list so the window can be
+//              repainted when it is uncovered or moved
+// ===========================================================================
+
+const WM_COLS = 60;
+const WM_ROWS = 22;
+const TASK_ROW = 21;
+const MAX_WIN = 16;
+const WK_TERM = 1;
+const WK_CANVAS = 2;
+const DL_MAX = 90000;
+
+const OWN_DESK = 0;
+const OWN_TASK = -1;
+const OWN_MENU = -2;
+const OWN_DLG = -3;
+
+list win_used;
+list win_x;
+list win_y;
+list win_w;
+list win_h;
+list win_title;
+list win_kind;
+list win_tty;
+list win_pid;
+list win_dl;          // display list table (canvas)
+list win_min;
+list win_max;
+list win_sx;
+list win_sy;
+list win_sw;
+list win_sh;
+list win_auto;        // terminal: close the window when its programs exit
+list win_bg;          // canvas background colour
+
+list wz;              // z order, bottom -> top (window ids)
+
+list own;
+list ui_ch;
+list ui_at;
+list old_own;
+list old_ch;
+list old_at;
+list wm_dirty;        // cells to redraw
+
+list ev_win;          // window event queue
+list ev_type;
+list ev_x;
+list ev_y;
+list ev_key;
+
+list vrc_win;         // cached visible rectangles of canvas windows (px)
+list vrc_x;
+list vrc_y;
+list vrc_w;
+list vrc_h;
+list vr_x;            // scratch rect lists for subtraction
+list vr_y;
+list vr_w;
+list vr_h;
+list nr_x;
+list nr_y;
+list nr_w;
+list nr_h;
+
+var wm_need = 0;      // layout changed: recompose
+var wm_full = 0;      // force a full redraw
+var wm_next_x = 3;    // cascade position for new windows
+var wm_next_y = 1;
+var menu_open = 0;
+var menu_sel = 0;
+var dlg_kind = 0;     // 0 none, 1 permission request, 2 message
+var dlg_title = "";
+var dlg_l1 = "";
+var dlg_l2 = "";
+var dlg_l3 = "";
+var dlg_x = 0;
+var dlg_y = 0;
+var dlg_w = 0;
+var dlg_h = 0;
+var m_x = 0;
+var m_y = 0;
+var m_down = 0;
+var m_was = 0;
+var m_moved = 0;
+var drag_mode = 0;    // 1 move, 2 resize, 3 canvas drag
+var drag_win = 0;
+var drag_dx = 0;
+var drag_dy = 0;
+var ptr_shown = 0;
+var ptr_x = 0;
+var ptr_y = 0;
+var ptr_stamps = 0;
+var clock_last = "";
+var focus_win = 0;
+
+// start menu: label, command ("@" = built-in action)
+list menu_lbl = ["Terminal", "Files", "Text Editor", "Paint", "Task Manager", "Clock", "Snake",
+                 "Matrix", "Whisker REPL", "Manual", "About ScratchOS", "-", "Exit to console",
+                 "Reboot", "Shut down"];
+list menu_cmd = ["@term", "files", "@term edit", "paint", "taskmgr", "clock", "@term snake",
+                 "@term matrix", "@term whisker", "@term man scratchos", "about", "-", "@exit",
+                 "@reboot", "@halt"];
+const MENU_W = 22;
+
+// desktop icons
+list icon_lbl = ["Terminal", "Files", "Editor", "Paint", "Tasks"];
+list icon_sym = [">_", "▓▒", "≡ ", "♣ ", "▲▼"];
+list icon_cmd = ["@term", "files", "@term edit", "paint", "taskmgr"];
+
+proc wm_init() {
+    clear(win_used); clear(win_x); clear(win_y); clear(win_w); clear(win_h); clear(win_title);
+    clear(win_kind); clear(win_tty); clear(win_pid); clear(win_dl); clear(win_min); clear(win_max);
+    clear(win_sx); clear(win_sy); clear(win_sw); clear(win_sh); clear(win_auto); clear(win_bg);
+    for i = 1 to MAX_WIN {
+        add(win_used, 0); add(win_x, 0); add(win_y, 0); add(win_w, 0); add(win_h, 0); add(win_title, "");
+        add(win_kind, 0); add(win_tty, 0); add(win_pid, 0); add(win_dl, 0); add(win_min, 0); add(win_max, 0);
+        add(win_sx, 0); add(win_sy, 0); add(win_sw, 0); add(win_sh, 0); add(win_auto, 0); add(win_bg, 0);
+    }
+    clear(wz);
+    clear(own); clear(ui_ch); clear(ui_at); clear(old_own); clear(old_ch); clear(old_at);
+    repeat (WM_COLS * WM_ROWS) {
+        add(own, 0); add(ui_ch, 32); add(ui_at, 0);
+        add(old_own, -9); add(old_ch, -9); add(old_at, -9);
+    }
+    clear(ev_win); clear(ev_type); clear(ev_x); clear(ev_y); clear(ev_key);
+    clear(vrc_win); clear(vrc_x); clear(vrc_y); clear(vrc_w); clear(vrc_h);
+    menu_open = 0;
+    dlg_kind = 0;
+    drag_mode = 0;
+    ptr_shown = 0;
+    focus_win = 0;
+}
+
+proc wm_owner_at(cx, cy) {
+    if (cx < 0 || cy < 0 || cx >= WM_COLS || cy >= WM_ROWS) { return -9; }
+    return own[cy * WM_COLS + cx + 1];
+}
+
+// --- starting / stopping the desktop ---------------------------------------------
+
+proc wm_start(s) {
+    if (gui == 1) { sh_errmsg(s, "startx: the desktop is already running"); return 1; }
+    gui = 1;
+    tty_vis[con] = 0;
+    cur_t = 0;
+    cur_drawn = 0;
+    wm_init();
+    wm_need = 1;
+    wm_full = 1;
+    clock_last = "";
+    // a terminal to start with
+    wm_open_term("", "Terminal", 4, 2, 46, 14);
+    return 0;
+}
+
+proc wm_stop_all() {
+    if (gui == 0) { return; }
+    for w = 1 to MAX_WIN {
+        if (win_used[w] == 1) { wm_kill_window_procs(w); wm_close(w); }
+    }
+    gui = 0;
+    menu_open = 0;
+    dlg_kind = 0;
+    tty_vis[con] = 1;
+    tty_full[con] = 1;
+    cur_t = con;
+    gfx_fill(0, 0, 480, 360, 0);
+    ptr_shown = 0;
+}
+
+// --- windows --------------------------------------------------------------------------
+
+proc wm_alloc_win() {
+    for w = 1 to MAX_WIN {
+        if (win_used[w] == 0) { return w; }
+    }
+    return 0;
+}
+
+// place a window (outer size cw x ch cells); x/y < 0 = cascade
+proc wm_new_window(title, kind, x, y, cw, ch, pid) {
+    local w = wm_alloc_win();
+    if (w == 0) { return 0; }
+    local ww = cw;
+    local hh = ch;
+    if (ww < 12) { ww = 12; }
+    if (hh < 4) { hh = 4; }
+    if (ww > WM_COLS) { ww = WM_COLS; }
+    if (hh > TASK_ROW) { hh = TASK_ROW; }
+    local px = x;
+    local py = y;
+    if (px < 0) {
+        px = wm_next_x;
+        py = wm_next_y;
+        wm_next_x += 2;
+        wm_next_y += 1;
+        if (wm_next_x > 20) { wm_next_x = 3; }
+        if (wm_next_y > 6) { wm_next_y = 1; }
+    }
+    if (px + ww > WM_COLS) { px = WM_COLS - ww; }
+    if (py + hh > TASK_ROW) { py = TASK_ROW - hh; }
+    if (px < 0) { px = 0; }
+    if (py < 0) { py = 0; }
+    win_used[w] = 1;
+    win_x[w] = px;
+    win_y[w] = py;
+    win_w[w] = ww;
+    win_h[w] = hh;
+    win_title[w] = title;
+    win_kind[w] = kind;
+    win_tty[w] = 0;
+    win_pid[w] = pid;
+    win_dl[w] = 0;
+    win_min[w] = 0;
+    win_max[w] = 0;
+    win_auto[w] = 0;
+    win_bg[w] = 0;
+    add(wz, w);
+    wm_need = 1;
+    return w;
+}
+
+// terminal window running cmd ("" = interactive shell); returns window id
+proc wm_open_term(cmd, title, x, y, cw, ch) {
+    local w = wm_new_window(title, WK_TERM, x, y, cw, ch, 0);
+    if (w == 0) { return 0; }
+    local t = tty_alloc(win_w[w] - 2, win_h[w] - 2, (win_x[w] + 1) * 8, (win_y[w] + 1) * 16, w);
+    if (t == 0) { wm_close(w); return 0; }
+    win_tty[w] = t;
+    win_auto[w] = 1;
+    tty_vis[t] = 1;
+    // start the program with the terminal as its stdin/stdout/stderr
+    local s = 0;
+    if (len(cmd) == 0) {
+        s = shell_spawn(0, "", "-sh");
+        p_cwd[s] = fs_lookup("/home/user", 1);
+        if (p_cwd[s] == 0) { p_cwd[s] = 1; }
+    } else {
+        s = shell_spawn(0, cmd .. "\n", cmd);
+        sh_inter[s] = 0;
+        p_cwd[s] = fs_lookup("/home/user", 1);
+        if (p_cwd[s] == 0) { p_cwd[s] = 1; }
+    }
+    if (s == 0) { return w; }
+    p_tty[s] = t;
+    p_in_k[s] = FD_TTY; p_in_i[s] = t;
+    p_out_k[s] = FD_TTY; p_out_i[s] = t;
+    p_err_k[s] = FD_TTY; p_err_i[s] = t;
+    p_pgid[s] = p_pid[s];
+    tty_fgpid[t] = p_pid[s];
+    win_pid[w] = p_pid[s];
+    return w;
+}
+
+proc wm_close(w) {
+    if (win_used[w] == 0) { return; }
+    win_used[w] = 0;
+    if (win_tty[w] > 0) { tty_free(win_tty[w]); }
+    if (win_dl[w] > 0) {
+        tb_pin[win_dl[w]] = 0;
+        tb_used[win_dl[w]] = 0;
+    }
+    win_dl[w] = 0;
+    local i = index(wz, w);
+    if (i > 0) { del(wz, i); }
+    // drop pending events
+    local k = 1;
+    while (k <= len(ev_win)) {
+        if (ev_win[k] == w) { del(ev_win, k); del(ev_type, k); del(ev_x, k); del(ev_y, k); del(ev_key, k); }
+        else { k += 1; }
+    }
+    if (drag_win == w) { drag_mode = 0; }
+    wm_need = 1;
+}
+
+proc wm_kill_window_procs(w) {
+    local t = win_tty[w];
+    for s = 1 to MAX_PROC {
+        if (p_state[s] != PS_FREE && p_kind[s] != PK_INIT) {
+            if ((t > 0 && p_tty[s] == t) || (win_kind[w] == WK_CANVAS && p_pid[s] == win_pid[w])) {
+                proc_exit(s, 143);
+            }
+        }
+    }
+}
+
+// a process exited: close its canvas windows
+proc wm_proc_exit(pid) {
+    if (gui == 0) { return; }
+    for w = 1 to MAX_WIN {
+        if (win_used[w] == 1 && win_kind[w] == WK_CANVAS && win_pid[w] == pid) { wm_close(w); }
+    }
+}
+
+proc wm_raise(w) {
+    local i = index(wz, w);
+    if (i > 0) { del(wz, i); }
+    add(wz, w);
+    win_min[w] = 0;
+    wm_need = 1;
+}
+
+// top-most visible window
+proc wm_top() {
+    local i = len(wz);
+    while (i > 0) {
+        if (win_min[wz[i]] == 0) { return wz[i]; }
+        i -= 1;
+    }
+    return 0;
+}
+
+proc wm_focus_tty() {
+    if (dlg_kind != 0 || menu_open == 1) { return 0; }
+    local w = wm_top();
+    if (w > 0 && win_kind[w] == WK_TERM) { return win_tty[w]; }
+    return 0;
+}
+
+proc wm_toggle_max(w) {
+    if (win_max[w] == 0) {
+        win_sx[w] = win_x[w]; win_sy[w] = win_y[w]; win_sw[w] = win_w[w]; win_sh[w] = win_h[w];
+        win_max[w] = 1;
+        wm_set_geom(w, 0, 0, WM_COLS, TASK_ROW);
+    } else {
+        win_max[w] = 0;
+        wm_set_geom(w, win_sx[w], win_sy[w], win_sw[w], win_sh[w]);
+    }
+}
+
+proc wm_set_geom(w, x, y, cw, ch) {
+    local resized = 0;
+    if (cw != win_w[w] || ch != win_h[w]) { resized = 1; }
+    win_x[w] = x;
+    win_y[w] = y;
+    win_w[w] = cw;
+    win_h[w] = ch;
+    local t = win_tty[w];
+    if (t > 0) {
+        tty_ox[t] = (x + 1) * 8;
+        tty_oy[t] = (y + 1) * 16;
+        if (resized == 1) { tty_resize(t, cw - 2, ch - 2); }
+    }
+    if (resized == 1 && win_kind[w] == WK_CANVAS) {
+        wm_event(w, "resize", (cw - 2) * 8, (ch - 2) * 16, "");
+    }
+    wm_need = 1;
+}
+
+proc wm_event(w, type, x, y, key) {
+    // keep the queue bounded
+    if (len(ev_win) > 200) { del(ev_win, 1); del(ev_type, 1); del(ev_x, 1); del(ev_y, 1); del(ev_key, 1); }
+    add(ev_win, w);
+    add(ev_type, type);
+    add(ev_x, x);
+    add(ev_y, y);
+    add(ev_key, key);
+}
+
+// --- composition --------------------------------------------------------------------
+
+proc ui_set(col, row, ch, at, who) {
+    if (col < 0 || row < 0 || col >= WM_COLS || row >= WM_ROWS) { return; }
+    local i = row * WM_COLS + col + 1;
+    own[i] = who;
+    ui_ch[i] = ch;
+    ui_at[i] = at;
+}
+
+proc ui_text(col, row, s, at, who) {
+    for k = 1 to len(s) {
+        ui_set(col + k - 1, row, ord(s[k]), at, who);
+    }
+}
+
+proc wm_compose() {
+    // desktop
+    local n = WM_COLS * WM_ROWS;
+    for i = 1 to n {
+        own[i] = OWN_DESK;
+        ui_ch[i] = 176;
+        ui_at[i] = 1 + 3 * 16;
+    }
+    // icons
+    for k = 1 to len(icon_lbl) {
+        local iy = 1 + (k - 1) * 4;
+        ui_text(2, iy, "[" .. icon_sym[k] .. "]", 14 + 16 * 1, OWN_DESK);
+        local lbl = icon_lbl[k];
+        ui_text(1, iy + 1, pad_right(lbl, 8), 15 + 16 * 3, OWN_DESK);
+    }
+    // windows bottom to top
+    local top = wm_top();
+    for k = 1 to len(wz) {
+        local w = wz[k];
+        if (win_min[w] == 0) { wm_compose_window(w, w == top); }
+    }
+    focus_win = top;
+    // taskbar
+    for c = 0 to WM_COLS - 1 { ui_set(c, TASK_ROW, 32, 0 + 16 * 7, OWN_TASK); }
+    if (menu_open == 1) { ui_text(0, TASK_ROW, " ≡ Start ", 15 + 16 * 2, OWN_TASK); }
+    else { ui_text(0, TASK_ROW, " ≡ Start ", 0 + 16 * 10, OWN_TASK); }
+    local bx = 10;
+    for k = 1 to len(wz) {
+        local w2 = wz[k];
+        // task buttons in window-id order would jump around; use z order list sorted by id
+    }
+    for w3 = 1 to MAX_WIN {
+        if (win_used[w3] == 1 && bx < WM_COLS - 8) {
+            local lbl2 = win_title[w3];
+            if (len(lbl2) > 10) { lbl2 = substr(lbl2, 1, 10); }
+            local at = 0 + 16 * 7;
+            if (w3 == top) { at = 15 + 16 * 8; }
+            if (win_min[w3] == 1) { at = 8 + 16 * 7; }
+            ui_text(bx, TASK_ROW, " " .. lbl2 .. " ", at, OWN_TASK);
+            bx += len(lbl2) + 3;
+        }
+    }
+    clock_last = pad_left_char(now("hour"), 2, "0") .. ":" .. pad_left_char(now("minute"), 2, "0");
+    ui_text(WM_COLS - 6, TASK_ROW, " " .. clock_last .. " ", 0 + 16 * 7, OWN_TASK);
+    // start menu
+    if (menu_open == 1) { wm_compose_menu(); }
+    // dialog
+    if (dlg_kind != 0) { wm_compose_dialog(); }
+    wm_cache_vis();
+}
+
+proc wm_compose_window(w, focused) {
+    local x = win_x[w];
+    local y = win_y[w];
+    local ww = win_w[w];
+    local hh = win_h[w];
+    local fa = 7 + 16 * 1;
+    local ta = 7 + 16 * 1;
+    local tl = 218; local tr = 191; local bl = 192; local br = 217; local hz = 196; local vt = 179;
+    if (focused == 1) {
+        fa = 15 + 16 * 1;
+        ta = 14 + 16 * 1;
+        tl = 201; tr = 187; bl = 200; br = 188; hz = 205; vt = 186;
+    }
+    // content cells
+    for r = y + 1 to y + hh - 2 {
+        for c = x + 1 to x + ww - 2 {
+            ui_set(c, r, -1, 0, w);
+        }
+    }
+    // frame
+    for c = x + 1 to x + ww - 2 {
+        ui_set(c, y, hz, fa, w);
+        ui_set(c, y + hh - 1, hz, fa, w);
+    }
+    for r = y + 1 to y + hh - 2 {
+        ui_set(x, r, vt, fa, w);
+        ui_set(x + ww - 1, r, vt, fa, w);
+    }
+    ui_set(x, y, tl, fa, w);
+    ui_set(x + ww - 1, y, tr, fa, w);
+    ui_set(x, y + hh - 1, bl, fa, w);
+    ui_set(x + ww - 1, y + hh - 1, br, 10 + 16 * 1, w);
+    // buttons: [■] close at left, [_][↑] at right
+    ui_text(x + 1, y, "[", fa, w);
+    ui_set(x + 2, y, 254, 10 + 16 * 1, w);
+    ui_text(x + 3, y, "]", fa, w);
+    local zoom = "↑";
+    if (win_max[w] == 1) { zoom = "↕"; }
+    ui_text(x + ww - 7, y, "[_][" .. zoom .. "]", fa, w);
+    ui_set(x + ww - 6, y, 95, 10 + 16 * 1, w);
+    ui_set(x + ww - 3, y, ord(zoom), 10 + 16 * 1, w);
+    // title
+    local title = " " .. win_title[w] .. " ";
+    local room = ww - 12;
+    if (len(title) > room) { title = substr(title, 1, room); }
+    local tx = x + floor((ww - len(title)) / 2);
+    ui_text(tx, y, title, ta, w);
+}
+
+proc wm_menu_geom() {
+    // returns the menu's top row
+    return TASK_ROW - len(menu_lbl) - 2;
+}
+
+proc wm_compose_menu() {
+    local mh = len(menu_lbl) + 2;
+    local my = TASK_ROW - mh;
+    local at = 0 + 16 * 7;
+    for r = my to my + mh - 1 {
+        for c = 0 to MENU_W - 1 { ui_set(c, r, 32, at, OWN_MENU); }
+    }
+    for c = 1 to MENU_W - 2 {
+        ui_set(c, my, 196, at, OWN_MENU);
+        ui_set(c, my + mh - 1, 196, at, OWN_MENU);
+    }
+    for r = my + 1 to my + mh - 2 {
+        ui_set(0, r, 179, at, OWN_MENU);
+        ui_set(MENU_W - 1, r, 179, at, OWN_MENU);
+    }
+    ui_set(0, my, 218, at, OWN_MENU);
+    ui_set(MENU_W - 1, my, 191, at, OWN_MENU);
+    ui_set(0, my + mh - 1, 192, at, OWN_MENU);
+    ui_set(MENU_W - 1, my + mh - 1, 217, at, OWN_MENU);
+    ui_text(2, my, " ScratchOS ", 1 + 16 * 7, OWN_MENU);
+    for k = 1 to len(menu_lbl) {
+        local r2 = my + k;
+        if (menu_lbl[k] == "-") {
+            for c = 1 to MENU_W - 2 { ui_set(c, r2, 196, 8 + 16 * 7, OWN_MENU); }
+            ui_set(0, r2, 195, at, OWN_MENU);
+            ui_set(MENU_W - 1, r2, 180, at, OWN_MENU);
+        } else {
+            local a = at;
+            if (k == menu_sel) { a = 15 + 16 * 1; }
+            ui_text(1, r2, pad_right(" " .. menu_lbl[k], MENU_W - 2), a, OWN_MENU);
+        }
+    }
+}
+
+proc wm_compose_dialog() {
+    dlg_w = 44;
+    dlg_h = 9;
+    dlg_x = floor((WM_COLS - dlg_w) / 2);
+    dlg_y = 5;
+    local at = 0 + 16 * 7;
+    for r = dlg_y to dlg_y + dlg_h - 1 {
+        for c = dlg_x to dlg_x + dlg_w - 1 { ui_set(c, r, 32, at, OWN_DLG); }
+    }
+    for c = dlg_x + 1 to dlg_x + dlg_w - 2 {
+        ui_set(c, dlg_y, 205, 15 + 16 * 7, OWN_DLG);
+        ui_set(c, dlg_y + dlg_h - 1, 205, 15 + 16 * 7, OWN_DLG);
+    }
+    for r = dlg_y + 1 to dlg_y + dlg_h - 2 {
+        ui_set(dlg_x, r, 186, 15 + 16 * 7, OWN_DLG);
+        ui_set(dlg_x + dlg_w - 1, r, 186, 15 + 16 * 7, OWN_DLG);
+    }
+    ui_set(dlg_x, dlg_y, 201, 15 + 16 * 7, OWN_DLG);
+    ui_set(dlg_x + dlg_w - 1, dlg_y, 187, 15 + 16 * 7, OWN_DLG);
+    ui_set(dlg_x, dlg_y + dlg_h - 1, 200, 15 + 16 * 7, OWN_DLG);
+    ui_set(dlg_x + dlg_w - 1, dlg_y + dlg_h - 1, 188, 15 + 16 * 7, OWN_DLG);
+    local t = " " .. dlg_title .. " ";
+    ui_text(dlg_x + floor((dlg_w - len(t)) / 2), dlg_y, t, 15 + 16 * 4, OWN_DLG);
+    ui_text(dlg_x + 2, dlg_y + 2, substr(dlg_l1, 1, dlg_w - 4), 0 + 16 * 7, OWN_DLG);
+    ui_text(dlg_x + 2, dlg_y + 3, substr(dlg_l2, 1, dlg_w - 4), 1 + 16 * 7, OWN_DLG);
+    ui_text(dlg_x + 2, dlg_y + 4, substr(dlg_l3, 1, dlg_w - 4), 0 + 16 * 7, OWN_DLG);
+    local by = dlg_y + dlg_h - 2;
+    if (dlg_kind == 1) {
+        ui_text(dlg_x + 5, by, "  Yes  ", 15 + 16 * 2, OWN_DLG);
+        ui_text(dlg_x + 16, by, "  No   ", 15 + 16 * 4, OWN_DLG);
+        ui_text(dlg_x + 27, by, " Always ", 15 + 16 * 1, OWN_DLG);
+    } else {
+        ui_text(dlg_x + 18, by, "  OK  ", 15 + 16 * 1, OWN_DLG);
+    }
+}
+
+// compare with the previous frame and queue changed cells
+proc wm_diff() {
+    local n = WM_COLS * WM_ROWS;
+    clear(wm_dirty);
+    for i = 1 to n {
+        if (own[i] != old_own[i] || ui_ch[i] != old_ch[i] || ui_at[i] != old_at[i] || wm_full == 1) {
+            add(wm_dirty, i);
+            old_own[i] = own[i];
+            old_ch[i] = ui_ch[i];
+            old_at[i] = ui_at[i];
+        }
+    }
+    wm_full = 0;
+}
+
+// draw every queued cell
+proc wm_redraw_dirty() {
+    // canvas windows with many dirty cells are repainted in one pass
+    clear(nr_x);   // reused: window ids needing a full canvas repaint
+    clear(nr_y);   // dirty cell counts per window
+    for k = 1 to len(wm_dirty) {
+        local i = wm_dirty[k];
+        local o = own[i];
+        if (o > 0 && ui_ch[i] == -1 && win_kind[o] == WK_CANVAS) {
+            local j = index(nr_x, o);
+            if (j == 0) { add(nr_x, o); add(nr_y, 1); } else { nr_y[j] = nr_y[j] + 1; }
+        }
+    }
+    for k = 1 to len(wm_dirty) {
+        local i2 = wm_dirty[k];
+        local o2 = own[i2];
+        if (o2 > 0 && ui_ch[i2] == -1 && win_kind[o2] == WK_CANVAS) {
+            local j2 = index(nr_x, o2);
+            if (nr_y[j2] <= 6) { wm_draw_cell(i2); }
+        } else {
+            wm_draw_cell(i2);
+        }
+    }
+    for k = 1 to len(nr_x) {
+        if (nr_y[k] > 6) { canvas_repaint(nr_x[k]); }
+    }
+    clear(nr_x);
+    clear(nr_y);
+}
+
+// draw one screen cell from the composed layers
+proc wm_draw_cell(i) {
+    local col = (i - 1) % WM_COLS;
+    local row = floor((i - 1) / WM_COLS);
+    local o = own[i];
+    local c = ui_ch[i];
+    if (c == -1 && o > 0) {
+        if (win_kind[o] == WK_TERM) {
+            local t = win_tty[o];
+            if (t > 0) { tty_render_cell(t, row - win_y[o] - 1, col - win_x[o] - 1); }
+        } else {
+            canvas_repaint_rect(o, col * 8, row * 16, 8, 16);
+        }
+        return;
+    }
+    local a = ui_at[i];
+    gfx_fill(col * 8, row * 16, 8, 16, floor(a / 16));
+    if (c != 32 && c != 0 && a % 16 != floor(a / 16)) {
+        gfx_glyph(col * 8, row * 16, c, a % 16);
+    }
+}
+
+proc wm_redraw_rect_cells(px, py, pw, ph) {
+    local c0 = floor(px / 8);
+    local r0 = floor(py / 16);
+    local c1 = floor((px + pw - 1) / 8);
+    local r1 = floor((py + ph - 1) / 16);
+    for r = r0 to r1 {
+        for c = c0 to c1 {
+            if (c >= 0 && r >= 0 && c < WM_COLS && r < WM_ROWS) { wm_draw_cell(r * WM_COLS + c + 1); }
+        }
+    }
+}
+
+// --- visible rectangles of canvas windows -----------------------------------------------
+
+proc wm_cache_vis() {
+    clear(vrc_win); clear(vrc_x); clear(vrc_y); clear(vrc_w); clear(vrc_h);
+    for k = 1 to len(wz) {
+        local w = wz[k];
+        if (win_kind[w] == WK_CANVAS && win_min[w] == 0) {
+            clear(vr_x); clear(vr_y); clear(vr_w); clear(vr_h);
+            add(vr_x, (win_x[w] + 1) * 8);
+            add(vr_y, (win_y[w] + 1) * 16);
+            add(vr_w, (win_w[w] - 2) * 8);
+            add(vr_h, (win_h[w] - 2) * 16);
+            // subtract windows above
+            for j = k + 1 to len(wz) {
+                local o = wz[j];
+                if (win_min[o] == 0) { rects_subtract(win_x[o] * 8, win_y[o] * 16, win_w[o] * 8, win_h[o] * 16); }
+            }
+            if (menu_open == 1) {
+                local mh = len(menu_lbl) + 2;
+                rects_subtract(0, (TASK_ROW - mh) * 16, MENU_W * 8, mh * 16);
+            }
+            if (dlg_kind != 0) { rects_subtract(dlg_x * 8, dlg_y * 16, dlg_w * 8, dlg_h * 16); }
+            for q = 1 to len(vr_x) {
+                add(vrc_win, w); add(vrc_x, vr_x[q]); add(vrc_y, vr_y[q]); add(vrc_w, vr_w[q]); add(vrc_h, vr_h[q]);
+            }
+        }
+    }
+}
+
+// subtract rectangle B from every rectangle in vr_*
+proc rects_subtract(bx, by, bw, bh) {
+    clear(nr_x); clear(nr_y); clear(nr_w); clear(nr_h);
+    for k = 1 to len(vr_x) {
+        local ax = vr_x[k];
+        local ay = vr_y[k];
+        local aw = vr_w[k];
+        local ah = vr_h[k];
+        if (bx >= ax + aw || bx + bw <= ax || by >= ay + ah || by + bh <= ay) {
+            add(nr_x, ax); add(nr_y, ay); add(nr_w, aw); add(nr_h, ah);
+        } else {
+            // top
+            if (by > ay) { add(nr_x, ax); add(nr_y, ay); add(nr_w, aw); add(nr_h, by - ay); }
+            // bottom
+            if (by + bh < ay + ah) { add(nr_x, ax); add(nr_y, by + bh); add(nr_w, aw); add(nr_h, ay + ah - by - bh); }
+            local my0 = ay;
+            if (by > my0) { my0 = by; }
+            local my1 = ay + ah;
+            if (by + bh < my1) { my1 = by + bh; }
+            // left
+            if (bx > ax) { add(nr_x, ax); add(nr_y, my0); add(nr_w, bx - ax); add(nr_h, my1 - my0); }
+            // right
+            if (bx + bw < ax + aw) { add(nr_x, bx + bw); add(nr_y, my0); add(nr_w, ax + aw - bx - bw); add(nr_h, my1 - my0); }
+        }
+    }
+    clear(vr_x); clear(vr_y); clear(vr_w); clear(vr_h);
+    for k = 1 to len(nr_x) { add(vr_x, nr_x[k]); add(vr_y, nr_y[k]); add(vr_w, nr_w[k]); add(vr_h, nr_h[k]); }
+    clear(nr_x); clear(nr_y); clear(nr_w); clear(nr_h);
+}
+
+// --- canvas drawing ---------------------------------------------------------------------
+
+var cl_x0 = 0;
+var cl_y0 = 0;
+var cl_x1 = 0;
+var cl_y1 = 0;
+
+// draw a filled rect clipped to the current clip rect (screen px)
+proc clip_fill(x, y, w, h, c) {
+    local x0 = x;
+    local y0 = y;
+    local x1 = x + w;
+    local y1 = y + h;
+    if (x0 < cl_x0) { x0 = cl_x0; }
+    if (y0 < cl_y0) { y0 = cl_y0; }
+    if (x1 > cl_x1) { x1 = cl_x1; }
+    if (y1 > cl_y1) { y1 = cl_y1; }
+    if (x1 > x0 && y1 > y0) { gfx_fill(x0, y0, x1 - x0, y1 - y0, c); }
+}
+
+// Liang-Barsky line clipping, then a pen line
+proc clip_line(xa, ya, xb, yb, c, sz) {
+    local inset = floor(sz / 2);
+    local x0 = cl_x0 + inset;
+    local y0 = cl_y0 + inset;
+    local x1 = cl_x1 - 1 - inset;
+    local y1 = cl_y1 - 1 - inset;
+    if (x1 < x0 || y1 < y0) { return; }
+    local dx = xb - xa;
+    local dy = yb - ya;
+    local t0 = 0;
+    local t1 = 1;
+    // p/q pairs for the four edges
+    local ok = 1;
+    for e = 1 to 4 {
+        local p = 0;
+        local q = 0;
+        if (e == 1) { p = 0 - dx; q = xa - x0; }
+        else if (e == 2) { p = dx; q = x1 - xa; }
+        else if (e == 3) { p = 0 - dy; q = ya - y0; }
+        else { p = dy; q = y1 - ya; }
+        if (p == 0) {
+            if (q < 0) { ok = 0; }
+        } else {
+            local r = q / p;
+            if (p < 0) {
+                if (r > t1) { ok = 0; } else if (r > t0) { t0 = r; }
+            } else {
+                if (r < t0) { ok = 0; } else if (r < t1) { t1 = r; }
+            }
+        }
+    }
+    if (ok == 0) { return; }
+    gfx_line(xa + t0 * dx, ya + t0 * dy, xa + t1 * dx, ya + t1 * dy, c, sz);
+}
+
+proc clip_glyph(x, y, code, fg, bg) {
+    if (bg >= 0) { clip_fill(x, y, 8, 16, bg); }
+    if (x >= cl_x0 && y >= cl_y0 && x + 8 <= cl_x1 && y + 16 <= cl_y1 && code != 32) {
+        gfx_glyph(x, y, code, fg);
+    }
+}
+
+// draw primitive at display-list position p of window w, clipped to cl_*
+proc canvas_prim(w, h, p) {
+    local ox = (win_x[w] + 1) * 8;
+    local oy = (win_y[w] + 1) * 16;
+    local b = tb_ab[h] + p;
+    local op = HV[b];
+    local a1 = HV[b + 1];
+    local a2 = HV[b + 2];
+    local a3 = HV[b + 3];
+    local a4 = HV[b + 4];
+    local a5 = HV[b + 5];
+    local a6 = HV[b + 6];
+    if (op == 1) {
+        clip_fill(ox, oy, (win_w[w] - 2) * 8, (win_h[w] - 2) * 16, a1);
+    } else if (op == 2) {
+        clip_fill(ox + a1, oy + a2, 1, 1, a3);
+    } else if (op == 3) {
+        clip_line(ox + a1, oy + a2, ox + a3, oy + a4, a5, a6);
+    } else if (op == 4) {
+        clip_fill(ox + a1, oy + a2, a3, 1, a5);
+        clip_fill(ox + a1, oy + a2 + a4 - 1, a3, 1, a5);
+        clip_fill(ox + a1, oy + a2, 1, a4, a5);
+        clip_fill(ox + a1 + a3 - 1, oy + a2, 1, a4, a5);
+    } else if (op == 5) {
+        clip_fill(ox + a1, oy + a2, a3, a4, a5);
+    } else if (op == 6) {
+        // circle outline as a polygon
+        local segs = round(a3 / 2);
+        if (segs < 12) { segs = 12; }
+        if (segs > 48) { segs = 48; }
+        local px = ox + a1 + a3;
+        local py = oy + a2;
+        for k = 1 to segs {
+            local ang = k * 360 / segs;
+            local nx = ox + a1 + a3 * cos(ang);
+            local ny = oy + a2 + a3 * sin(ang);
+            clip_line(px, py, nx, ny, a4, 1);
+            px = nx;
+            py = ny;
+        }
+    } else if (op == 7) {
+        // filled disc as horizontal spans
+        for dy = 0 - a3 to a3 {
+            local hw = floor(sqrt(a3 * a3 - dy * dy) + 0.5);
+            clip_fill(ox + a1 - hw, oy + a2 + dy, hw * 2 + 1, 1, a4);
+        }
+    } else if (op == 8) {
+        local str = a3;
+        for k = 1 to len(str) {
+            clip_glyph(ox + a1 + (k - 1) * 8, oy + a2, ord(str[k]), a4, a5);
+        }
+    }
+}
+
+const PRIM = 7;
+
+// draw a primitive that was just appended, into all visible rects of w
+proc canvas_draw_new(w, p) {
+    if (win_min[w] == 1) { return; }
+    local h = win_dl[w];
+    for k = 1 to len(vrc_win) {
+        if (vrc_win[k] == w) {
+            cl_x0 = vrc_x[k];
+            cl_y0 = vrc_y[k];
+            cl_x1 = vrc_x[k] + vrc_w[k];
+            cl_y1 = vrc_y[k] + vrc_h[k];
+            canvas_prim(w, h, p);
+        }
+    }
+}
+
+// repaint the whole visible part of a canvas window
+proc canvas_repaint(w) {
+    for k = 1 to len(vrc_win) {
+        if (vrc_win[k] == w) {
+            canvas_repaint_clip(w, vrc_x[k], vrc_y[k], vrc_w[k], vrc_h[k]);
+        }
+    }
+}
+
+// repaint the part of canvas w inside rect (screen px), honouring visibility
+proc canvas_repaint_rect(w, x, y, rw, rh) {
+    for k = 1 to len(vrc_win) {
+        if (vrc_win[k] == w) {
+            local x0 = vrc_x[k];
+            local y0 = vrc_y[k];
+            local x1 = x0 + vrc_w[k];
+            local y1 = y0 + vrc_h[k];
+            if (x > x0) { x0 = x; }
+            if (y > y0) { y0 = y; }
+            if (x + rw < x1) { x1 = x + rw; }
+            if (y + rh < y1) { y1 = y + rh; }
+            if (x1 > x0 && y1 > y0) { canvas_repaint_clip(w, x0, y0, x1 - x0, y1 - y0); }
+        }
+    }
+}
+
+proc canvas_repaint_clip(w, x, y, rw, rh) {
+    cl_x0 = x;
+    cl_y0 = y;
+    cl_x1 = x + rw;
+    cl_y1 = y + rh;
+    gfx_fill(x, y, rw, rh, win_bg[w]);
+    local h = win_dl[w];
+    if (h == 0) { return; }
+    local n = tb_an[h];
+    local p = 1;
+    while (p <= n) {
+        canvas_prim(w, h, p);
+        p += PRIM;
+    }
+}
+
+// --- frame update -------------------------------------------------------------------------
+
+proc wm_tick() {
+    if (gui == 0) { return; }
+    wm_mouse();
+    // terminal windows close when their programs have exited
+    for w = 1 to MAX_WIN {
+        if (win_used[w] == 1 && win_kind[w] == WK_TERM && win_auto[w] == 1) {
+            if (wm_tty_alive(win_tty[w]) == 0) { wm_close(w); }
+        }
+    }
+    local clk = pad_left_char(now("hour"), 2, "0") .. ":" .. pad_left_char(now("minute"), 2, "0");
+    if (clk != clock_last) { wm_need = 1; }
+    // the text cursor follows the focused terminal
+    cur_t = wm_focus_tty();
+    if (wm_need == 1) { wm_update(); }
+}
+
+proc wm_update() {
+    wm_need = 0;
+    wm_compose();
+    wm_diff();
+    wm_redraw_dirty();
+    // the text cursor may have been painted over
+    cur_drawn = 0;
+}
+
+proc wm_tty_alive(t) {
+    if (t == 0) { return 0; }
+    for s = 1 to MAX_PROC {
+        if (p_state[s] != PS_FREE && p_tty[s] == t) { return 1; }
+    }
+    return 0;
+}
+
+// --- mouse --------------------------------------------------------------------------------
+
+proc wm_mouse() {
+    local mx = round(mouse_x() + 240);
+    local my = round(180 - mouse_y());
+    if (mx < 0) { mx = 0; }
+    if (my < 0) { my = 0; }
+    if (mx > 479) { mx = 479; }
+    if (my > 359) { my = 359; }
+    m_moved = 0;
+    if (mx != m_x || my != m_y) { m_moved = 1; }
+    m_x = mx;
+    m_y = my;
+    m_was = m_down;
+    if (mouse_down()) { m_down = 1; } else { m_down = 0; }
+    local cx = floor(mx / 8);
+    local cy = floor(my / 16);
+    if (m_down == 1 && m_was == 0) { wm_press(cx, cy); }
+    else if (m_down == 1 && m_moved == 1) { wm_drag(cx, cy); }
+    else if (m_down == 0 && m_was == 1) { wm_release(cx, cy); }
+    if (menu_open == 1 && m_moved == 1) {
+        local my0 = TASK_ROW - len(menu_lbl) - 2;
+        local sel = 0;
+        if (cx >= 1 && cx < MENU_W - 1 && cy > my0 && cy <= my0 + len(menu_lbl)) { sel = cy - my0; }
+        if (sel != menu_sel) { menu_sel = sel; wm_need = 1; }
+    }
+}
+
+proc wm_press(cx, cy) {
+    local o = wm_owner_at(cx, cy);
+    // dialog is modal
+    if (dlg_kind != 0) {
+        if (o == OWN_DLG) { wm_dialog_click(cx, cy); }
+        return;
+    }
+    if (o == OWN_MENU) {
+        local my0 = TASK_ROW - len(menu_lbl) - 2;
+        local k = cy - my0;
+        if (k >= 1 && k <= len(menu_lbl)) { wm_menu_pick(k); }
+        return;
+    }
+    if (menu_open == 1) {
+        menu_open = 0;
+        wm_need = 1;
+        if (o == OWN_TASK && cx < 9) { return; }
+    }
+    if (o == OWN_TASK) {
+        if (cx < 9) {
+            menu_open = 1;
+            menu_sel = 0;
+            wm_need = 1;
+            return;
+        }
+        // which button?
+        local bx = 10;
+        for w = 1 to MAX_WIN {
+            if (win_used[w] == 1 && bx < WM_COLS - 8) {
+                local l = len(win_title[w]);
+                if (l > 10) { l = 10; }
+                if (cx >= bx && cx < bx + l + 2) {
+                    if (w == wm_top() && win_min[w] == 0) { win_min[w] = 1; wm_need = 1; }
+                    else { wm_raise(w); }
+                    return;
+                }
+                bx += l + 3;
+            }
+        }
+        return;
+    }
+    if (o == OWN_DESK) {
+        // icons
+        for k = 1 to len(icon_lbl) {
+            local iy = 1 + (k - 1) * 4;
+            if (cx >= 1 && cx <= 8 && (cy == iy || cy == iy + 1)) {
+                wm_launch(icon_cmd[k], icon_lbl[k]);
+                return;
+            }
+        }
+        return;
+    }
+    if (o > 0) {
+        local w2 = o;
+        if (w2 != wm_top()) { wm_raise(w2); }
+        local x = win_x[w2];
+        local y = win_y[w2];
+        if (cy == y) {
+            if (cx >= x + 1 && cx <= x + 3) { wm_user_close(w2); return; }
+            if (cx >= x + win_w[w2] - 4 && cx <= x + win_w[w2] - 2) { wm_toggle_max(w2); return; }
+            if (cx >= x + win_w[w2] - 7 && cx <= x + win_w[w2] - 5) { win_min[w2] = 1; wm_need = 1; return; }
+            drag_mode = 1;
+            drag_win = w2;
+            drag_dx = cx - x;
+            drag_dy = cy - y;
+            return;
+        }
+        if (cx == x + win_w[w2] - 1 && cy == y + win_h[w2] - 1) {
+            drag_mode = 2;
+            drag_win = w2;
+            return;
+        }
+        if (win_kind[w2] == WK_CANVAS && cx > x && cx < x + win_w[w2] - 1 && cy > y && cy < y + win_h[w2] - 1) {
+            drag_mode = 3;
+            drag_win = w2;
+            wm_event(w2, "mousedown", m_x - (x + 1) * 8, m_y - (y + 1) * 16, "");
+        }
+    }
+}
+
+proc wm_drag(cx, cy) {
+    local w = drag_win;
+    if (drag_mode == 0 || win_used[w] == 0) { return; }
+    if (drag_mode == 1) {
+        local nx = cx - drag_dx;
+        local ny = cy - drag_dy;
+        if (ny < 0) { ny = 0; }
+        if (ny > TASK_ROW - 1) { ny = TASK_ROW - 1; }
+        if (nx < 2 - win_w[w]) { nx = 2 - win_w[w]; }
+        if (nx > WM_COLS - 2) { nx = WM_COLS - 2; }
+        if (nx != win_x[w] || ny != win_y[w]) {
+            win_max[w] = 0;
+            wm_set_geom(w, nx, ny, win_w[w], win_h[w]);
+        }
+    } else if (drag_mode == 2) {
+        local nw = cx - win_x[w] + 1;
+        local nh = cy - win_y[w] + 1;
+        if (nw < 14) { nw = 14; }
+        if (nh < 4) { nh = 4; }
+        if (win_x[w] + nw > WM_COLS) { nw = WM_COLS - win_x[w]; }
+        if (win_y[w] + nh > TASK_ROW) { nh = TASK_ROW - win_y[w]; }
+        if (nw != win_w[w] || nh != win_h[w]) {
+            win_max[w] = 0;
+            wm_set_geom(w, win_x[w], win_y[w], nw, nh);
+        }
+    } else if (drag_mode == 3) {
+        wm_event(w, "drag", m_x - (win_x[w] + 1) * 8, m_y - (win_y[w] + 1) * 16, "");
+    }
+}
+
+proc wm_release(cx, cy) {
+    if (drag_mode == 3 && win_used[drag_win] == 1) {
+        local w = drag_win;
+        wm_event(w, "mouseup", m_x - (win_x[w] + 1) * 8, m_y - (win_y[w] + 1) * 16, "");
+    }
+    drag_mode = 0;
+}
+
+// the user clicked [■]
+proc wm_user_close(w) {
+    if (win_kind[w] == WK_TERM) {
+        wm_kill_window_procs(w);
+        wm_close(w);
+        return;
+    }
+    // ask the program; if it has no owner any more just close
+    if (proc_slot(win_pid[w]) == 0) { wm_close(w); return; }
+    wm_event(w, "close", 0, 0, "");
+}
+
+proc wm_menu_pick(k) {
+    local cmd = menu_cmd[k];
+    if (cmd == "-") { return; }
+    menu_open = 0;
+    wm_need = 1;
+    wm_launch(cmd, menu_lbl[k]);
+}
+
+// launch a desktop command: "@term [cmd]", "@exit", "@reboot", "@halt" or a GUI program
+proc wm_launch(cmd, label) {
+    if (cmd == "@exit") { wm_stop_all(); return; }
+    if (cmd == "@reboot") { sys_power(1); return; }
+    if (cmd == "@halt") { sys_power(0); return; }
+    if (substr(cmd, 1, 5) == "@term") {
+        local c = str_trim(substr(cmd, 6, len(cmd)));
+        local title = label;
+        if (len(c) == 0) { title = "Terminal"; }
+        wm_open_term(c, title, -1, -1, 46, 15);
+        return;
+    }
+    // GUI program: started by init with no terminal; errors appear in a message box
+    local s = proc_slot(1);
+    // errors while starting (e.g. compile errors) go to a message box
+    local ek = p_err_k[s];
+    p_err_k[s] = FD_MSG;
+    local pid = proc_start_cmd(s, cmd, FD_MSG, 0);
+    p_err_k[s] = ek;
+    if (pid == 0) {
+        if (dlg_kind == 0) { wm_message("Cannot start", cmd, "command not found", ""); }
+        return;
+    }
+    local cs = proc_slot(pid);
+    p_tty[cs] = 0;
+    p_err_k[cs] = FD_MSG;
+    p_in_k[cs] = FD_NULL;
+    p_pgid[cs] = pid;
+}
+
+// --- dialogs ---------------------------------------------------------------------------
+
+proc wm_caps_dialog(path, cap, desc) {
+    dlg_kind = 1;
+    dlg_title = "Permission request";
+    dlg_l1 = path;
+    dlg_l2 = "wants to " .. desc;
+    dlg_l3 = "Capability: " .. cap;
+    wm_need = 1;
+}
+
+proc wm_caps_dialog_close() {
+    dlg_kind = 0;
+    wm_need = 1;
+}
+
+proc wm_message(title, l1, l2, l3) {
+    dlg_kind = 2;
+    dlg_title = title;
+    dlg_l1 = l1;
+    dlg_l2 = l2;
+    dlg_l3 = l3;
+    wm_need = 1;
+}
+
+proc wm_dialog_click(cx, cy) {
+    local by = dlg_y + dlg_h - 2;
+    if (cy != by) { return; }
+    if (dlg_kind == 1) {
+        if (cx >= dlg_x + 5 && cx < dlg_x + 12) { wm_dialog_answer("y"); }
+        else if (cx >= dlg_x + 16 && cx < dlg_x + 23) { wm_dialog_answer("n"); }
+        else if (cx >= dlg_x + 27 && cx < dlg_x + 35) { wm_dialog_answer("a"); }
+    } else if (cx >= dlg_x + 18 && cx < dlg_x + 24) {
+        dlg_kind = 0;
+        wm_need = 1;
+    }
+}
+
+proc wm_dialog_answer(a) {
+    dlg_kind = 0;
+    wm_need = 1;
+    caps_answer(a);
+}
+
+// keyboard input when no terminal has focus
+proc wm_key(ev) {
+    if (dlg_kind == 1) {
+        if (ev == "y" || ev == "enter") { wm_dialog_answer("y"); }
+        else if (ev == "n" || ev == "escape") { wm_dialog_answer("n"); }
+        else if (ev == "a") { wm_dialog_answer("a"); }
+        return;
+    }
+    if (dlg_kind == 2) {
+        if (ev == "enter" || ev == "escape" || ev == " ") { dlg_kind = 0; wm_need = 1; }
+        return;
+    }
+    if (menu_open == 1) {
+        if (ev == "escape") { menu_open = 0; wm_need = 1; }
+        else if (ev == "up arrow") {
+            menu_sel -= 1;
+            if (menu_sel < 1) { menu_sel = len(menu_lbl); }
+            if (menu_lbl[menu_sel] == "-") { menu_sel -= 1; }
+            wm_need = 1;
+        } else if (ev == "down arrow") {
+            menu_sel += 1;
+            if (menu_sel > len(menu_lbl)) { menu_sel = 1; }
+            if (menu_lbl[menu_sel] == "-") { menu_sel += 1; }
+            wm_need = 1;
+        } else if (ev == "enter" && menu_sel > 0) { wm_menu_pick(menu_sel); }
+        return;
+    }
+    if (ev == "^ ") { menu_open = 1; menu_sel = 1; wm_need = 1; return; }
+    local w = wm_top();
+    if (w > 0 && win_kind[w] == WK_CANVAS) { wm_event(w, "key", 0, 0, ev); }
+}
+
+// --- mouse pointer ------------------------------------------------------------------------
+
+proc wm_pointer() {
+    if (gui == 0) { return; }
+    if (ptr_shown == 1) {
+        if (m_x == ptr_x && m_y == ptr_y && gfx_stamps == ptr_stamps) { return; }
+        if (m_x != ptr_x || m_y != ptr_y) {
+            // repair what was under the old pointer
+            wm_redraw_rect_cells(ptr_x, ptr_y, 8, 16);
+        }
+    }
+    gfx_color(0);
+    goto(m_x - 240, 180 - m_y);
+    costume(CURSOR_MASK_COSTUME);
+    stamp();
+    gfx_color(15);
+    costume(CURSOR_COSTUME);
+    stamp();
+    ptr_shown = 1;
+    ptr_x = m_x;
+    ptr_y = m_y;
+    ptr_stamps = gfx_stamps;
+}
+
+// --- gui.* / gfx.* system calls ------------------------------------------------------------
+
+// window id argument i, checked to belong to the calling process
+proc nat_win(i, fname) {
+    local w = nat_num(i, fname);
+    if (vm_raised == 1) { return 0; }
+    if (w < 1 || w > MAX_WIN || win_used[w] == 0 || win_kind[w] != WK_CANVAS || win_pid[w] != p_pid[vm_slot]) {
+        vm_raise("bad argument #" .. i .. " to '" .. fname .. "' (not one of your windows)");
+        return 0;
+    }
+    return w;
+}
+
+// append a primitive to window w's display list and draw it
+proc dl_add(w, op, a1, a2, a3, a4, a5, a6) {
+    local h = win_dl[w];
+    local p = tb_an[h] + 1;
+    table_append(h, op, TNUM);
+    table_append(h, a1, TNUM);
+    table_append(h, a2, TNUM);
+    table_append(h, a3, TSTR);
+    table_append(h, a4, TNUM);
+    table_append(h, a5, TNUM);
+    table_append(h, a6, TNUM);
+    canvas_draw_new(w, p);
+    if (tb_an[h] > DL_MAX) {
+        // too much history: keep drawing but stop recording
+        tb_an[h] = p - 1;
+    }
+}
+
+proc nat_gui(id) {
+    local s = vm_slot;
+    if (id < N_GFX_CLEAR && id != N_GUI_TERMINAL && gui == 0 && id == N_GUI_WINDOW) {
+        vm_raise("the desktop is not running (start it with 'startx')");
+        return;
+    }
+    switch (id) {
+        case N_GUI_WINDOW: {
+            if (nat_cap("gui") == 1) {
+                local title = nat_str(1, "gui.window");
+                local pw = nat_optnum(2, 240, "gui.window");
+                local ph = nat_optnum(3, 160, "gui.window");
+                if (vm_raised == 0) {
+                    local w = wm_new_window(title, WK_CANVAS, -1, -1, ceil(pw / 8) + 2, ceil(ph / 16) + 2, p_pid[s]);
+                    if (w == 0) { nat_fail("too many windows"); }
+                    else {
+                        local dl = table_new(0);
+                        tb_pin[dl] = 1;
+                        win_dl[w] = dl;
+                        win_bg[w] = 0;
+                        nat_retn(w);
+                    }
+                }
+            }
+        }
+        case N_GUI_TERMINAL: {
+            if (gui == 0) { vm_raise("the desktop is not running"); }
+            else if (nat_cap("gui") == 1) {
+                local cmd = "";
+                if (nat_argc >= 1) { cmd = nat_str(1, "gui.terminal"); }
+                local tw = wm_open_term(cmd, cmd, -1, -1, 46, 15);
+                if (tw == 0) { nat_fail("too many windows"); } else { nat_retn(tw); }
+            }
+        }
+        case N_GUI_CLOSE: {
+            local w2 = nat_win(1, "gui.close");
+            if (w2 > 0) { wm_close(w2); }
+        }
+        case N_GUI_EVENT, N_GUI_WAITEVENT: {
+            local w3 = nat_win(1, "gui.event");
+            if (w3 > 0) {
+                local k = index(ev_win, w3);
+                if (k > 0) {
+                    local e = table_new(p_pid[s]);
+                    tset_s(e, "type", ev_type[k]);
+                    tset_n(e, "x", ev_x[k]);
+                    tset_n(e, "y", ev_y[k]);
+                    if (len(ev_key[k]) > 0) { tset_s(e, "key", ev_key[k]); }
+                    del(ev_win, k); del(ev_type, k); del(ev_x, k); del(ev_y, k); del(ev_key, k);
+                    nat_rett(e);
+                } else if (id == N_GUI_WAITEVENT) {
+                    nat_block(BLK_IO);
+                } else {
+                    nat_retnil();
+                }
+            }
+        }
+        case N_GUI_SIZE: {
+            local w4 = nat_win(1, "gui.size");
+            if (w4 > 0) { nat_retn((win_w[w4] - 2) * 8); nat_retn((win_h[w4] - 2) * 16); }
+        }
+        case N_GUI_TITLE: {
+            local w5 = nat_win(1, "gui.title");
+            if (w5 > 0) { win_title[w5] = nat_str(2, "gui.title"); wm_need = 1; }
+        }
+        case N_GUI_ACTIVE: {
+            local w6 = nat_win(1, "gui.active");
+            if (w6 > 0) { nat_retb(w6 == wm_top() && dlg_kind == 0 && menu_open == 0); }
+        }
+        case N_GFX_CLEAR: {
+            local w7 = nat_win(1, "gfx.clear");
+            local c = nat_optnum(2, 0, "gfx.clear") % 16;
+            if (w7 > 0 && vm_raised == 0) {
+                tb_an[win_dl[w7]] = 0;
+                win_bg[w7] = c;
+                dl_add(w7, 1, c, 0, "", 0, 0, 0);
+            }
+        }
+        case N_GFX_PIXEL: {
+            local w8 = nat_win(1, "gfx.pixel");
+            if (w8 > 0) {
+                local x = floor(nat_num(2, "gfx.pixel"));
+                local y = floor(nat_num(3, "gfx.pixel"));
+                local c2 = nat_optnum(4, 15, "gfx.pixel") % 16;
+                if (vm_raised == 0) { dl_add(w8, 2, x, y, c2, 0, 0, 0); }
+            }
+        }
+        case N_GFX_LINE: {
+            local w9 = nat_win(1, "gfx.line");
+            if (w9 > 0) {
+                local x1 = nat_num(2, "gfx.line");
+                local y1 = nat_num(3, "gfx.line");
+                local x2 = nat_num(4, "gfx.line");
+                local y2 = nat_num(5, "gfx.line");
+                local c3 = nat_optnum(6, 15, "gfx.line") % 16;
+                local sz = nat_optnum(7, 1, "gfx.line");
+                if (vm_raised == 0) { dl_add(w9, 3, x1, y1, x2, y2, c3, sz); }
+            }
+        }
+        case N_GFX_RECT, N_GFX_FILL: {
+            local w10 = nat_win(1, "gfx.rect");
+            if (w10 > 0) {
+                local rx = floor(nat_num(2, "gfx.rect"));
+                local ry = floor(nat_num(3, "gfx.rect"));
+                local rw = floor(nat_num(4, "gfx.rect"));
+                local rh = floor(nat_num(5, "gfx.rect"));
+                local c4 = nat_optnum(6, 15, "gfx.rect") % 16;
+                if (vm_raised == 0 && rw > 0 && rh > 0) {
+                    if (id == N_GFX_RECT) { dl_add(w10, 4, rx, ry, rw, rh, c4, 0); }
+                    else { dl_add(w10, 5, rx, ry, rw, rh, c4, 0); }
+                }
+            }
+        }
+        case N_GFX_CIRCLE, N_GFX_DISC: {
+            local w11 = nat_win(1, "gfx.circle");
+            if (w11 > 0) {
+                local cx = floor(nat_num(2, "gfx.circle"));
+                local cy = floor(nat_num(3, "gfx.circle"));
+                local r = floor(nat_num(4, "gfx.circle"));
+                local c5 = nat_optnum(5, 15, "gfx.circle") % 16;
+                if (vm_raised == 0 && r >= 0) {
+                    if (id == N_GFX_CIRCLE) { dl_add(w11, 6, cx, cy, r, c5, 0, 0); }
+                    else { dl_add(w11, 7, cx, cy, r, c5, 0, 0); }
+                }
+            }
+        }
+        case N_GFX_TEXT: {
+            local w12 = nat_win(1, "gfx.text");
+            if (w12 > 0) {
+                local tx = floor(nat_num(2, "gfx.text"));
+                local ty = floor(nat_num(3, "gfx.text"));
+                local str = vm_tostr(nat_v(4), nat_t(4));
+                local fg = nat_optnum(5, 15, "gfx.text") % 16;
+                local bg = -1;
+                if (nat_argc >= 6 && nat_t(6) != TNIL) { bg = nat_num(6, "gfx.text") % 16; }
+                if (vm_raised == 0) { dl_add(w12, 8, tx, ty, str, fg, bg, 0); }
+            }
+        }
+        case N_GFX_BATCH, N_GFX_FLUSH: { }
+        default: { vm_raise("native " .. nat_names[id] .. " not implemented"); }
+    }
+}
+
+// show program error output (stderr of desktop programs) in a message box
+proc msg_write(s) {
+    local clean = "";
+    local i = 1;
+    local n = len(s);
+    while (i <= n) {
+        local c = s[i];
+        if (c == "\e") {
+            // skip ESC [ ... letter
+            i += 2;
+            while (i <= n && contains("0123456789;", s[i]) && len(s[i]) == 1) { i += 1; }
+        } else if (c == "\n") {
+            clean = clean .. " ";
+        } else {
+            clean = clean .. c;
+        }
+        i += 1;
+    }
+    clean = str_trim(clean);
+    if (len(clean) == 0) { return; }
+    if (gui == 0) {
+        tty_write(con, s);
+        return;
+    }
+    wm_message("Program message", substr(clean, 1, 40), substr(clean, 41, 80), substr(clean, 81, 120));
+}

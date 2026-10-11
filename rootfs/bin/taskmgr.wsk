@@ -1,0 +1,87 @@
+-- taskmgr - graphical task manager
+--@caps gui proc
+local W, H = 432, 256
+local win = gui.window("Task Manager", W, H)
+local sel = 0
+local procs = {}
+local last = {}
+local rates = {}
+local lastt = os.millis()
+
+local function sample()
+  procs = proc.list()
+  local now = os.millis()
+  local dt = math.max(1, now - lastt) / 1000
+  lastt = now
+  local cur = {}
+  for _, p in ipairs(procs) do
+    rates[p.pid] = math.floor((p.cpu - (last[p.pid] or p.cpu)) / dt)
+    cur[p.pid] = p.cpu
+  end
+  last = cur
+end
+
+local function bar(x, y, w, frac, colour)
+  gfx.fill(win, x, y + 3, w, 10, 8)
+  gfx.fill(win, x, y + 3, math.max(1, math.floor(w * math.min(1, frac))), 10, colour)
+end
+
+local function draw()
+  local m = sys.mem()
+  gfx.clear(win, 7)
+  gfx.text(win, 8, 4, "Heap", 0)
+  bar(56, 4, 140, m.heap / m.heap_max, 2)
+  gfx.text(win, 204, 4, string.format("%d cells", m.heap), 0)
+  gfx.text(win, 8, 20, "Code", 0)
+  bar(56, 20, 140, m.code / m.code_max, 1)
+  gfx.text(win, 204, 20, string.format("%d cells", m.code), 0)
+  gfx.text(win, 312, 4, "Procs " .. m.procs, 0)
+  gfx.text(win, 312, 20, "Up " .. math.floor(sys.uptime()) .. "s", 0)
+  gfx.fill(win, 0, 40, W, 16, 1)
+  gfx.text(win, 0, 40, "  PID  STATE    INSTR/S   MEM  COMMAND", 15)
+  for i, p in ipairs(procs) do
+    local y = 40 + i * 16
+    if y > H - 40 then break end
+    local fg, bg = 0, 15
+    if p.pid == sel then fg, bg = 15, 4 end
+    gfx.fill(win, 0, y, W, 16, bg)
+    local name = p.name
+    if #name > 22 then name = name:sub(1, 22) end
+    gfx.text(win, 0, y, string.format("%5d  %-6s %9d %6d  %s", p.pid, p.state, rates[p.pid] or 0, p.mem, name), fg)
+  end
+  gfx.fill(win, 8, H - 24, 96, 18, 4)
+  gfx.text(win, 16, H - 23, "End task", 15)
+  gfx.text(win, 120, H - 23, "click a process, then End task", 8)
+end
+
+sample()
+draw()
+local running = true
+local tick = os.millis()
+while running do
+  local e = gui.event(win)
+  while e do
+    if e.type == "close" then running = false
+    elseif e.type == "mousedown" then
+      if e.y >= H - 24 and e.x < 104 then
+        if sel > 0 then
+          local ok, err = proc.kill(sel)
+          sel = 0
+        end
+      elseif e.y >= 56 then
+        local i = (e.y - 40) // 16
+        if procs[i] then sel = procs[i].pid end
+      end
+      draw()
+    elseif e.type == "key" and (e.key == "q" or e.key == "escape") then running = false
+    end
+    e = gui.event(win)
+  end
+  if os.millis() - tick > 1000 then
+    tick = os.millis()
+    sample()
+    draw()
+  end
+  sleep(0.1)
+end
+gui.close(win)

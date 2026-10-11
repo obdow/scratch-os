@@ -587,3 +587,43 @@ proc tty_cursor_update() {
         cur_dy = cy;
     }
 }
+
+// change the size of a tty, keeping as much text as fits (bottom rows win)
+list rs_ch;
+list rs_at;
+proc tty_resize(t, nw, nh) {
+    local w = tty_w[t];
+    local h = tty_h[t];
+    if (nw == w && nh == h) { return; }
+    clear(rs_ch);
+    clear(rs_at);
+    for r = 0 to h - 1 {
+        local rb = tty_base[t] + ((r + tty_top[t]) % h) * w;
+        for c = 1 to w { add(rs_ch, cell_ch[rb + c]); add(rs_at, cell_at[rb + c]); }
+    }
+    local off = tty_cy[t] - (nh - 1);
+    if (off < 0) { off = 0; }
+    tty_w[t] = nw;
+    tty_h[t] = nh;
+    tty_top[t] = 0;
+    local b = tty_base[t];
+    local a = tty_attr[t];
+    for r = 0 to nh - 1 {
+        for c = 0 to nw - 1 {
+            local sr = r + off;
+            if (sr < h && c < w) {
+                cell_ch[b + r * nw + c + 1] = rs_ch[sr * w + c + 1];
+                cell_at[b + r * nw + c + 1] = rs_at[sr * w + c + 1];
+            } else {
+                cell_ch[b + r * nw + c + 1] = 32;
+                cell_at[b + r * nw + c + 1] = a;
+            }
+        }
+    }
+    tty_cy[t] = tty_cy[t] - off;
+    tty_py[t] = tty_py[t] - off;
+    if (tty_cx[t] > nw) { tty_cx[t] = nw; }
+    tty_full[t] = 1;
+    clear(rs_ch);
+    clear(rs_at);
+}

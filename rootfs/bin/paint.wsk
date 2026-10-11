@@ -1,0 +1,131 @@
+-- paint - a small paint program
+--@caps gui
+-- tools: pencil, line, rectangle, filled rectangle, circle, disc, eraser
+-- keys: c clears, s saves to ~/drawing.pic, o opens it, q quits
+local W, H = 416, 288
+local win = gui.window("Paint", W, H)
+local TOP = 18                 -- toolbar height
+local PAL = 18                 -- palette height
+local tool = "pencil"
+local colour = 0
+local size = 1
+local shapes = {}              -- saved drawing: {kind, x1, y1, x2, y2, colour, size}
+local px, py = nil, nil        -- previous point while dragging
+local sx, sy = nil, nil        -- drag start for shapes
+local tools = {"pencil", "line", "rect", "fill", "circle", "disc", "eraser", "size", "clear"}
+local labels = {"Pen", "Line", "Box", "Fill", "Circ", "Disc", "Eras", "1px", "Clr"}
+
+local function toolbar()
+  gfx.fill(win, 0, 0, W, TOP, 7)
+  for i, t in ipairs(tools) do
+    local x = (i - 1) * 44 + 2
+    local bg = 8
+    if t == tool then bg = 1 end
+    gfx.fill(win, x, 1, 42, TOP - 2, bg)
+    local lbl = labels[i]
+    if t == "size" then lbl = size .. "px" end
+    gfx.text(win, x + 21 - #lbl * 4, 1, lbl, 15)
+  end
+end
+
+local function palette()
+  gfx.fill(win, 0, H - PAL, W, PAL, 7)
+  for c = 0, 15 do
+    gfx.fill(win, c * 22 + 2, H - PAL + 2, 20, PAL - 4, c)
+    if c == colour then gfx.rect(win, c * 22 + 1, H - PAL + 1, 22, PAL - 2, 15) end
+  end
+  gfx.text(win, 360, H - PAL + 1, "s/o/q", 0)
+end
+
+local function draw_shape(s)
+  local k = s[1]
+  if k == "line" then gfx.line(win, s[2], s[3], s[4], s[5], s[6], s[7])
+  elseif k == "rect" then
+    gfx.rect(win, math.min(s[2], s[4]), math.min(s[3], s[5]), math.abs(s[4] - s[2]) + 1, math.abs(s[5] - s[3]) + 1, s[6])
+  elseif k == "fill" then
+    gfx.fill(win, math.min(s[2], s[4]), math.min(s[3], s[5]), math.abs(s[4] - s[2]) + 1, math.abs(s[5] - s[3]) + 1, s[6])
+  elseif k == "circle" then
+    gfx.circle(win, s[2], s[3], math.floor(math.sqrt((s[4] - s[2]) ^ 2 + (s[5] - s[3]) ^ 2)), s[6])
+  elseif k == "disc" then
+    gfx.disc(win, s[2], s[3], math.floor(math.sqrt((s[4] - s[2]) ^ 2 + (s[5] - s[3]) ^ 2)), s[6])
+  end
+end
+
+local function redraw_all()
+  gfx.clear(win, 15)
+  for _, s in ipairs(shapes) do draw_shape(s) end
+  toolbar()
+  palette()
+end
+
+local function add(kind, x1, y1, x2, y2)
+  local c = colour
+  local sz = size
+  if tool == "eraser" then c = 15 sz = math.max(6, size * 4) end
+  local s = {kind, x1, y1, x2, y2, c, sz}
+  shapes[#shapes + 1] = s
+  draw_shape(s)
+end
+
+local function save()
+  local out = {}
+  for _, s in ipairs(shapes) do out[#out + 1] = table.concat(s, " ") end
+  fs.write(os.getenv("HOME") .. "/drawing.pic", table.concat(out, "\n"))
+  gui.title(win, "Paint - saved")
+end
+
+local function open()
+  local data = fs.read(os.getenv("HOME") .. "/drawing.pic")
+  if data == nil then return end
+  shapes = {}
+  for _, line in ipairs(string.lines(data)) do
+    local p = string.split(line, " ")
+    if #p == 7 then
+      shapes[#shapes + 1] = {p[1], tonumber(p[2]), tonumber(p[3]), tonumber(p[4]), tonumber(p[5]), tonumber(p[6]), tonumber(p[7])}
+    end
+  end
+  redraw_all()
+  gui.title(win, "Paint - drawing.pic")
+end
+
+redraw_all()
+local running = true
+while running do
+  local e = gui.waitevent(win)
+  if e.type == "close" then running = false
+  elseif e.type == "mousedown" then
+    if e.y < TOP then
+      local i = e.x // 44 + 1
+      local t = tools[i]
+      if t == "clear" then shapes = {} redraw_all()
+      elseif t == "size" then size = size % 4 + 1 toolbar()
+      elseif t then tool = t toolbar() end
+    elseif e.y >= H - PAL then
+      local c = (e.x - 2) // 22
+      if c >= 0 and c <= 15 then colour = c palette() end
+    else
+      px, py = e.x, e.y
+      sx, sy = e.x, e.y
+      if tool == "pencil" or tool == "eraser" then add("line", px, py, px, py) end
+    end
+  elseif e.type == "drag" and px then
+    local y = math.max(TOP, math.min(H - PAL - 1, e.y))
+    if tool == "pencil" or tool == "eraser" then
+      add("line", px, py, e.x, y)
+      px, py = e.x, y
+    end
+  elseif e.type == "mouseup" and sx then
+    local y = math.max(TOP, math.min(H - PAL - 1, e.y))
+    if tool ~= "pencil" and tool ~= "eraser" then add(tool, sx, sy, e.x, y) end
+    px, py, sx, sy = nil, nil, nil, nil
+  elseif e.type == "key" then
+    if e.key == "c" then shapes = {} redraw_all()
+    elseif e.key == "s" then save()
+    elseif e.key == "o" then open()
+    elseif e.key == "q" or e.key == "escape" then running = false end
+  elseif e.type == "resize" then
+    W, H = e.x, e.y
+    redraw_all()
+  end
+end
+gui.close(win)

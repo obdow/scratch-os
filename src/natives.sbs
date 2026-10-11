@@ -109,7 +109,7 @@ proc native_call(id, a0, argc, w, dest, retpc) {
     vm_raised = 0;
     clear(nr_v);
     clear(nr_t);
-    if (id < N_FS_READ) {
+    if (id < N_FS_READ || id == N_SYS_UPTIME || id == N_SYS_DATE) {
         nat_core(id, w, dest, retpc);
     } else {
         nat_sys(id);

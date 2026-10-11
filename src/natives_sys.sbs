@@ -414,6 +414,10 @@ proc proc_start_cmd(s, cmd, out_k, out_i) {
     clear(sh_argv);
     for k = 1 to len(tok_v) { add(sh_argv, tok_v[k]); }
     if (len(sh_argv) == 0) { return 0; }
+    if (sh_argv[1] == "run" && len(sh_argv) > 1) {
+        del(sh_argv, 1);
+        if (!(contains(sh_argv[1], "/"))) { sh_argv[1] = "./" .. sh_argv[1]; }
+    }
     local ino = sh_resolve(s, sh_argv[1]);
     if (ino == 0) { return 0; }
     local c = 0;

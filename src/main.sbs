@@ -25,7 +25,7 @@ sprite Kernel {
     include "natives.sbs";
     include "natives_sys.sbs";
     include "caps.sbs";
-    include "stubs_m2.sbs";
+    include "wm.sbs";
 
     var con = 0;            // console tty
     var frames = 0;
@@ -91,9 +91,18 @@ sprite Kernel {
     proc tick() {
         frames += 1;
         input_poll();
-        sched_run(10);
-        tty_render();
-        tty_cursor_update();
+        if (gui == 1) {
+            wm_tick();
+            sched_run(8);
+            if (wm_need == 1) { wm_update(); }
+            tty_render();
+            tty_cursor_update();
+            wm_pointer();
+        } else {
+            sched_run(10);
+            tty_render();
+            tty_cursor_update();
+        }
     }
 
     proc kernel_boot() nowarp {

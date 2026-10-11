@@ -1050,11 +1050,11 @@ proc c_exprstat() recursive {
             // multiple assignment: only simple names
             clear(c_tmpk); clear(c_tmps); clear(c_tmpkey);
             add(c_tmpk, e_kind); add(c_tmps, e_slot); add(c_tmpkey, e_key);
-            if (e_kind != EK_LOCAL && e_kind != EK_GLOBAL) { c_error("multiple assignment supports only variables"); return; }
+            if (e_kind != EK_LOCAL && e_kind != EK_GLOBAL && e_kind != EK_MLOCAL) { c_error("multiple assignment supports only variables"); return; }
             while (tk_is(",")) {
                 c_i += 1;
                 c_suffixedexp();
-                if (e_kind != EK_LOCAL && e_kind != EK_GLOBAL) { c_error("multiple assignment supports only variables"); return; }
+                if (e_kind != EK_LOCAL && e_kind != EK_GLOBAL && e_kind != EK_MLOCAL) { c_error("multiple assignment supports only variables"); return; }
                 add(c_tmpk, e_kind); add(c_tmps, e_slot); add(c_tmpkey, e_key);
             }
             c_check("=");

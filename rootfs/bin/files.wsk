@@ -1,0 +1,152 @@
+-- files - graphical file manager
+--@caps gui files
+-- click selects, double-click opens; keys: arrows, Enter, Backspace (up),
+-- Delete (remove), n (new folder), q (quit)
+local W, H = 400, 272
+local win = gui.window("Files", W, H)
+local cwd = fs.abs(os.getenv("HOME") or "/")
+local items = {}
+local sel, top = 1, 1
+local ROWS = (H - 48) // 16
+local lastclick, lastsel = 0, 0
+local status = ""
+
+local function load()
+  local names = fs.list(cwd) or {}
+  local dirs, files = {}, {}
+  for _, n in ipairs(names) do
+    local full = cwd .. "/" .. n
+    if cwd == "/" then full = "/" .. n end
+    local st = fs.stat(full)
+    if st.type == "dir" then dirs[#dirs + 1] = {name = n, path = full, dir = true, size = 0}
+    else files[#files + 1] = {name = n, path = full, dir = false, size = st.size} end
+  end
+  items = {}
+  if cwd ~= "/" then items[1] = {name = "..", path = fs.dir(cwd), dir = true, size = 0} end
+  for _, d in ipairs(dirs) do items[#items + 1] = d end
+  for _, f in ipairs(files) do items[#items + 1] = f end
+  if sel > #items then sel = #items end
+  if sel < 1 then sel = 1 end
+end
+
+local function draw()
+  gfx.clear(win, 15)
+  -- toolbar
+  gfx.fill(win, 0, 0, W, 16, 7)
+  local buttons = {" Up ", " Open ", " New folder ", " Delete "}
+  local x = 4
+  for _, b in ipairs(buttons) do
+    gfx.fill(win, x, 1, #b * 8, 14, 8)
+    gfx.text(win, x, 0, b, 15)
+    x = x + #b * 8 + 8
+  end
+  -- path
+  gfx.fill(win, 0, 16, W, 16, 1)
+  gfx.text(win, 4, 16, cwd, 14)
+  -- list
+  for row = 1, ROWS do
+    local i = top + row - 1
+    local it = items[i]
+    if it then
+      local y = 32 + (row - 1) * 16
+      local fg, bg = 0, 15
+      if i == sel then fg, bg = 15, 1 end
+      gfx.fill(win, 0, y, W, 16, bg)
+      local icon = "≡"
+      local c = 8
+      if it.dir then icon = "■" c = 6 elseif it.name:endswith(".wsk") then icon = "♦" c = 2 end
+      if i == sel then c = 14 end
+      gfx.text(win, 6, y, icon, c)
+      gfx.text(win, 22, y, it.name, fg)
+      if not it.dir then gfx.text(win, W - 64, y, string.format("%7d", it.size), fg) end
+    end
+  end
+  -- status bar
+  gfx.fill(win, 0, H - 16, W, 16, 7)
+  local info = #items .. " items"
+  if status ~= "" then info = status end
+  gfx.text(win, 4, H - 16, info, 0)
+end
+
+local function ensure_visible()
+  if sel < top then top = sel end
+  if sel > top + ROWS - 1 then top = sel - ROWS + 1 end
+end
+
+local function open(it)
+  if it == nil then return end
+  if it.dir then
+    cwd = it.path
+    sel, top = 1, 1
+    status = ""
+    load()
+  elseif it.name:endswith(".wsk") then
+    gui.terminal("run " .. it.path)
+    status = "Started " .. it.name
+  else
+    gui.terminal("edit " .. it.path)
+    status = "Editing " .. it.name
+  end
+end
+
+local function delete(it)
+  if it == nil or it.name == ".." then return end
+  local ok, err = fs.remove(it.path, true)
+  if ok then status = "Deleted " .. it.name else status = "Error: " .. tostring(err) end
+  load()
+end
+
+local function newfolder()
+  local base = cwd .. "/New folder"
+  if cwd == "/" then base = "/New folder" end
+  local name = base
+  local n = 2
+  while fs.exists(name) do name = base .. " " .. n n = n + 1 end
+  local ok, err = fs.mkdir(name)
+  if ok then status = "Created " .. fs.name(name) else status = "Error: " .. tostring(err) end
+  load()
+end
+
+load()
+draw()
+local running = true
+while running do
+  local e = gui.waitevent(win)
+  local redraw = true
+  if e.type == "close" then running = false
+  elseif e.type == "mousedown" then
+    if e.y < 16 then
+      if e.x < 40 then open(items[1]) if items[1] and items[1].name ~= ".." then cwd = fs.dir(cwd) load() end
+      elseif e.x < 100 then open(items[sel])
+      elseif e.x < 204 then newfolder()
+      elseif e.x < 276 then delete(items[sel]) end
+    elseif e.y >= 32 and e.y < H - 16 then
+      local i = top + (e.y - 32) // 16
+      if items[i] then
+        local now = os.millis()
+        if i == lastsel and now - lastclick < 450 then open(items[i]) lastsel = 0
+        else sel = i lastsel = i lastclick = now end
+      end
+    end
+  elseif e.type == "key" then
+    local k = e.key
+    if k == "up arrow" and sel > 1 then sel = sel - 1
+    elseif k == "down arrow" and sel < #items then sel = sel + 1
+    elseif k == "page up" then sel = math.max(1, sel - ROWS)
+    elseif k == "page down" then sel = math.min(#items, sel + ROWS)
+    elseif k == "enter" then open(items[sel])
+    elseif k == "backspace" then if cwd ~= "/" then cwd = fs.dir(cwd) sel, top = 1, 1 load() end
+    elseif k == "delete" then delete(items[sel])
+    elseif k == "n" then newfolder()
+    elseif k == "q" or k == "escape" then running = false
+    else redraw = false end
+    ensure_visible()
+  elseif e.type == "resize" then
+    W, H = e.x, e.y
+    ROWS = (H - 48) // 16
+  else
+    redraw = false
+  end
+  if redraw and running then draw() end
+end
+gui.close(win)

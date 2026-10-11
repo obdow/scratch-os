@@ -32,6 +32,7 @@ var gfx_gbase = 1;       // costume number of glyph 0 in the current base set
 var gfx_rbase = 513;     // costume number of rect 1x1 in the current base set
 var gfx_pen_col = -1;
 var gfx_pen_size = -1;
+var gfx_stamps = 0;      // drawing activity counter (mouse pointer repair)
 
 // clip rectangle for line drawing (screen coords, inclusive-exclusive)
 var clip_x0 = 0;
@@ -71,6 +72,7 @@ proc gfx_glyph(x, y, code, c) {
     goto(x - 240, 180 - y);
     costume(gfx_gbase + code);
     stamp();
+    gfx_stamps += 1;
 }
 
 // Fill rectangle with palette colour c.  Uses power-of-two rect costumes,
@@ -85,6 +87,7 @@ proc gfx_fill(x, y, w, h, c) {
     local j = 0;
     while (sh * 2 <= h && j < 8) { sh = sh * 2; j += 1; }
     costume(gfx_rbase + i * 9 + j);
+    gfx_stamps += 1;
     local ty = y;
     forever {
         if (ty + sh > y + h) { ty = y + h - sh; }
@@ -123,4 +126,5 @@ proc gfx_line(x1, y1, x2, y2, c, sz) {
     pen_down();
     goto(x2 - 239.5, 179.5 - y2);
     pen_up();
+    gfx_stamps += 1;
 }

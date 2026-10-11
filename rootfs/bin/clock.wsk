@@ -1,0 +1,53 @@
+-- clock - analog clock window
+--@caps gui
+local W, H = 176, 176
+local win = gui.window("Clock", W, H)
+local cx, cy, R = W // 2, H // 2 - 4, 76
+
+local function hand(angle, len, colour, size)
+  local x = cx + len * math.sin(angle)
+  local y = cy - len * math.cos(angle)
+  gfx.line(win, cx, cy, x, y, colour, size)
+end
+
+local function face()
+  gfx.clear(win, 1)
+  gfx.disc(win, cx, cy, R, 7)
+  gfx.circle(win, cx, cy, R, 15)
+  gfx.disc(win, cx, cy, R - 4, 15)
+  for i = 0, 59 do
+    local a = i * math.pi / 30
+    local r1 = R - 8
+    if i % 5 == 0 then r1 = R - 14 end
+    gfx.line(win, cx + r1 * math.sin(a), cy - r1 * math.cos(a),
+      cx + (R - 6) * math.sin(a), cy - (R - 6) * math.cos(a), 8, 1)
+  end
+  for h = 1, 12 do
+    local a = h * math.pi / 6
+    local s = tostring(h)
+    gfx.text(win, cx + (R - 24) * math.sin(a) - #s * 4, cy - (R - 24) * math.cos(a) - 8, s, 1)
+  end
+end
+
+local last = ""
+local running = true
+while running do
+  local d = os.date()
+  local hh, mm, ss = tonumber(d:sub(12, 13)), tonumber(d:sub(15, 16)), tonumber(d:sub(18, 19))
+  if d ~= last then
+    last = d
+    face()
+    hand((hh % 12 + mm / 60) * math.pi / 6, R * 0.5, 0, 3)
+    hand((mm + ss / 60) * math.pi / 30, R * 0.75, 0, 2)
+    hand(ss * math.pi / 30, R * 0.85, 4, 1)
+    gfx.disc(win, cx, cy, 3, 4)
+    gfx.text(win, cx - 32, H - 16, d:sub(12, 19), 15, 1)
+  end
+  local e = gui.event(win)
+  while e do
+    if e.type == "close" then running = false end
+    e = gui.event(win)
+  end
+  sleep(0.2)
+end
+gui.close(win)
