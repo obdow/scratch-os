@@ -38,8 +38,8 @@ TW_CONFIG = {
 }
 
 
-def build(main, out):
-    data = rootfs.build_data(os.path.join(ROOT, 'rootfs'))
+def build(main, out, rootfs_dir=None):
+    data = rootfs.build_data(rootfs_dir or os.path.join(ROOT, 'rootfs'))
     data.update(osdata.build_data())
     data.update(natives.build_data())
     prog = sbc.Program(data)
@@ -84,9 +84,16 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--main', default=os.path.join(ROOT, 'src', 'main.sbs'))
     ap.add_argument('-o', '--out', default=os.path.join(ROOT, 'ScratchOS.sb3'))
+    ap.add_argument('--rootfs', default=None, help='directory baked into the file system')
+    ap.add_argument('--ide', action='store_true', help='build the Whisker IDE (WhiskerIDE.sb3)')
     a = ap.parse_args()
     try:
-        build(a.main, a.out)
+        if a.ide:
+            build(os.path.join(ROOT, 'src', 'ide', 'main.sbs'),
+                  a.out if a.out != os.path.join(ROOT, 'ScratchOS.sb3') else os.path.join(ROOT, 'WhiskerIDE.sb3'),
+                  a.rootfs or os.path.join(ROOT, 'ide', 'rootfs'))
+        else:
+            build(a.main, a.out, a.rootfs)
     except sbc.CompileError as e:
         print(f"error: {e}", file=sys.stderr)
         sys.exit(1)

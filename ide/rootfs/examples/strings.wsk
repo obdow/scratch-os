@@ -1,0 +1,11 @@
+-- strings.wsk - a tour of the string library
+local s = "  Whisker is a Lua-like language  "
+print("[" .. s:trim() .. "]")
+print(s:trim():upper())
+print(string.format("%-10s|%5.2f|%04d|%x", "left", math.pi, 42, 255))
+for i, word in ipairs(string.split(s:trim(), " ")) do
+  print(i, word, #word)
+end
+print(("racecar"):reverse() == "racecar" and "palindrome!" or "not a palindrome")
+local text, count = string.replace("one fish two fish", "fish", "cat")
+print(text, count .. " replacements")

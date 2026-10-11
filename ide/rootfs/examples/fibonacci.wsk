@@ -1,0 +1,16 @@
+-- fibonacci.wsk - recursion vs. a loop, with timing
+local function fib(n)
+  if n < 2 then return n end
+  return fib(n - 1) + fib(n - 2)
+end
+
+local function fib_loop(n)
+  local a, b = 0, 1
+  for i = 1, n do a, b = b, a + b end
+  return a
+end
+
+local t = os.millis()
+print("fib(18) recursive = " .. fib(18) .. " in " .. (os.millis() - t) .. " ms")
+t = os.millis()
+print("fib(60) loop      = " .. fib_loop(60) .. " in " .. (os.millis() - t) .. " ms")

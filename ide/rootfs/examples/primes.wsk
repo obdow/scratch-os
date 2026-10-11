@@ -1,0 +1,13 @@
+-- primes.wsk - sieve of Eratosthenes
+local n = tonumber(arg[1] or "100")
+local sieve = {}
+for i = 2, n do sieve[i] = true end
+local out = {}
+for i = 2, n do
+  if sieve[i] then
+    out[#out + 1] = i
+    for j = i * i, n, i do sieve[j] = false end
+  end
+end
+print(#out .. " primes up to " .. n .. ":")
+print(table.concat(out, " "))

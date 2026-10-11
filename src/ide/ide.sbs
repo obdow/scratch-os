@@ -1,0 +1,2520 @@
+// ===========================================================================
+// ide.sbs - the Whisker IDE user interface (included inside sprite Kernel)
+//
+// Screen (60 x 22 cells):
+//   row 0        menu bar
+//   row 1        tabs + Run/Stop button
+//   rows 2..     file tree (left, optional) | editor (gutter, text, scrollbar)
+//   out_top      output panel header, then the output tty (program I/O)
+//   row 21       status bar / prompt line
+// Overlays: drop-down menus, dialogs, autocomplete, graphics preview.
+//
+// The screen is composed into sc_ch / sc_at every time something changes and
+// diffed against the previous frame (so_ch / so_at); only changed cells are
+// stamped.  Cells shown by the output tty are marked -1 (the tty draws
+// them itself), cells of the graphics preview -2 (canvas display list).
+// ===========================================================================
+
+const IC = 60;            // columns
+const IR = 22;            // rows
+const ROW_TABS = 1;
+const ROW_STATUS = 21;
+const TREE_W = 16;
+const GUT_W = 5;
+const OUT_WIN = 99;       // own[] value for output-panel cells
+
+list sc_ch;
+list sc_at;
+list so_ch;
+list so_at;
+
+// --- layout ------------------------------------------------------------------------
+var show_tree = 1;
+var out_h = 5;
+var out_top = 15;
+var ed_x0 = 0;
+var ed_y0 = 2;
+var ed_rows = 13;
+var txt_x0 = 0;
+var txt_w = 0;
+var ide_dirty = 1;        // recompose needed
+var ide_full = 1;         // redraw everything
+var theme = 0;            // 0 blue, 1 dark
+var focus = 0;            // 0 editor, 1 output, 2 tree, 3 graphics
+
+// theme colours
+var C_BG = 1;
+var C_FG = 15;
+var C_KW = 14;
+var C_STR = 11;
+var C_NUM = 13;
+var C_COM = 7;
+var C_LIB = 10;
+var C_OP = 15;
+var C_GUT = 3;
+var C_GUTBG = 1;
+var C_SELFG = 0;
+var C_SELBG = 7;
+
+// --- tabs / buffers ------------------------------------------------------------------
+list tab_path;
+list tab_text;
+list tab_cx;
+list tab_cy;
+list tab_top;
+list tab_left;
+list tab_dirty;
+list tab_ro;
+var cur_tab = 0;
+
+list ed;                  // lines of the active buffer
+var ecx = 1;              // cursor column (1-based, may be len + 1)
+var ecy = 1;              // cursor line
+var etop = 1;
+var eleft = 1;
+var sel_on = 0;
+var sax = 1;              // selection anchor
+var say = 1;
+var want_x = 0;           // preferred column for up/down
+
+// undo / redo (snapshots of whole buffers)
+list u_tab;
+list u_text;
+list u_cx;
+list u_cy;
+list r_tab;
+list r_text;
+list r_cx;
+list r_cy;
+var last_edit = "";
+var last_edit_line = 0;
+
+var clipboard = "";
+
+// syntax highlighting
+list hl_code;             // CP437 code per char of the line being highlighted
+list hl_fg;               // colour per char
+list ls_state;            // lexer state at the start of each line (0, 1 comment, 2 string)
+var ls_valid = 0;
+list lib_words;           // built-in function names (without module)
+list mod_words;
+
+// file tree
+list tr_path;
+list tr_name;
+list tr_depth;
+list tr_dir;
+list tr_exp;              // expanded directories
+var tr_top = 1;
+var tr_sel = 0;
+
+// menus
+list mn_title = ["File", "Edit", "Run", "View", "Help"];
+list mn_x;
+list mi_menu;
+list mi_label;
+list mi_key;
+list mi_cmd;
+var menu_open = 0;        // index into mn_title, 0 = closed
+var menu_sel = 0;         // selected item (index into mi_*)
+
+// prompt line (status row)
+var pr_kind = "";
+var pr_label = "";
+var pr_buf = "";
+var find_text = "";
+var repl_from = "";
+
+// dialog
+var dlg_kind = 0;         // 0 none, 1 message, 2 yes/no/cancel
+var dlg_title = "";
+list dlg_lines;
+var dlg_cmd = "";         // command run when the user answers "yes"
+var dlg_no = "";          // command run on "no"
+var dlg_x = 0;
+var dlg_y = 0;
+var dlg_w = 0;
+var dlg_h = 0;
+
+// autocomplete
+var ac_open = 0;
+list ac_items;
+var ac_sel = 1;
+var ac_word = "";
+var ac_x = 0;
+var ac_y = 0;
+
+// running programs
+var host = 0;             // slot of the IDE host process (parent of programs)
+var run_pid = 0;
+var run_t0 = 0;
+var err_line = 0;
+var err_msg = "";
+var err_path = "";
+var status_msg = "";
+var status_until = 0;
+
+// graphics preview
+var cv_win = 0;
+var cv_x = 0;
+var cv_y = 0;
+var cv_w = 0;
+var cv_h = 0;
+
+// mouse / caret
+var mx = 0;
+var my = 0;
+var mdown = 0;
+var mwas = 0;
+var mdrag = 0;            // 1 editor selection, 2 scrollbar, 3 graphics
+var last_click = 0;
+var last_click_x = -1;
+var last_click_y = -1;
+var ptr_on = 0;
+var ptr_px = 0;
+var ptr_py = 0;
+var ptr_stamp = 0;
+var caret_on = 0;
+var caret_c = 0;
+var caret_r = 0;
+
+// ===========================================================================
+// boot
+// ===========================================================================
+
+proc ide_boot() nowarp {
+    gfx_init();
+    tty_init();
+    fs_init();
+    fs_load_rootfs();
+    proc_init();
+    shell_init();
+    vm_init();
+    caps_init();
+    wm_init();
+    gui = 1;
+    con = tty_alloc(IC, 5, 0, 0, OUT_WIN);
+    tty_vis[con] = 1;
+    // the host process owns the programs we start; it never runs itself
+    host = proc_alloc("whisker-ide", 9, 0);
+    p_state[host] = PS_BLOCKED;
+    p_block[host] = BLK_PROMPT;
+    p_tty[host] = con;
+    p_in_k[host] = FD_TTY; p_in_i[host] = con;
+    p_out_k[host] = FD_TTY; p_out_i[host] = con;
+    p_err_k[host] = FD_TTY; p_err_i[host] = con;
+    p_caps[host] = "|files|proc|gui|system|";
+    p_cwd[host] = fs_lookup("/projects", 1);
+    clear(sc_ch); clear(sc_at); clear(so_ch); clear(so_at);
+    repeat (IC * IR) { add(sc_ch, 32); add(sc_at, 0); add(so_ch, -9); add(so_at, -9); }
+    ide_menus_init();
+    ide_words_init();
+    clear(tab_path); clear(tab_text); clear(tab_cx); clear(tab_cy); clear(tab_top); clear(tab_left);
+    clear(tab_dirty); clear(tab_ro);
+    clear(u_tab); clear(u_text); clear(u_cx); clear(u_cy);
+    clear(r_tab); clear(r_text); clear(r_cx); clear(r_cy);
+    clear(tr_exp);
+    add(tr_exp, "/projects");
+    add(tr_exp, "/examples");
+    ide_theme(0);
+    ide_splash();
+    ide_layout();
+    open_file("/projects/main.wsk");
+    tty_write(con, "\e[97mWhisker IDE\e[0m - " .. OS_NAME .. " " .. OS_VERSION .. " runtime.  "
+        .. "\e[93mCtrl+Enter\e[0m runs, \e[93mEsc\e[0m opens the menu.\n");
+    tty_write(con, "New here?  Help > Quick start, or open a file in /examples.\n");
+    ide_full = 1;
+    ide_dirty = 1;
+}
+
+proc ide_splash() nowarp {
+    gfx_fill(0, 0, 480, 360, 1);
+    local t = "Whisker IDE";
+    for i = 1 to len(t) { gfx_glyph(196 + (i - 1) * 8, 150, ord(t[i]), 14); }
+    local u = "loading...";
+    for i = 1 to len(u) { gfx_glyph(200 + (i - 1) * 8, 176, ord(u[i]), 7); }
+    wait(0.4);
+}
+
+proc ide_theme(n) {
+    theme = n;
+    if (n == 0) {
+        C_BG = 1; C_FG = 15; C_KW = 14; C_STR = 11; C_NUM = 13; C_COM = 7; C_LIB = 10; C_OP = 15;
+        C_GUT = 3; C_GUTBG = 1; C_SELFG = 0; C_SELBG = 7;
+    } else {
+        C_BG = 0; C_FG = 7; C_KW = 9; C_STR = 10; C_NUM = 13; C_COM = 8; C_LIB = 11; C_OP = 15;
+        C_GUT = 8; C_GUTBG = 0; C_SELFG = 15; C_SELBG = 1;
+    }
+    ide_dirty = 1;
+}
+
+// built-in names for highlighting / autocomplete
+proc ide_words_init() {
+    clear(lib_words);
+    clear(mod_words);
+    for i = 1 to len(nat_names) {
+        local n = nat_names[i];
+        if (!(contains(n, "."))) { add(lib_words, n); }
+    }
+    for i = 1 to len(nat_mods) { add(mod_words, nat_mods[i]); }
+    add(lib_words, "pairs");
+    add(lib_words, "ipairs");
+    add(lib_words, "self");
+    add(lib_words, "arg");
+}
+
+proc mi(menu, label, key, cmd) {
+    add(mi_menu, menu);
+    add(mi_label, label);
+    add(mi_key, key);
+    add(mi_cmd, cmd);
+}
+
+proc ide_menus_init() {
+    clear(mi_menu); clear(mi_label); clear(mi_key); clear(mi_cmd);
+    mi(1, "New file...", "", "new");
+    mi(1, "Save", "Ctrl+S", "save");
+    mi(1, "Save as...", "", "saveas");
+    mi(1, "Rename...", "", "rename");
+    mi(1, "Delete file", "", "delete");
+    mi(1, "Close tab", "", "close");
+    mi(1, "-", "", "");
+    mi(1, "Export (list)", "", "export");
+    mi(1, "Import (list)", "", "import");
+    mi(2, "Undo", "Ctrl+Z", "undo");
+    mi(2, "Redo", "Ctrl+Y", "redo");
+    mi(2, "-", "", "");
+    mi(2, "Cut", "Ctrl+X", "cut");
+    mi(2, "Copy", "Ctrl+C", "copy");
+    mi(2, "Paste", "Ctrl+V", "paste");
+    mi(2, "Select all", "Ctrl+A", "selall");
+    mi(2, "-", "", "");
+    mi(2, "Find...", "Ctrl+F", "find");
+    mi(2, "Find next", "", "findnext");
+    mi(2, "Replace...", "", "replace");
+    mi(2, "Go to line...", "Ctrl+G", "goto");
+    mi(2, "-", "", "");
+    mi(2, "Toggle comment", "Ctrl+/", "comment");
+    mi(2, "Duplicate line", "Ctrl+D", "dupline");
+    mi(2, "Delete line", "", "delline");
+    mi(2, "Indent", "", "indent");
+    mi(2, "Unindent", "", "unindent");
+    mi(3, "Run", "Ctrl+Enter", "run");
+    mi(3, "Stop", "Esc", "stop");
+    mi(3, "Check syntax", "", "check");
+    mi(3, "Go to error", "", "goerr");
+    mi(3, "Clear output", "", "clearout");
+    mi(4, "File tree", "", "tree");
+    mi(4, "Output: small", "", "out3");
+    mi(4, "Output: medium", "", "out5");
+    mi(4, "Output: large", "", "out9");
+    mi(4, "Output: hidden", "", "out0");
+    mi(4, "Theme: blue", "", "theme0");
+    mi(4, "Theme: dark", "", "theme1");
+    mi(5, "Quick start", "", "help");
+    mi(5, "Language reference", "", "ref");
+    mi(5, "Keyboard shortcuts", "", "keys");
+    mi(5, "About", "", "about");
+    clear(mn_x);
+    local x = 1;
+    for i = 1 to len(mn_title) {
+        add(mn_x, x);
+        x += len(mn_title[i]) + 2;
+    }
+}
+
+// ===========================================================================
+// layout
+// ===========================================================================
+
+proc ide_layout() {
+    if (out_h > 0) { out_top = ROW_STATUS - out_h - 1; } else { out_top = ROW_STATUS; }
+    ed_x0 = 0;
+    if (show_tree == 1) { ed_x0 = TREE_W; }
+    ed_rows = out_top - ed_y0;
+    txt_x0 = ed_x0 + GUT_W;
+    txt_w = IC - txt_x0 - 1;
+    if (out_h > 0) {
+        tty_resize(con, IC, out_h);
+        tty_ox[con] = 0;
+        tty_oy[con] = (out_top + 1) * 16;
+        tty_vis[con] = 1;
+    } else {
+        tty_vis[con] = 0;
+    }
+    if (cv_win > 0) { cv_place(); }
+    ide_scroll_to_cursor();
+    ide_full = 1;
+    ide_dirty = 1;
+}
+
+// ===========================================================================
+// buffers and tabs
+// ===========================================================================
+
+proc join_lines() {
+    local out = "";
+    local n = len(ed);
+    for i = 1 to n {
+        out = out .. ed[i];
+        if (i < n) { out = out .. "\n"; }
+    }
+    return out;
+}
+
+proc split_into_ed(text) {
+    clear(ed);
+    local cur = "";
+    local n = len(text);
+    local start = 1;
+    for i = 1 to n {
+        if (text[i] == "\n") {
+            add(ed, substr(text, start, i - 1));
+            start = i + 1;
+        }
+    }
+    add(ed, substr(text, start, n));
+    ls_valid = 0;
+}
+
+proc tab_store() {
+    if (cur_tab == 0) { return; }
+    tab_text[cur_tab] = join_lines();
+    tab_cx[cur_tab] = ecx;
+    tab_cy[cur_tab] = ecy;
+    tab_top[cur_tab] = etop;
+    tab_left[cur_tab] = eleft;
+}
+
+proc tab_activate(i) {
+    if (i == cur_tab) { return; }
+    tab_store();
+    cur_tab = i;
+    if (i == 0) { clear(ed); add(ed, ""); ecx = 1; ecy = 1; etop = 1; eleft = 1; }
+    else {
+        split_into_ed(tab_text[i]);
+        ecx = tab_cx[i];
+        ecy = tab_cy[i];
+        etop = tab_top[i];
+        eleft = tab_left[i];
+    }
+    sel_on = 0;
+    ac_open = 0;
+    last_edit = "";
+    focus = 0;
+    ide_dirty = 1;
+}
+
+proc open_file(path) {
+    local i = index(tab_path, path);
+    if (i > 0) { tab_activate(i); return 1; }
+    local ino = fs_lookup(path, 1);
+    if (ino == 0 || fs_type[ino] == FT_DIR) { ide_status("Cannot open " .. path); return 0; }
+    tab_store();
+    add(tab_path, fs_path(ino));
+    add(tab_text, fs_data[ino]);
+    add(tab_cx, 1); add(tab_cy, 1); add(tab_top, 1); add(tab_left, 1);
+    add(tab_dirty, 0);
+    local ro = 0;
+    if (substr(fs_path(ino), 1, 6) == "/docs/") { ro = 1; }
+    add(tab_ro, ro);
+    local n = len(tab_path);
+    cur_tab = 0;
+    tab_activate(n);
+    // drop a trailing empty line left by a final newline
+    if (len(ed) > 1 && len(ed[len(ed)]) == 0) { del(ed, len(ed)); }
+    return 1;
+}
+
+proc close_tab(i) {
+    if (i == 0) { return; }
+    if (i == cur_tab) { cur_tab = 0; }
+    del(tab_path, i); del(tab_text, i); del(tab_cx, i); del(tab_cy, i);
+    del(tab_top, i); del(tab_left, i); del(tab_dirty, i); del(tab_ro, i);
+    // forget its undo history and renumber the rest
+    local k = 1;
+    while (k <= len(u_tab)) {
+        if (u_tab[k] == i) { del(u_tab, k); del(u_text, k); del(u_cx, k); del(u_cy, k); }
+        else { if (u_tab[k] > i) { u_tab[k] = u_tab[k] - 1; } k += 1; }
+    }
+    clear(r_tab); clear(r_text); clear(r_cx); clear(r_cy);
+    if (cur_tab > i) { cur_tab -= 1; }
+    if (cur_tab == 0) {
+        local nt = len(tab_path);
+        if (i <= nt) { tab_activate(i); } else { tab_activate(nt); }
+    }
+    ide_dirty = 1;
+}
+
+proc save_tab() {
+    if (cur_tab == 0) { return 0; }
+    if (tab_ro[cur_tab] == 1) { ide_status("This file is read-only (use Save as)"); return 0; }
+    local path = tab_path[cur_tab];
+    local ino = fs_lookup(path, 1);
+    if (ino == 0) { ino = fs_create(path, FT_FILE, 1); }
+    if (ino == 0) { ide_status("Cannot save: " .. fs_err); return 0; }
+    fs_data[ino] = join_lines() .. "\n";
+    fs_mtime[ino] = fs_now();
+    tab_dirty[cur_tab] = 0;
+    ide_status("Saved " .. path);
+    tree_build();
+    return 1;
+}
+
+proc mark_dirty() {
+    if (cur_tab > 0) { tab_dirty[cur_tab] = 1; }
+    if (err_line > 0 && streq(err_path, tab_path[cur_tab]) == 1) { err_line = 0; }
+}
+
+// ===========================================================================
+// undo
+// ===========================================================================
+
+// take a snapshot before an edit; typing on one line is merged into one step
+proc undo_mark(kind) {
+    if (cur_tab == 0) { return; }
+    if (kind == last_edit && ecy == last_edit_line && kind != "other") { return; }
+    last_edit = kind;
+    last_edit_line = ecy;
+    add(u_tab, cur_tab);
+    add(u_text, join_lines());
+    add(u_cx, ecx);
+    add(u_cy, ecy);
+    if (len(u_tab) > 80) { del(u_tab, 1); del(u_text, 1); del(u_cx, 1); del(u_cy, 1); }
+    clear(r_tab); clear(r_text); clear(r_cx); clear(r_cy);
+}
+
+proc undo_step(redo) {
+    local i = len(u_tab);
+    if (redo == 1) { i = len(r_tab); }
+    // newest entry of this tab
+    while (i > 0) {
+        if (redo == 0 && u_tab[i] == cur_tab) { break; }
+        if (redo == 1 && r_tab[i] == cur_tab) { break; }
+        i -= 1;
+    }
+    if (i == 0) {
+        if (redo == 1) { ide_status("Nothing to redo"); } else { ide_status("Nothing to undo"); }
+        return;
+    }
+    local txt = "";
+    local cx = 1;
+    local cy = 1;
+    if (redo == 0) {
+        txt = u_text[i]; cx = u_cx[i]; cy = u_cy[i];
+        del(u_tab, i); del(u_text, i); del(u_cx, i); del(u_cy, i);
+        add(r_tab, cur_tab); add(r_text, join_lines()); add(r_cx, ecx); add(r_cy, ecy);
+    } else {
+        txt = r_text[i]; cx = r_cx[i]; cy = r_cy[i];
+        del(r_tab, i); del(r_text, i); del(r_cx, i); del(r_cy, i);
+        add(u_tab, cur_tab); add(u_text, join_lines()); add(u_cx, ecx); add(u_cy, ecy);
+    }
+    split_into_ed(txt);
+    ecy = cy;
+    ecx = cx;
+    clamp_cursor();
+    sel_on = 0;
+    last_edit = "";
+    mark_dirty();
+    ide_scroll_to_cursor();
+    ide_dirty = 1;
+}
+
+// ===========================================================================
+// editing primitives
+// ===========================================================================
+
+proc clamp_cursor() {
+    if (ecy < 1) { ecy = 1; }
+    if (ecy > len(ed)) { ecy = len(ed); }
+    if (ecx < 1) { ecx = 1; }
+    if (ecx > len(ed[ecy]) + 1) { ecx = len(ed[ecy]) + 1; }
+}
+
+proc lines_changed(from) {
+    if (ls_valid > from - 1) { ls_valid = from - 1; }
+    if (ls_valid < 0) { ls_valid = 0; }
+}
+
+// is (y1, x1) before (y2, x2)?
+proc pos_before(y1, x1, y2, x2) {
+    if (y1 < y2) { return 1; }
+    if (y1 == y2 && x1 < x2) { return 1; }
+    return 0;
+}
+
+// normalized selection: s_y1/s_x1 .. s_y2/s_x2 (end exclusive)
+var s_y1 = 0;
+var s_x1 = 0;
+var s_y2 = 0;
+var s_x2 = 0;
+proc sel_bounds() {
+    if (pos_before(say, sax, ecy, ecx) == 1) {
+        s_y1 = say; s_x1 = sax; s_y2 = ecy; s_x2 = ecx;
+    } else {
+        s_y1 = ecy; s_x1 = ecx; s_y2 = say; s_x2 = sax;
+    }
+}
+
+proc sel_empty() {
+    if (sel_on == 0) { return 1; }
+    if (say == ecy && sax == ecx) { return 1; }
+    return 0;
+}
+
+proc sel_text() {
+    if (sel_empty() == 1) { return ""; }
+    sel_bounds();
+    if (s_y1 == s_y2) { return substr(ed[s_y1], s_x1, s_x2 - 1); }
+    local out = substr(ed[s_y1], s_x1, len(ed[s_y1]));
+    for y = s_y1 + 1 to s_y2 - 1 { out = out .. "\n" .. ed[y]; }
+    out = out .. "\n" .. substr(ed[s_y2], 1, s_x2 - 1);
+    return out;
+}
+
+proc del_sel() {
+    if (sel_empty() == 1) { sel_on = 0; return; }
+    sel_bounds();
+    local head = substr(ed[s_y1], 1, s_x1 - 1);
+    local tail = substr(ed[s_y2], s_x2, len(ed[s_y2]));
+    ed[s_y1] = head .. tail;
+    local k = s_y2 - s_y1;
+    repeat (k) { del(ed, s_y1 + 1); }
+    ecy = s_y1;
+    ecx = s_x1;
+    sel_on = 0;
+    lines_changed(s_y1);
+    mark_dirty();
+}
+
+// insert text (may contain newlines) at the cursor
+proc ins_text(text) {
+    local line = ed[ecy];
+    local head = substr(line, 1, ecx - 1);
+    local tail = substr(line, ecx, len(line));
+    local cur = "";
+    local first = 1;
+    local start = 1;
+    local n = len(text);
+    local y = ecy;
+    for i = 1 to n {
+        if (text[i] == "\n") {
+            local piece = substr(text, start, i - 1);
+            if (first == 1) { ed[y] = head .. piece; first = 0; }
+            else { insert(ed, y, piece); }
+            y += 1;
+            start = i + 1;
+        }
+    }
+    local last = substr(text, start, n);
+    if (first == 1) {
+        ed[y] = head .. last .. tail;
+        ecx = len(head) + len(last) + 1;
+    } else {
+        insert(ed, y, last .. tail);
+        ecx = len(last) + 1;
+    }
+    lines_changed(ecy);
+    ecy = y;
+    mark_dirty();
+}
+
+proc indent_of(s) {
+    local n = 0;
+    while (n < len(s) && s[n + 1] == " ") { n += 1; }
+    return n;
+}
+
+// does the line open a block (so the next line should be indented)?
+proc opens_block(s) {
+    local t = str_trim(s);
+    if (len(t) == 0) { return 0; }
+    // strip a trailing comment
+    local c = str_find(t, "--", 1);
+    if (c > 1) { t = str_trim(substr(t, 1, c - 1)); }
+    local n = len(t);
+    if (n >= 4 && streq(substr(t, n - 3, n), "then") == 1) { return 1; }
+    if (n >= 2 && streq(substr(t, n - 1, n), "do") == 1) { return 1; }
+    if (n >= 4 && streq(substr(t, n - 3, n), "else") == 1) { return 1; }
+    if (n >= 6 && streq(substr(t, n - 5, n), "repeat") == 1) { return 1; }
+    if (t[n] == "{" || t[n] == "(") { return 1; }
+    if (str_find(t, "function", 1) > 0 && t[n] == ")" && str_find(t, "end", 1) == 0) { return 1; }
+    return 0;
+}
+
+proc rep_space(n) {
+    local s = "";
+    repeat (n) { s = s .. " "; }
+    return s;
+}
+
+// typing a closing keyword at the start of a line dedents it
+proc auto_dedent() {
+    local line = ed[ecy];
+    local t = str_trim(line);
+    if (!(t == "end" || t == "else" || t == "elseif" || t == "until" || t == "}")) { return; }
+    if (streq(t, "end") == 0 && streq(t, "else") == 0 && streq(t, "elseif") == 0 && streq(t, "until") == 0 && t != "}") { return; }
+    if (ecx != len(line) + 1) { return; }
+    // find the previous non-blank line
+    local y = ecy - 1;
+    while (y >= 1 && len(str_trim(ed[y])) == 0) { y -= 1; }
+    if (y < 1) { return; }
+    local want = indent_of(ed[y]);
+    if (opens_block(ed[y]) == 0) { want -= 2; }
+    if (want < 0) { want = 0; }
+    local have = indent_of(line);
+    if (have > want) {
+        ed[ecy] = rep_space(want) .. t;
+        ecx = want + len(t) + 1;
+        lines_changed(ecy);
+    }
+}
+
+proc type_char(ch) {
+    if (cur_tab == 0) { return; }
+    if (tab_ro[cur_tab] == 1) { ide_status("Read-only file"); return; }
+    if (sel_empty() == 0) { undo_mark("other"); del_sel(); }
+    else { undo_mark("type"); sel_on = 0; }
+    local line = ed[ecy];
+    ed[ecy] = substr(line, 1, ecx - 1) .. ch .. substr(line, ecx, len(line));
+    ecx += 1;
+    lines_changed(ecy);
+    mark_dirty();
+    if (char_class[ord(ch) + 1] == 1) { auto_dedent(); }
+    if (ch == ".") { ac_show(0); }
+    else if (ac_open == 1) { ac_show(0); }
+}
+
+proc key_enter() {
+    if (tab_ro[cur_tab] == 1) { return; }
+    undo_mark("other");
+    if (sel_empty() == 0) { del_sel(); }
+    sel_on = 0;
+    local line = ed[ecy];
+    local before = substr(line, 1, ecx - 1);
+    local ind = indent_of(line);
+    if (ind > ecx - 1) { ind = ecx - 1; }
+    if (opens_block(before) == 1) { ind += 2; }
+    local after = str_trim_left(substr(line, ecx, len(line)));
+    ed[ecy] = before;
+    insert(ed, ecy + 1, rep_space(ind) .. after);
+    lines_changed(ecy);
+    ecy += 1;
+    ecx = ind + 1;
+    mark_dirty();
+}
+
+proc str_trim_left(s) {
+    local i = 1;
+    while (i <= len(s) && s[i] == " ") { i += 1; }
+    return substr(s, i, len(s));
+}
+
+proc key_backspace() {
+    if (tab_ro[cur_tab] == 1) { return; }
+    if (sel_empty() == 0) { undo_mark("other"); del_sel(); return; }
+    sel_on = 0;
+    undo_mark("del");
+    local line = ed[ecy];
+    if (ecx > 1) {
+        // inside leading spaces: remove a whole indent step
+        local n = 1;
+        if (indent_of(line) >= ecx - 1 && ecx > 2 && (ecx - 1) % 2 == 0) { n = 2; }
+        ed[ecy] = substr(line, 1, ecx - 1 - n) .. substr(line, ecx, len(line));
+        ecx -= n;
+        lines_changed(ecy);
+    } else if (ecy > 1) {
+        ecx = len(ed[ecy - 1]) + 1;
+        ed[ecy - 1] = ed[ecy - 1] .. line;
+        del(ed, ecy);
+        ecy -= 1;
+        lines_changed(ecy);
+    }
+    mark_dirty();
+}
+
+proc key_delete() {
+    if (tab_ro[cur_tab] == 1) { return; }
+    if (sel_empty() == 0) { undo_mark("other"); del_sel(); return; }
+    sel_on = 0;
+    undo_mark("del");
+    local line = ed[ecy];
+    if (ecx <= len(line)) {
+        ed[ecy] = substr(line, 1, ecx - 1) .. substr(line, ecx + 1, len(line));
+    } else if (ecy < len(ed)) {
+        ed[ecy] = line .. ed[ecy + 1];
+        del(ed, ecy + 1);
+    }
+    lines_changed(ecy);
+    mark_dirty();
+}
+
+// cursor movement; extend = 1 keeps / grows the selection
+proc move_begin(extend) {
+    if (extend == 1) {
+        if (sel_on == 0) { sel_on = 1; sax = ecx; say = ecy; }
+    } else {
+        sel_on = 0;
+    }
+}
+
+proc is_word_char(ch) {
+    local k = char_class[ord(ch) + 1];
+    return k == 1 || k == 2;
+}
+
+proc word_left() {
+    if (ecx == 1) {
+        if (ecy > 1) { ecy -= 1; ecx = len(ed[ecy]) + 1; }
+        return;
+    }
+    local line = ed[ecy];
+    local x = ecx - 1;
+    while (x > 1 && is_word_char(line[x]) == 0) { x -= 1; }
+    while (x > 1 && is_word_char(line[x - 1]) == 1) { x -= 1; }
+    ecx = x;
+}
+
+proc word_right() {
+    local line = ed[ecy];
+    if (ecx > len(line)) {
+        if (ecy < len(ed)) { ecy += 1; ecx = 1; }
+        return;
+    }
+    local x = ecx;
+    while (x <= len(line) && is_word_char(line[x]) == 1) { x += 1; }
+    while (x <= len(line) && is_word_char(line[x]) == 0) { x += 1; }
+    ecx = x;
+}
+
+// select the word under (y, x)
+proc select_word(y, x) {
+    local line = ed[y];
+    local a = x;
+    local b = x;
+    while (a > 1 && is_word_char(line[a - 1]) == 1) { a -= 1; }
+    while (b <= len(line) && is_word_char(line[b]) == 1) { b += 1; }
+    sel_on = 1;
+    say = y;
+    sax = a;
+    ecy = y;
+    ecx = b;
+}
+
+// toggle "-- " comments on the selected lines (or the current line)
+proc toggle_comment() {
+    if (tab_ro[cur_tab] == 1) { return; }
+    undo_mark("other");
+    local y1 = ecy;
+    local y2 = ecy;
+    if (sel_empty() == 0) {
+        sel_bounds();
+        y1 = s_y1;
+        y2 = s_y2;
+        if (s_x2 == 1 && y2 > y1) { y2 -= 1; }
+    }
+    // comment unless every non-blank line is already commented
+    local all = 1;
+    for y = y1 to y2 {
+        local t = str_trim(ed[y]);
+        if (len(t) > 0 && substr(t, 1, 2) != "--") { all = 0; }
+    }
+    for y = y1 to y2 {
+        local line = ed[y];
+        local ind = indent_of(line);
+        local rest = substr(line, ind + 1, len(line));
+        if (all == 1) {
+            if (substr(rest, 1, 3) == "-- ") { rest = substr(rest, 4, len(rest)); }
+            else if (substr(rest, 1, 2) == "--") { rest = substr(rest, 3, len(rest)); }
+            ed[y] = rep_space(ind) .. rest;
+        } else if (len(str_trim(line)) > 0) {
+            ed[y] = rep_space(ind) .. "-- " .. rest;
+        }
+    }
+    lines_changed(y1);
+    clamp_cursor();
+    mark_dirty();
+}
+
+proc indent_lines(dir) {
+    if (tab_ro[cur_tab] == 1) { return; }
+    undo_mark("other");
+    local y1 = ecy;
+    local y2 = ecy;
+    if (sel_empty() == 0) {
+        sel_bounds();
+        y1 = s_y1;
+        y2 = s_y2;
+        if (s_x2 == 1 && y2 > y1) { y2 -= 1; }
+    }
+    for y = y1 to y2 {
+        if (dir > 0) { ed[y] = "  " .. ed[y]; }
+        else {
+            local n = indent_of(ed[y]);
+            if (n > 2) { n = 2; }
+            ed[y] = substr(ed[y], n + 1, len(ed[y]));
+        }
+    }
+    lines_changed(y1);
+    clamp_cursor();
+    mark_dirty();
+}
+
+// ===========================================================================
+// syntax highlighting
+// ===========================================================================
+
+// highlight line s starting in lexer state st; fills hl_code / hl_fg and
+// returns the state at the end of the line
+proc hl_line(s, st) {
+    clear(hl_code);
+    clear(hl_fg);
+    local n = len(s);
+    for i = 1 to n {
+        add(hl_code, ord(s[i]));
+        add(hl_fg, C_FG);
+    }
+    local state = st;
+    local i = 1;
+    while (i <= n) {
+        if (state == 1 || state == 2) {
+            local col = C_COM;
+            if (state == 2) { col = C_STR; }
+            while (i <= n && !(hl_code[i] == 93 && i < n && hl_code[i + 1] == 93)) {
+                hl_fg[i] = col;
+                i += 1;
+            }
+            if (i <= n) {
+                hl_fg[i] = col;
+                hl_fg[i + 1] = col;
+                i += 2;
+                state = 0;
+            }
+        } else {
+            local c = hl_code[i];
+            local cls = char_class[c + 1];
+            if (c == 45 && i < n && hl_code[i + 1] == 45) {
+                // comment
+                if (i + 3 <= n && hl_code[i + 2] == 91 && hl_code[i + 3] == 91) {
+                    hl_fg[i] = C_COM; hl_fg[i + 1] = C_COM; hl_fg[i + 2] = C_COM; hl_fg[i + 3] = C_COM;
+                    i += 4;
+                    state = 1;
+                } else {
+                    while (i <= n) { hl_fg[i] = C_COM; i += 1; }
+                }
+            } else if (c == 91 && i < n && hl_code[i + 1] == 91) {
+                hl_fg[i] = C_STR; hl_fg[i + 1] = C_STR;
+                i += 2;
+                state = 2;
+            } else if (c == 34 || c == 39) {
+                hl_fg[i] = C_STR;
+                i += 1;
+                while (i <= n && hl_code[i] != c) {
+                    if (hl_code[i] == 92 && i < n) { hl_fg[i] = C_STR; i += 1; }
+                    hl_fg[i] = C_STR;
+                    i += 1;
+                }
+                if (i <= n) { hl_fg[i] = C_STR; i += 1; }
+            } else if (cls == 1) {
+                local j = i;
+                local w = "";
+                while (j <= n && (char_class[hl_code[j] + 1] == 1 || char_class[hl_code[j] + 1] == 2)) {
+                    w = w .. s[j];
+                    j += 1;
+                }
+                local col = C_FG;
+                local kw = index(wkeywords, w);
+                if (kw > 0 && streq(wkeywords[kw], w) == 1) { col = C_KW; }
+                else {
+                    local lb = index(lib_words, w);
+                    if (lb > 0 && streq(lib_words[lb], w) == 1) { col = C_LIB; }
+                    else {
+                        local md = index(mod_words, w);
+                        if (md > 0 && streq(mod_words[md], w) == 1) { col = C_LIB; }
+                        else if (i > 1 && hl_code[i - 1] == 46 && i > 2 && char_class[hl_code[i - 2] + 1] == 1) {
+                            // member of a library module: string.upper
+                            local k = i - 2;
+                            while (k > 1 && char_class[hl_code[k - 1] + 1] == 1) { k -= 1; }
+                            local mw = substr(s, k, i - 2);
+                            local mi2 = index(mod_words, mw);
+                            if (mi2 > 0 && streq(mod_words[mi2], mw) == 1) { col = C_LIB; }
+                        }
+                    }
+                }
+                while (i < j) { hl_fg[i] = col; i += 1; }
+            } else if (cls == 2) {
+                while (i <= n && (char_class[hl_code[i] + 1] == 2 || hl_code[i] == 46 || hl_code[i] == 120 ||
+                       (char_class[hl_code[i] + 1] == 1 && hl_code[i] < 103))) {
+                    hl_fg[i] = C_NUM;
+                    i += 1;
+                }
+            } else {
+                if (cls == 0) { hl_fg[i] = C_OP; }
+                i += 1;
+            }
+        }
+    }
+    return state;
+}
+
+// make sure ls_state holds the lexer state for every line up to `upto`
+proc ensure_states(upto) {
+    local n = len(ed);
+    local target = upto;
+    if (target > n) { target = n; }
+    if (ls_valid < 1) {
+        clear(ls_state);
+        add(ls_state, 0);
+        ls_valid = 1;
+    }
+    while (len(ls_state) > ls_valid) { del(ls_state, len(ls_state)); }
+    while (ls_valid < target) {
+        local y = ls_valid;
+        local st = hl_line(ed[y], ls_state[y]);
+        add(ls_state, st);
+        ls_valid += 1;
+    }
+}
+
+// ===========================================================================
+// file tree
+// ===========================================================================
+
+proc tree_build() {
+    clear(tr_path); clear(tr_name); clear(tr_depth); clear(tr_dir);
+    tree_add_dir(1, 0);
+    if (tr_sel > len(tr_path)) { tr_sel = len(tr_path); }
+    ide_dirty = 1;
+}
+
+proc tree_add_dir(dir, depth) recursive {
+    fs_list(dir);
+    // fs_list fills fs_tmp; copy it because recursion reuses the list
+    local kids = "";
+    for k = 1 to len(fs_tmp) { kids = kids .. fs_tmp[k] .. ","; }
+    // directories first, then files
+    for pass = 1 to 2 {
+        local num = "";
+        for k = 1 to len(kids) {
+            if (kids[k] == ",") {
+                local ino = num;
+                num = "";
+                local isdir = 0;
+                if (fs_type[ino] == FT_DIR) { isdir = 1; }
+                if ((pass == 1 && isdir == 1) || (pass == 2 && isdir == 0)) {
+                    local path = fs_path(ino);
+                    if (!(path == "/tmp" || path == "/dev" || path == "/home")) {
+                        add(tr_path, path);
+                        add(tr_name, fs_name[ino]);
+                        add(tr_depth, depth);
+                        add(tr_dir, isdir);
+                        if (isdir == 1 && index(tr_exp, path) > 0) { tree_add_dir(ino, depth + 1); }
+                    }
+                }
+            } else {
+                num = num .. kids[k];
+            }
+        }
+    }
+}
+
+proc tree_click(i) {
+    if (i < 1 || i > len(tr_path)) { return; }
+    tr_sel = i;
+    local p = tr_path[i];
+    if (tr_dir[i] == 1) {
+        local e = index(tr_exp, p);
+        if (e > 0) { del(tr_exp, e); } else { add(tr_exp, p); }
+        tree_build();
+    } else {
+        open_file(p);
+    }
+    ide_dirty = 1;
+}
+
+// directory for new files: the selected folder in the tree, else /projects
+proc new_file_dir() {
+    if (tr_sel > 0 && tr_sel <= len(tr_path)) {
+        if (tr_dir[tr_sel] == 1) { return tr_path[tr_sel]; }
+        local p = tr_path[tr_sel];
+        local k = len(p);
+        while (k > 1 && p[k] != "/") { k -= 1; }
+        if (k > 1) { return substr(p, 1, k - 1); }
+    }
+    return "/projects";
+}
+
+// ===========================================================================
+// running programs
+// ===========================================================================
+
+proc ide_run(check_only) {
+    if (cur_tab == 0) { ide_status("No file to run"); return; }
+    if (run_pid > 0) { ide_stop(); }
+    local path = tab_path[cur_tab];
+    if (tab_ro[cur_tab] == 0) { save_tab(); }
+    local ino = fs_lookup(path, 1);
+    if (ino == 0) { ide_status("Cannot find " .. path); return; }
+    if (tab_ro[cur_tab] == 1) {
+        // documents run from a temporary copy of the buffer
+        ino = fs_create("/tmp/run.wsk", FT_FILE, 1);
+        fs_data[ino] = join_lines();
+        fs_mtime[ino] = fs_now();
+    }
+    err_line = 0;
+    err_msg = "";
+    err_path = path;
+    if (check_only == 1) {
+        if (wcompile(fs_data[ino]) == 1) {
+            ide_status("No syntax errors in " .. fs_name[ino] .. " (" .. len(cb) .. " instructions)");
+        } else {
+            ide_set_error(c_errmsg, 1);
+        }
+        return;
+    }
+    tty_attr[con] = 7;
+    tty_write(con, "\n\e[90m► run " .. path .. "\e[0m\n");
+    clear(sh_argv);
+    add(sh_argv, path);
+    local c = vm_spawn(host, ino);
+    if (c == 0) {
+        ide_set_error(vm_err, 1);
+        return;
+    }
+    p_name[c] = fs_name[ino];
+    p_tty[c] = con;
+    p_in_k[c] = FD_TTY; p_in_i[c] = con;
+    p_out_k[c] = FD_TTY; p_out_i[c] = con;
+    p_err_k[c] = FD_TTY; p_err_i[c] = con;
+    p_caps[c] = "|files|proc|gui|system|";
+    p_capq[c] = "";
+    p_pgid[c] = p_pid[c];
+    p_cwd[c] = fs_parent[ino];
+    tty_fgpid[con] = p_pid[c];
+    tty_line_begin(con);
+    run_pid = p_pid[c];
+    run_t0 = now_secs();
+    vm_last_err_pid = 0;
+    focus = 1;
+    ide_dirty = 1;
+}
+
+// error text "line N: message" (compiler) or a runtime message
+proc ide_set_error(msg, is_compile) {
+    err_msg = msg;
+    err_line = 0;
+    if (is_compile == 1 && substr(msg, 1, 5) == "line ") {
+        local num = "";
+        local i = 6;
+        while (i <= len(msg) && char_class[ord(msg[i]) + 1] == 2) { num = num .. msg[i]; i += 1; }
+        if (len(num) > 0) { err_line = num * 1; }
+        err_msg = substr(msg, i + 2, len(msg));
+    }
+    if (err_line > 0) { ide_goto_error(); }
+    ide_status("Error: " .. err_msg);
+    ide_dirty = 1;
+}
+
+proc ide_goto_error() {
+    if (err_line == 0) { ide_status("No error"); return; }
+    if (index(tab_path, err_path) > 0) { open_file(err_path); }
+    if (cur_tab > 0 && streq(tab_path[cur_tab], err_path) == 1) {
+        ecy = err_line;
+        ecx = indent_of(ed[ecy]) + 1;
+        clamp_cursor();
+        sel_on = 0;
+        focus = 0;
+        ide_scroll_to_cursor();
+    }
+    ide_dirty = 1;
+}
+
+proc ide_stop() {
+    if (run_pid == 0) { return; }
+    local s = proc_slot(run_pid);
+    if (s > 0) {
+        local g = p_pgid[s];
+        for k = 1 to MAX_PROC {
+            if (p_state[k] != PS_FREE && p_pgid[k] == g && k != host) { proc_exit(k, 130); }
+        }
+    }
+    tty_write(con, "\n\e[93m■ stopped\e[0m\n");
+    run_pid = 0;
+    tty_mode[con] = 0;
+    tty_curvis[con] = 1;
+    focus = 0;
+    ide_dirty = 1;
+}
+
+// called every frame: notice when the program has finished
+proc ide_check_run() {
+    if (run_pid == 0) { return; }
+    if (proc_slot(run_pid) > 0) { return; }
+    local code = proc_status(run_pid);
+    if (len(code) == 0) { code = 0; }
+    local secs = floor((now_secs() - run_t0) * 10) / 10;
+    if (vm_last_err_pid == run_pid) {
+        err_line = vm_last_err_line;
+        err_msg = vm_last_err;
+        if (err_line > 0) { ide_goto_error(); }
+        tty_write(con, "\e[90m■ error after " .. secs .. "s\e[0m\n");
+    } else {
+        tty_write(con, "\e[90m■ exit code " .. code .. " (" .. secs .. "s)\e[0m\n");
+    }
+    run_pid = 0;
+    tty_mode[con] = 0;
+    tty_curvis[con] = 1;
+    if (focus == 1 || focus == 3) { focus = 0; }
+    ide_dirty = 1;
+}
+
+// ===========================================================================
+// graphics preview (canvas windows opened by programs)
+// ===========================================================================
+
+proc cv_check() {
+    // adopt the newest canvas window
+    local w = 0;
+    for k = 1 to MAX_WIN {
+        if (win_used[k] == 1 && win_kind[k] == WK_CANVAS) { w = k; }
+    }
+    if (w != cv_win) {
+        cv_win = w;
+        if (w > 0) {
+            cv_place();
+            focus = 3;
+        } else if (focus == 3) {
+            focus = 0;
+        }
+        ide_full = 1;
+        ide_dirty = 1;
+    }
+}
+
+// fit the canvas window into the editor area and send a resize event if shrunk
+proc cv_place() {
+    local w = cv_win;
+    local maxw = IC - 2;
+    local maxh = out_top - 2;
+    local cw = win_w[w];
+    local ch = win_h[w];
+    local shrunk = 0;
+    if (cw > maxw) { cw = maxw; shrunk = 1; }
+    if (ch > maxh) { ch = maxh; shrunk = 1; }
+    if (ch < 4) { ch = 4; }
+    cv_w = cw;
+    cv_h = ch;
+    cv_x = floor((IC - cw) / 2);
+    cv_y = 2 + floor((maxh - ch) / 2);
+    if (shrunk == 1 || cw != win_w[w] || ch != win_h[w]) {
+        wm_event(w, "resize", (cw - 2) * 8, (ch - 2) * 16, "");
+    }
+    win_x[w] = cv_x;
+    win_y[w] = cv_y;
+    win_w[w] = cw;
+    win_h[w] = ch;
+}
+
+// visible rectangles of the canvas (overlays above it are cut out)
+proc cv_vis() {
+    clear(vrc_win); clear(vrc_x); clear(vrc_y); clear(vrc_w); clear(vrc_h);
+    if (cv_win == 0) { return; }
+    clear(vr_x); clear(vr_y); clear(vr_w); clear(vr_h);
+    add(vr_x, (cv_x + 1) * 8);
+    add(vr_y, (cv_y + 1) * 16);
+    add(vr_w, (cv_w - 2) * 8);
+    add(vr_h, (cv_h - 2) * 16);
+    if (menu_open > 0) { rects_subtract(menu_px0 * 8, 16, (menu_px1 - menu_px0) * 8, menu_rows * 16 + 16); }
+    if (dlg_kind > 0) { rects_subtract(dlg_x * 8, dlg_y * 16, dlg_w * 8, dlg_h * 16); }
+    if (ac_open == 1) { rects_subtract(ac_x * 8, ac_y * 16, 24 * 8, (len(ac_items) + 0) * 16); }
+    for q = 1 to len(vr_x) {
+        add(vrc_win, cv_win); add(vrc_x, vr_x[q]); add(vrc_y, vr_y[q]); add(vrc_w, vr_w[q]); add(vrc_h, vr_h[q]);
+    }
+}
+
+// ===========================================================================
+// composition
+// ===========================================================================
+
+proc put(c, r, code, at) {
+    if (c < 0 || r < 0 || c >= IC || r >= IR) { return; }
+    local i = r * IC + c + 1;
+    sc_ch[i] = code;
+    sc_at[i] = at;
+}
+
+proc puts(c, r, s, at) {
+    for k = 1 to len(s) { put(c + k - 1, r, ord(s[k]), at); }
+}
+
+proc fill_row(r, c0, c1, at) {
+    for c = c0 to c1 { put(c, r, 32, at); }
+}
+
+var menu_px0 = 0;
+var menu_px1 = 0;
+var menu_rows = 0;
+
+proc ide_compose() {
+    // menu bar
+    fill_row(0, 0, IC - 1, 0 + 16 * 7);
+    for i = 1 to len(mn_title) {
+        local at = 0 + 16 * 7;
+        if (menu_open == i) { at = 15 + 16 * 0; }
+        puts(mn_x[i] - 1, 0, " " .. mn_title[i] .. " ", at);
+        put(mn_x[i], 0, ord(letter(mn_title[i], 1)), 4 + 16 * 7);
+        if (menu_open == i) { put(mn_x[i], 0, ord(letter(mn_title[i], 1)), 12 + 16 * 0); }
+    }
+    puts(IC - 13, 0, "Whisker IDE ", 1 + 16 * 7);
+    ide_compose_tabs();
+    ide_compose_tree();
+    ide_compose_editor();
+    ide_compose_output();
+    ide_compose_status();
+    if (cv_win > 0) { ide_compose_canvas(); }
+    if (ac_open == 1) { ide_compose_ac(); }
+    if (menu_open > 0) { ide_compose_menu(); }
+    if (dlg_kind > 0) { ide_compose_dialog(); }
+    // tty visibility for the output panel
+    for i = 1 to IC * IR {
+        if (sc_ch[i] == -1) { own[i] = OUT_WIN; } else { own[i] = 0; }
+    }
+    cv_vis();
+}
+
+proc ide_compose_tabs() {
+    fill_row(1, 0, IC - 1, 7 + 16 * 8);
+    local x = 0;
+    local runw = 8;
+    for i = 1 to len(tab_path) {
+        local p = tab_path[i];
+        local k = len(p);
+        while (k > 1 && p[k] != "/") { k -= 1; }
+        local name = substr(p, k + 1, len(p));
+        if (tab_dirty[i] == 1) { name = name .. "*"; }
+        local lbl = " " .. name .. " ";
+        if (i == cur_tab) { lbl = lbl .. "x "; }
+        if (x + len(lbl) < IC - runw) {
+            local at = 7 + 16 * 8;
+            if (i == cur_tab) { at = 15 + 16 * C_BG; }
+            puts(x, 1, lbl, at);
+            if (i == cur_tab) { put(x + len(lbl) - 2, 1, ord("x"), 12 + 16 * C_BG); }
+            x += len(lbl) + 1;
+        }
+    }
+    if (run_pid > 0) { puts(IC - runw, 1, " ■ Stop ", 15 + 16 * 4); }
+    else { puts(IC - runw, 1, " ► Run  ", 15 + 16 * 2); }
+}
+
+proc ide_compose_tree() {
+    if (show_tree == 0) { return; }
+    local at = 7 + 16 * 0;
+    local r0 = ed_y0;
+    for r = r0 to out_top - 1 {
+        fill_row(r, 0, TREE_W - 2, at);
+        put(TREE_W - 1, r, 179, 8 + 16 * 0);
+    }
+    local hat = 0 + 16 * 3;
+    if (focus == 2) { hat = 15 + 16 * 3; }
+    fill_row(r0, 0, TREE_W - 2, hat);
+    puts(0, r0, " FILES", hat);
+    puts(TREE_W - 5, r0, "[+]", hat);
+    local rows = out_top - r0 - 1;
+    if (tr_top > len(tr_path) - rows + 1) { tr_top = len(tr_path) - rows + 1; }
+    if (tr_top < 1) { tr_top = 1; }
+    for k = 0 to rows - 1 {
+        local i = tr_top + k;
+        if (i <= len(tr_path)) {
+            local r = r0 + 1 + k;
+            local ind = tr_depth[i];
+            local fg = 7;
+            local icon = " ";
+            if (tr_dir[i] == 1) {
+                fg = 14;
+                if (index(tr_exp, tr_path[i]) > 0) { icon = "▼"; } else { icon = "►"; }
+            } else if (len(tr_name[i]) > 4 && substr(tr_name[i], len(tr_name[i]) - 3, len(tr_name[i])) == ".wsk") {
+                fg = 10;
+            }
+            local bg = 0;
+            if (i == tr_sel) { bg = 1; }
+            if (cur_tab > 0 && streq(tr_path[i], tab_path[cur_tab]) == 1) { fg = 15; }
+            fill_row(r, 0, TREE_W - 2, 7 + 16 * bg);
+            local txt = substr(rep_space(ind) .. icon .. tr_name[i], 1, TREE_W - 2);
+            puts(1, r, txt, fg + 16 * bg);
+        }
+    }
+}
+
+proc ide_compose_editor() {
+    local n = len(ed);
+    ensure_states(etop + ed_rows);
+    if (sel_on == 1) { sel_bounds(); }
+    local selx = sel_empty() == 0;
+    for r = 0 to ed_rows - 1 {
+        local y = etop + r;
+        local row = ed_y0 + r;
+        // gutter
+        local gat = C_GUT + 16 * C_GUTBG;
+        if (y == ecy) { gat = 14 + 16 * C_GUTBG; }
+        if (y == err_line && cur_tab > 0 && streq(tab_path[cur_tab], err_path) == 1) { gat = 15 + 16 * 4; }
+        if (y <= n && cur_tab > 0) {
+            puts(ed_x0, row, pad_left(y, GUT_W - 1) .. " ", gat);
+        } else {
+            puts(ed_x0, row, rep_space(GUT_W), C_GUT + 16 * C_GUTBG);
+        }
+        // text
+        if (y <= n && cur_tab > 0) {
+            local st = ls_state[y];
+            hl_line(ed[y], st);
+            local len_y = len(ed[y]);
+            for c = 0 to txt_w - 1 {
+                local x = eleft + c;
+                local code = 32;
+                local fg = C_FG;
+                if (x <= len_y) {
+                    code = hl_code[x];
+                    fg = hl_fg[x];
+                }
+                local bg = C_BG;
+                if (selx == 1) {
+                    if (pos_before(y, x, s_y1, s_x1) == 0 && pos_before(y, x, s_y2, s_x2) == 1) {
+                        if (x <= len_y || y < s_y2) { fg = C_SELFG; bg = C_SELBG; }
+                    }
+                }
+                if (code == 9) { code = 32; }
+                put(txt_x0 + c, row, code, fg + 16 * bg);
+            }
+        } else {
+            fill_row(row, txt_x0, txt_x0 + txt_w - 1, C_FG + 16 * C_BG);
+            if (cur_tab > 0) { put(txt_x0, row, ord("~"), 9 + 16 * C_BG); }
+        }
+    }
+    if (cur_tab == 0) {
+        puts(txt_x0 + 2, ed_y0 + 2, "No file open.", 14 + 16 * C_BG);
+        puts(txt_x0 + 2, ed_y0 + 4, "File > New file, or click a", 7 + 16 * C_BG);
+        puts(txt_x0 + 2, ed_y0 + 5, "file in the tree on the left.", 7 + 16 * C_BG);
+    }
+    // scrollbar
+    local sb = IC - 1;
+    for r = 0 to ed_rows - 1 { put(sb, ed_y0 + r, 176, 7 + 16 * C_BG); }
+    if (n > ed_rows) {
+        local th = floor(ed_rows * ed_rows / n);
+        if (th < 1) { th = 1; }
+        local tp = floor((etop - 1) * (ed_rows - th) / (n - ed_rows));
+        if (tp > ed_rows - th) { tp = ed_rows - th; }
+        for r = 0 to th - 1 { put(sb, ed_y0 + tp + r, 219, 7 + 16 * C_BG); }
+    } else {
+        for r = 0 to ed_rows - 1 { put(sb, ed_y0 + r, 219, 7 + 16 * C_BG); }
+    }
+}
+
+proc ide_compose_output() {
+    if (out_h == 0) { return; }
+    local hr = out_top;
+    local at = 0 + 16 * 7;
+    fill_row(hr, 0, IC - 1, at);
+    local title = " OUTPUT ";
+    local tat = 0 + 16 * 7;
+    if (focus == 1) { tat = 15 + 16 * 1; }
+    puts(0, hr, title, tat);
+    local info = "";
+    if (run_pid > 0) { info = "running"; puts(9, hr, " running ", 15 + 16 * 2); }
+    else if (err_line > 0) {
+        info = "! line " .. err_line .. ": " .. err_msg;
+        puts(9, hr, substr(" " .. info .. " ", 1, IC - 30), 15 + 16 * 4);
+    } else if (len(err_msg) > 0) {
+        puts(9, hr, substr(" ! " .. err_msg .. " ", 1, IC - 30), 15 + 16 * 4);
+    }
+    puts(IC - 19, hr, "[Clear][▲][▼][_]", at);
+    for r = hr + 1 to ROW_STATUS - 1 {
+        for c = 0 to IC - 1 { put(c, r, -1, 0); }
+    }
+}
+
+proc ide_compose_status() {
+    local r = ROW_STATUS;
+    if (len(pr_kind) > 0) {
+        fill_row(r, 0, IC - 1, 15 + 16 * 1);
+        puts(0, r, " " .. pr_label .. pr_buf, 15 + 16 * 1);
+        local cx = 1 + len(pr_label) + len(pr_buf);
+        put(cx, r, 219, 14 + 16 * 1);
+        puts(IC - 17, r, " Enter=ok Esc=x ", 7 + 16 * 1);
+        return;
+    }
+    fill_row(r, 0, IC - 1, 0 + 16 * 3);
+    if (len(status_msg) > 0 && now_secs() < status_until) {
+        puts(0, r, substr(" " .. status_msg, 1, IC - 1), 0 + 16 * 3);
+        return;
+    }
+    local name = "no file";
+    if (cur_tab > 0) {
+        name = tab_path[cur_tab];
+        if (tab_dirty[cur_tab] == 1) { name = name .. " *"; }
+        if (tab_ro[cur_tab] == 1) { name = name .. " (read-only)"; }
+    }
+    puts(0, r, substr(" " .. name, 1, 34), 0 + 16 * 3);
+    local pos = "Ln " .. ecy .. ", Col " .. ecx .. " ";
+    if (sel_empty() == 0) { pos = "sel " .. len(sel_text()) .. "  " .. pos; }
+    puts(IC - len(pos), r, pos, 0 + 16 * 3);
+}
+
+proc ide_compose_canvas() {
+    local x = cv_x;
+    local y = cv_y;
+    local w = cv_w;
+    local h = cv_h;
+    local fa = 15 + 16 * 1;
+    for c = x + 1 to x + w - 2 {
+        put(c, y, 205, fa);
+        put(c, y + h - 1, 205, fa);
+    }
+    for r = y + 1 to y + h - 2 {
+        put(x, r, 186, fa);
+        put(x + w - 1, r, 186, fa);
+        for c = x + 1 to x + w - 2 { put(c, r, -2, 1000 + (r - y) * 64 + (c - x)); }
+    }
+    put(x, y, 201, fa);
+    put(x + w - 1, y, 187, fa);
+    put(x, y + h - 1, 200, fa);
+    put(x + w - 1, y + h - 1, 188, fa);
+    puts(x + 1, y, "[■]", fa);
+    put(x + 2, y, 254, 10 + 16 * 1);
+    local t = " " .. win_title[cv_win] .. " ";
+    if (len(t) > w - 6) { t = substr(t, 1, w - 6); }
+    local tat = 7 + 16 * 1;
+    if (focus == 3) { tat = 14 + 16 * 1; }
+    puts(x + floor((w - len(t)) / 2), y, t, tat);
+}
+
+proc ide_compose_ac() {
+    local n = len(ac_items);
+    for k = 1 to n {
+        local at = 0 + 16 * 7;
+        if (k == ac_sel) { at = 0 + 16 * 3; }
+        puts(ac_x, ac_y + k - 1, pad_right(" " .. ac_items[k], 24), at);
+    }
+}
+
+proc ide_compose_menu() {
+    local m = menu_open;
+    local w = 0;
+    menu_rows = 0;
+    for i = 1 to len(mi_menu) {
+        if (mi_menu[i] == m) {
+            menu_rows += 1;
+            local lw = len(mi_label[i]) + len(mi_key[i]) + 4;
+            if (lw > w) { w = lw; }
+        }
+    }
+    if (w < 18) { w = 18; }
+    local x0 = mn_x[m] - 1;
+    if (x0 + w + 2 > IC) { x0 = IC - w - 2; }
+    menu_px0 = x0;
+    menu_px1 = x0 + w + 2;
+    local at = 0 + 16 * 7;
+    local r = 1;
+    for c = x0 to x0 + w + 1 { put(c, r, 196, at); }
+    put(x0, r, 218, at);
+    put(x0 + w + 1, r, 191, at);
+    for i = 1 to len(mi_menu) {
+        if (mi_menu[i] == m) {
+            r += 1;
+            put(x0, r, 179, at);
+            put(x0 + w + 1, r, 179, at);
+            if (mi_label[i] == "-") {
+                for c = x0 + 1 to x0 + w { put(c, r, 196, 8 + 16 * 7); }
+                put(x0, r, 195, at);
+                put(x0 + w + 1, r, 180, at);
+            } else {
+                local a = at;
+                if (i == menu_sel) { a = 15 + 16 * 1; }
+                local txt = " " .. mi_label[i];
+                txt = pad_right(txt, w - len(mi_key[i]) - 1) .. mi_key[i] .. " ";
+                puts(x0 + 1, r, txt, a);
+            }
+        }
+    }
+    r += 1;
+    for c = x0 to x0 + w + 1 { put(c, r, 196, at); }
+    put(x0, r, 192, at);
+    put(x0 + w + 1, r, 217, at);
+}
+
+proc ide_compose_dialog() {
+    local w = 40;
+    for k = 1 to len(dlg_lines) {
+        if (len(dlg_lines[k]) + 4 > w) { w = len(dlg_lines[k]) + 4; }
+    }
+    if (w > IC - 2) { w = IC - 2; }
+    local h = len(dlg_lines) + 5;
+    dlg_w = w;
+    dlg_h = h;
+    dlg_x = floor((IC - w) / 2);
+    dlg_y = floor((IR - h) / 2);
+    local at = 0 + 16 * 7;
+    for r = dlg_y to dlg_y + h - 1 { fill_row(r, dlg_x, dlg_x + w - 1, at); }
+    for c = dlg_x + 1 to dlg_x + w - 2 {
+        put(c, dlg_y, 205, 15 + 16 * 7);
+        put(c, dlg_y + h - 1, 205, 15 + 16 * 7);
+    }
+    for r = dlg_y + 1 to dlg_y + h - 2 {
+        put(dlg_x, r, 186, 15 + 16 * 7);
+        put(dlg_x + w - 1, r, 186, 15 + 16 * 7);
+    }
+    put(dlg_x, dlg_y, 201, 15 + 16 * 7);
+    put(dlg_x + w - 1, dlg_y, 187, 15 + 16 * 7);
+    put(dlg_x, dlg_y + h - 1, 200, 15 + 16 * 7);
+    put(dlg_x + w - 1, dlg_y + h - 1, 188, 15 + 16 * 7);
+    local t = " " .. dlg_title .. " ";
+    puts(dlg_x + floor((w - len(t)) / 2), dlg_y, t, 15 + 16 * 1);
+    for k = 1 to len(dlg_lines) {
+        puts(dlg_x + 2, dlg_y + 1 + k, substr(dlg_lines[k], 1, w - 4), 0 + 16 * 7);
+    }
+    local by = dlg_y + h - 2;
+    if (dlg_kind == 2) {
+        puts(dlg_x + floor(w / 2) - 14, by, "  Yes  ", 15 + 16 * 2);
+        puts(dlg_x + floor(w / 2) - 4, by, "  No   ", 15 + 16 * 4);
+        puts(dlg_x + floor(w / 2) + 6, by, " Cancel ", 15 + 16 * 8);
+    } else {
+        puts(dlg_x + floor(w / 2) - 3, by, "  OK  ", 15 + 16 * 1);
+    }
+}
+
+// ===========================================================================
+// drawing
+// ===========================================================================
+
+proc ide_draw_cell(i) {
+    local col = (i - 1) % IC;
+    local row = floor((i - 1) / IC);
+    local c = sc_ch[i];
+    if (c == -1) {
+        if (out_h > 0) { tty_render_cell(con, row - out_top - 1, col); }
+        return;
+    }
+    if (c == -2) {
+        if (cv_win > 0) { canvas_repaint_rect(cv_win, col * 8, row * 16, 8, 16); }
+        return;
+    }
+    local a = sc_at[i];
+    gfx_fill(col * 8, row * 16, 8, 16, floor(a / 16));
+    if (c != 32 && c != 0 && a % 16 != floor(a / 16)) {
+        gfx_glyph(col * 8, row * 16, c, a % 16);
+    }
+}
+
+proc ide_render() {
+    if (ide_dirty == 0) { return; }
+    ide_dirty = 0;
+    // erase the caret bar first: its cell may not change and so not be redrawn
+    if (caret_on == 1) { ide_draw_cell(caret_r * IC + caret_c + 1); caret_on = 0; }
+    ide_compose();
+    local n = IC * IR;
+    local canvas_cells = 0;
+    local tty_cells = 0;
+    for i = 1 to n {
+        local c = sc_ch[i];
+        if (c != so_ch[i] || sc_at[i] != so_at[i] || ide_full == 1) {
+            so_ch[i] = c;
+            so_at[i] = sc_at[i];
+            if (c == -1) { tty_cells += 1; }
+            else if (c == -2) { canvas_cells += 1; }
+            else { ide_draw_cell(i); }
+        }
+    }
+    if (tty_cells > 0) { tty_full[con] = 1; }
+    if (canvas_cells > 0 && cv_win > 0) { canvas_repaint(cv_win); }
+    if (ide_full == 1) { gfx_fill(0, 352, 480, 8, 7); }
+    ide_full = 0;
+    caret_on = 0;
+}
+
+// blinking caret (a 2-pixel bar) in the editor
+proc ide_caret() {
+    local want = 0;
+    local c = txt_x0 + ecx - eleft;
+    local r = ed_y0 + ecy - etop;
+    if (focus == 0 && cur_tab > 0 && menu_open == 0 && dlg_kind == 0 && len(pr_kind) == 0) {
+        if (c >= txt_x0 && c < txt_x0 + txt_w && r >= ed_y0 && r < ed_y0 + ed_rows) {
+            local t = now_secs();
+            if (t - last_key_time < 0.6 || floor(t / 0.5) % 2 == 0) { want = 1; }
+        }
+    }
+    if (caret_on == 1) {
+        if (want == 1 && caret_c == c && caret_r == r) { return; }
+        ide_draw_cell(caret_r * IC + caret_c + 1);
+        caret_on = 0;
+    }
+    if (want == 1) {
+        local i = r * IC + c + 1;
+        local fg = C_FG;
+        if (sc_ch[i] >= 0) { fg = sc_at[i] % 16; if (fg == C_BG) { fg = C_FG; } }
+        gfx_fill(c * 8, r * 16, 2, 16, 15);
+        caret_on = 1;
+        caret_c = c;
+        caret_r = r;
+    }
+}
+
+proc ide_pointer() {
+    if (ptr_on == 1) {
+        if (mx == ptr_px && my == ptr_py && gfx_stamps == ptr_stamp) { return; }
+        if (mx != ptr_px || my != ptr_py) {
+            local c0 = floor(ptr_px / 8);
+            local r0 = floor(ptr_py / 16);
+            for r = r0 to r0 + 1 {
+                for c = c0 to c0 + 1 {
+                    if (c < IC && r < IR) { ide_draw_cell(r * IC + c + 1); }
+                }
+            }
+            if (ptr_py + 16 > 352) { gfx_fill(ptr_px, 352, 8, 8, 7); }
+            if (caret_on == 1 && (caret_c == c0 || caret_c == c0 + 1) && (caret_r == r0 || caret_r == r0 + 1)) { caret_on = 0; }
+        }
+    }
+    gfx_color(0);
+    goto(mx - 240, 180 - my);
+    costume(CURSOR_MASK_COSTUME);
+    stamp();
+    gfx_color(15);
+    costume(CURSOR_COSTUME);
+    stamp();
+    ptr_on = 1;
+    ptr_px = mx;
+    ptr_py = my;
+    ptr_stamp = gfx_stamps;
+}
+
+// ===========================================================================
+// scrolling
+// ===========================================================================
+
+proc ide_scroll_to_cursor() {
+    if (ecy < etop) { etop = ecy; }
+    if (ecy > etop + ed_rows - 1) { etop = ecy - ed_rows + 1; }
+    if (etop < 1) { etop = 1; }
+    if (ecx < eleft) { eleft = ecx; }
+    if (ecx > eleft + txt_w - 1) { eleft = ecx - txt_w + 1; }
+    if (eleft < 1) { eleft = 1; }
+}
+
+proc ide_status(msg) {
+    status_msg = msg;
+    status_until = now_secs() + 3;
+    ide_dirty = 1;
+}
+
+// ===========================================================================
+// autocomplete
+// ===========================================================================
+
+// word (with module prefix) before the cursor
+proc word_before() {
+    local line = ed[ecy];
+    local x = ecx - 1;
+    while (x >= 1 && (is_word_char(line[x]) == 1 || line[x] == ".")) { x -= 1; }
+    return substr(line, x + 1, ecx - 1);
+}
+
+proc ac_show(forced) {
+    local w = word_before();
+    ac_open = 0;
+    if (len(w) == 0 && forced == 0) { return; }
+    if (forced == 0 && !(contains(w, ".")) && len(w) < 2) { return; }
+    clear(ac_items);
+    for i = 1 to len(nat_names) {
+        local n = nat_names[i];
+        if (len(n) > len(w) && streq(substr(n, 1, len(w)), w) == 1 && len(ac_items) < 8) { add(ac_items, n); }
+    }
+    for i = 1 to len(wkeywords) {
+        local k = wkeywords[i];
+        if (len(k) > len(w) && streq(substr(k, 1, len(w)), w) == 1 && len(ac_items) < 8) { add(ac_items, k); }
+    }
+    for i = 1 to len(nat_mods) {
+        local m = nat_mods[i];
+        if (len(m) > len(w) && streq(substr(m, 1, len(w)), w) == 1 && len(ac_items) < 8) { add(ac_items, m .. "."); }
+    }
+    if (len(ac_items) == 0) {
+        if (forced == 1) { ide_status("No completions for '" .. w .. "'"); }
+        return;
+    }
+    ac_word = w;
+    ac_sel = 1;
+    ac_open = 1;
+    ac_x = txt_x0 + ecx - eleft - len(w);
+    if (ac_x < 0) { ac_x = 0; }
+    if (ac_x + 24 > IC) { ac_x = IC - 24; }
+    ac_y = ed_y0 + ecy - etop + 1;
+    if (ac_y + len(ac_items) > ROW_STATUS) { ac_y = ed_y0 + ecy - etop - len(ac_items); }
+    ide_dirty = 1;
+}
+
+proc ac_accept() {
+    local item = ac_items[ac_sel];
+    local rest = substr(item, len(ac_word) + 1, len(item));
+    ac_open = 0;
+    undo_mark("other");
+    ins_text(rest);
+    // functions get "()" with the cursor inside
+    if (index(nat_names, item) > 0 && index(nat_mods, item) == 0) {
+        if (!(substr(item, len(item), len(item)) == ".")) {
+            ins_text("()");
+            ecx -= 1;
+        }
+    }
+    if (substr(item, len(item), len(item)) == ".") { ac_show(0); }
+    ide_dirty = 1;
+}
+
+// ===========================================================================
+// prompts and dialogs
+// ===========================================================================
+
+proc prompt(kind, label, initial) {
+    pr_kind = kind;
+    pr_label = label;
+    pr_buf = initial;
+    ide_dirty = 1;
+}
+
+proc dialog(kind, title, text, yes_cmd, no_cmd) {
+    dlg_kind = kind;
+    dlg_title = title;
+    dlg_cmd = yes_cmd;
+    dlg_no = no_cmd;
+    clear(dlg_lines);
+    local cur = "";
+    for i = 1 to len(text) {
+        if (text[i] == "\n") { add(dlg_lines, cur); cur = ""; } else { cur = cur .. text[i]; }
+    }
+    add(dlg_lines, cur);
+    ide_dirty = 1;
+}
+
+proc dialog_answer(a) {
+    local yes = dlg_cmd;
+    local no = dlg_no;
+    dlg_kind = 0;
+    ide_full = 1;
+    ide_dirty = 1;
+    if (a == "y" && len(yes) > 0) { ide_cmd(yes); }
+    if (a == "n" && len(no) > 0) { ide_cmd(no); }
+}
+
+proc prompt_done() {
+    local kind = pr_kind;
+    local v = pr_buf;
+    pr_kind = "";
+    ide_dirty = 1;
+    if (kind == "new") {
+        if (len(v) == 0) { return; }
+        local path = v;
+        if (path[1] != "/") { path = new_file_dir() .. "/" .. v; }
+        if (!(contains(fs_name_of(path), "."))) { path = path .. ".wsk"; }
+        if (fs_lookup(path, 1) > 0) { ide_status(path .. " already exists"); open_file(path); return; }
+        local ino = fs_create(path, FT_FILE, 1);
+        if (ino == 0) { ide_status("Cannot create " .. path .. ": " .. fs_err); return; }
+        fs_data[ino] = "-- " .. fs_name[ino] .. "\n\n";
+        tree_build();
+        open_file(path);
+        ecy = 3;
+        ecx = 1;
+        if (len(ed) < 3) { add(ed, ""); }
+        return;
+    }
+    if (kind == "saveas" || kind == "rename") {
+        if (len(v) == 0 || cur_tab == 0) { return; }
+        local path2 = v;
+        if (path2[1] != "/") { path2 = "/projects/" .. v; }
+        local old = tab_path[cur_tab];
+        if (kind == "rename") {
+            local src = fs_lookup(old, 1);
+            local dir = fs_lookup_parent(path2, 1);
+            if (src == 0 || dir == 0 || fs_rename(src, dir, fs_base) == 0) { ide_status("Cannot rename: " .. fs_err); return; }
+            tab_path[cur_tab] = fs_path(src);
+        } else {
+            tab_path[cur_tab] = path2;
+            tab_ro[cur_tab] = 0;
+            save_tab();
+        }
+        tree_build();
+        ide_status(old .. " -> " .. tab_path[cur_tab]);
+        return;
+    }
+    if (kind == "find") {
+        find_text = v;
+        find_next();
+        return;
+    }
+    if (kind == "replace") {
+        if (len(v) == 0) { return; }
+        repl_from = v;
+        prompt("replace2", "Replace '" .. v .. "' with: ", "");
+        return;
+    }
+    if (kind == "replace2") {
+        replace_all(repl_from, v);
+        return;
+    }
+    if (kind == "goto") {
+        local n = v * 1;
+        if (n >= 1) {
+            ecy = n;
+            ecx = 1;
+            clamp_cursor();
+            sel_on = 0;
+            ide_scroll_to_cursor();
+        }
+        return;
+    }
+    if (kind == "import") {
+        if (len(v) == 0) { return; }
+        local path3 = v;
+        if (path3[1] != "/") { path3 = "/projects/" .. v; }
+        local ino3 = fs_create(path3, FT_FILE, 1);
+        if (ino3 == 0) { ide_status("Cannot create " .. path3); return; }
+        local txt = "";
+        for i = 1 to len(ide_export) { txt = txt .. ide_export[i] .. "\n"; }
+        fs_data[ino3] = txt;
+        hide_list(ide_export);
+        tree_build();
+        local ti = index(tab_path, fs_path(ino3));
+        if (ti > 0) { close_tab(ti); }
+        open_file(path3);
+        ide_status("Imported " .. len(ide_export) .. " lines into " .. path3);
+        return;
+    }
+}
+
+proc fs_name_of(path) {
+    local k = len(path);
+    while (k > 0 && path[k] != "/") { k -= 1; }
+    return substr(path, k + 1, len(path));
+}
+
+proc find_next() {
+    if (len(find_text) == 0 || cur_tab == 0) { return; }
+    local n = len(ed);
+    for step = 0 to n {
+        local y = (ecy - 1 + step) % n + 1;
+        local from = 1;
+        if (step == 0) { from = ecx; if (sel_empty() == 0) { from = ecx; } }
+        local p = str_find(ed[y], find_text, from);
+        if (p > 0 && !(step == 0 && p < from)) {
+            sel_on = 1;
+            say = y;
+            sax = p;
+            ecy = y;
+            ecx = p + len(find_text);
+            ide_scroll_to_cursor();
+            ide_status("Found '" .. find_text .. "' on line " .. y);
+            return;
+        }
+    }
+    ide_status("'" .. find_text .. "' not found");
+}
+
+proc replace_all(from, to) {
+    if (cur_tab == 0 || tab_ro[cur_tab] == 1) { return; }
+    undo_mark("other");
+    local count = 0;
+    for y = 1 to len(ed) {
+        local line = ed[y];
+        local out = "";
+        local p = 1;
+        forever {
+            local f = str_find(line, from, p);
+            if (f == 0) { break; }
+            out = out .. substr(line, p, f - 1) .. to;
+            p = f + len(from);
+            count += 1;
+        }
+        ed[y] = out .. substr(line, p, len(line));
+    }
+    ls_valid = 0;
+    clamp_cursor();
+    if (count > 0) { mark_dirty(); }
+    ide_status("Replaced " .. count .. " occurrence(s)");
+}
+
+// ===========================================================================
+// commands (menus, keys and buttons all end up here)
+// ===========================================================================
+
+proc ide_cmd(cmd) {
+    menu_open = 0;
+    ac_open = 0;
+    ide_full = 1;
+    ide_dirty = 1;
+    if (cmd == "new") { prompt("new", "New file name: ", ""); return; }
+    if (cmd == "save") { save_tab(); return; }
+    if (cmd == "saveas") {
+        if (cur_tab > 0) { prompt("saveas", "Save as: ", tab_path[cur_tab]); }
+        return;
+    }
+    if (cmd == "rename") {
+        if (cur_tab > 0 && tab_ro[cur_tab] == 0) { prompt("rename", "Rename to: ", tab_path[cur_tab]); }
+        return;
+    }
+    if (cmd == "delete") {
+        if (cur_tab == 0) { return; }
+        dialog(2, "Delete file", "Delete " .. tab_path[cur_tab] .. "?\nThis cannot be undone.", "do_delete", "");
+        return;
+    }
+    if (cmd == "do_delete") {
+        local ino = fs_lookup(tab_path[cur_tab], 1);
+        if (ino > 0 && tab_ro[cur_tab] == 0) { fs_remove(ino, 0); }
+        close_tab(cur_tab);
+        tree_build();
+        return;
+    }
+    if (cmd == "close") {
+        if (cur_tab == 0) { return; }
+        if (tab_dirty[cur_tab] == 1) {
+            dialog(2, "Unsaved changes", "Save changes to " .. tab_path[cur_tab] .. "?", "save_close", "force_close");
+        } else { close_tab(cur_tab); }
+        return;
+    }
+    if (cmd == "save_close") { if (save_tab() == 1) { close_tab(cur_tab); } return; }
+    if (cmd == "force_close") { close_tab(cur_tab); return; }
+    if (cmd == "export") {
+        if (cur_tab == 0) { return; }
+        clear(ide_export);
+        for i = 1 to len(ed) { add(ide_export, ed[i]); }
+        show_list(ide_export);
+        dialog(1, "Export", "The file is now in the list 'ide_export' on the\nstage.  Right-click the list and choose 'export'\nto save it as a .txt file.  File > Import\nhides the list again.", "", "");
+        return;
+    }
+    if (cmd == "import") {
+        if (len(ide_export) == 0) {
+            show_list(ide_export);
+            dialog(1, "Import", "Right-click the list 'ide_export' on the stage,\nchoose 'import' and pick a text file.\nThen choose File > Import again.", "", "");
+            return;
+        }
+        prompt("import", "Import as: ", "/projects/imported.wsk");
+        return;
+    }
+    if (cmd == "undo") { undo_step(0); return; }
+    if (cmd == "redo") { undo_step(1); return; }
+    if (cmd == "copy") {
+        if (sel_empty() == 0) { clipboard = sel_text(); ide_status("Copied " .. len(clipboard) .. " characters"); }
+        else if (cur_tab > 0) { clipboard = ed[ecy] .. "\n"; ide_status("Copied line " .. ecy); }
+        return;
+    }
+    if (cmd == "cut") {
+        if (cur_tab == 0 || tab_ro[cur_tab] == 1) { return; }
+        undo_mark("other");
+        if (sel_empty() == 0) { clipboard = sel_text(); del_sel(); }
+        else {
+            clipboard = ed[ecy] .. "\n";
+            if (len(ed) > 1) { del(ed, ecy); } else { ed[1] = ""; }
+            clamp_cursor();
+            lines_changed(ecy);
+            mark_dirty();
+        }
+        return;
+    }
+    if (cmd == "paste") {
+        if (cur_tab == 0 || tab_ro[cur_tab] == 1 || len(clipboard) == 0) { return; }
+        undo_mark("other");
+        del_sel();
+        ins_text(clipboard);
+        ide_scroll_to_cursor();
+        return;
+    }
+    if (cmd == "selall") {
+        if (cur_tab == 0) { return; }
+        sel_on = 1; say = 1; sax = 1;
+        ecy = len(ed); ecx = len(ed[ecy]) + 1;
+        return;
+    }
+    if (cmd == "find") { prompt("find", "Find: ", find_text); return; }
+    if (cmd == "findnext") { if (len(find_text) == 0) { prompt("find", "Find: ", ""); } else { find_next(); } return; }
+    if (cmd == "replace") { prompt("replace", "Replace: ", find_text); return; }
+    if (cmd == "goto") { prompt("goto", "Go to line: ", ""); return; }
+    if (cmd == "comment") { if (cur_tab > 0) { toggle_comment(); } return; }
+    if (cmd == "indent") { if (cur_tab > 0) { indent_lines(1); } return; }
+    if (cmd == "unindent") { if (cur_tab > 0) { indent_lines(-1); } return; }
+    if (cmd == "dupline") {
+        if (cur_tab == 0 || tab_ro[cur_tab] == 1) { return; }
+        undo_mark("other");
+        insert(ed, ecy + 1, ed[ecy]);
+        ecy += 1;
+        lines_changed(ecy - 1);
+        mark_dirty();
+        return;
+    }
+    if (cmd == "delline") {
+        if (cur_tab == 0 || tab_ro[cur_tab] == 1) { return; }
+        undo_mark("other");
+        if (len(ed) > 1) { del(ed, ecy); } else { ed[1] = ""; }
+        clamp_cursor();
+        lines_changed(ecy);
+        mark_dirty();
+        return;
+    }
+    if (cmd == "run") { ide_run(0); return; }
+    if (cmd == "stop") { ide_stop(); return; }
+    if (cmd == "check") { ide_run(1); return; }
+    if (cmd == "goerr") { ide_goto_error(); return; }
+    if (cmd == "clearout") { tty_attr[con] = 7; tty_clear(con); err_msg = ""; return; }
+    if (cmd == "tree") { show_tree = 1 - show_tree; ide_layout(); return; }
+    if (cmd == "out0") { out_h = 0; ide_layout(); return; }
+    if (cmd == "out3") { out_h = 3; ide_layout(); return; }
+    if (cmd == "out5") { out_h = 5; ide_layout(); return; }
+    if (cmd == "out9") { out_h = 9; ide_layout(); return; }
+    if (cmd == "theme0") { ide_theme(0); return; }
+    if (cmd == "theme1") { ide_theme(1); return; }
+    if (cmd == "help") { open_file("/docs/quickstart.txt"); return; }
+    if (cmd == "ref") { open_file("/docs/reference.txt"); return; }
+    if (cmd == "keys") {
+        dialog(1, "Keyboard shortcuts", "Ctrl+Enter run         Esc  stop / menu bar\nCtrl+Space complete     Ctrl+/  comment\nCtrl+Z/Y undo/redo      Ctrl+D  duplicate line\nCtrl+X/C/V clipboard    Ctrl+A  select all\nShift+arrows select     Ctrl+arrows word jump\nCtrl+Home/End  start/end of file", "", "");
+        return;
+    }
+    if (cmd == "about") {
+        dialog(1, "About", "Whisker IDE 1.0\n\nAn editor and runtime for the Whisker language,\nbuilt in Scratch: everything is drawn with the pen.\nUses the ScratchOS " .. OS_VERSION .. " compiler and virtual machine.", "", "");
+        return;
+    }
+}
+
+// ===========================================================================
+// keyboard
+// ===========================================================================
+
+proc ide_key(event) {
+    local ev = event;
+    if (ev == "caps lock") { kb_caps = 1 - kb_caps; return; }
+    ide_dirty = 1;
+    // dialog
+    if (dlg_kind > 0) {
+        if (dlg_kind == 1) {
+            if (ev == "enter" || ev == "escape" || ev == " ") { dialog_answer("ok"); }
+        } else {
+            if (ev == "y" || ev == "Y" || ev == "enter") { dialog_answer("y"); }
+            else if (ev == "n" || ev == "N") { dialog_answer("n"); }
+            else if (ev == "escape" || ev == "c") { dialog_answer("c"); }
+        }
+        return;
+    }
+    // prompt line
+    if (len(pr_kind) > 0) {
+        if (ev == "enter") { prompt_done(); }
+        else if (ev == "escape") { pr_kind = ""; }
+        else if (ev == "backspace") { pr_buf = substr(pr_buf, 1, len(pr_buf) - 1); }
+        else if (len(ev) == 1) { pr_buf = pr_buf .. ev; }
+        return;
+    }
+    // menus
+    if (menu_open > 0) {
+        if (ev == "escape") { menu_open = 0; ide_full = 1; return; }
+        if (ev == "left arrow" || ev == "right arrow") {
+            if (ev == "left arrow") { menu_open -= 1; } else { menu_open += 1; }
+            if (menu_open < 1) { menu_open = len(mn_title); }
+            if (menu_open > len(mn_title)) { menu_open = 1; }
+            menu_sel = menu_first(menu_open);
+            ide_full = 1;
+            return;
+        }
+        if (ev == "up arrow" || ev == "down arrow") {
+            menu_sel = menu_move(menu_sel, ev == "down arrow");
+            return;
+        }
+        if (ev == "enter") { if (menu_sel > 0) { ide_cmd(mi_cmd[menu_sel]); } return; }
+        // first letter of a menu title opens it
+        for i = 1 to len(mn_title) {
+            if (ev == letter(mn_title[i], 1)) { menu_open = i; menu_sel = menu_first(i); ide_full = 1; return; }
+        }
+        return;
+    }
+    // autocomplete popup
+    if (ac_open == 1) {
+        if (ev == "up arrow") { ac_sel -= 1; if (ac_sel < 1) { ac_sel = len(ac_items); } return; }
+        if (ev == "down arrow") { ac_sel += 1; if (ac_sel > len(ac_items)) { ac_sel = 1; } return; }
+        if (ev == "enter") { ac_accept(); return; }
+        if (ev == "escape") { ac_open = 0; ide_full = 1; return; }
+        if (len(ev) > 1 && ev != "backspace") { ac_open = 0; ide_full = 1; }
+    }
+    // global keys
+    if (ev == "^enter") { ide_cmd("run"); return; }
+    if (ev == "escape") {
+        if (run_pid > 0) { ide_stop(); return; }
+        if (cv_win > 0) { wm_close(cv_win); cv_check(); return; }
+        if (sel_on == 1) { sel_on = 0; return; }
+        menu_open = 1;
+        menu_sel = menu_first(1);
+        return;
+    }
+    // the running program gets the keys when the output panel / preview has focus
+    if (focus == 1 && run_pid > 0) {
+        if (ev == "^c") { ide_stop(); return; }
+        local norm = ev;
+        if (len(norm) > 2 && (norm[1] == "^" || norm[1] == "+")) { norm = substr(norm, 2, len(norm)); }
+        if (tty_mode[con] == 1) { add(kq_pid, run_pid); add(kq_ev, norm); }
+        else { tty_key(con, norm); }
+        return;
+    }
+    if (focus == 3 && cv_win > 0) {
+        local norm2 = ev;
+        if (len(norm2) > 2 && (norm2[1] == "^" || norm2[1] == "+")) { norm2 = substr(norm2, 2, len(norm2)); }
+        wm_event(cv_win, "key", 0, 0, norm2);
+        return;
+    }
+    if (focus == 2) {
+        if (ev == "up arrow" && tr_sel > 1) { tr_sel -= 1; return; }
+        if (ev == "down arrow" && tr_sel < len(tr_path)) { tr_sel += 1; return; }
+        if (ev == "enter") { tree_click(tr_sel); return; }
+        if (ev == "right arrow" || ev == "left arrow") { focus = 0; return; }
+    }
+    focus = 0;
+    ide_edit_key(ev);
+}
+
+proc menu_first(m) {
+    for i = 1 to len(mi_menu) {
+        if (mi_menu[i] == m && mi_label[i] != "-") { return i; }
+    }
+    return 0;
+}
+
+proc menu_move(cur, down) {
+    local i = cur;
+    repeat (len(mi_menu)) {
+        if (down == 1) { i += 1; } else { i -= 1; }
+        if (i > len(mi_menu)) { i = 1; }
+        if (i < 1) { i = len(mi_menu); }
+        if (mi_menu[i] == menu_open && mi_label[i] != "-") { return i; }
+    }
+    return cur;
+}
+
+proc ide_edit_key(ev) {
+    if (cur_tab == 0) {
+        if (ev == "^n") { ide_cmd("new"); }
+        return;
+    }
+    if (len(ev) == 1) { type_char(ev); ide_scroll_to_cursor(); return; }
+    // ctrl shortcuts
+    if (ev == "^ ") { ac_show(1); return; }
+    if (ev == "^z") { ide_cmd("undo"); return; }
+    if (ev == "^y") { ide_cmd("redo"); return; }
+    if (ev == "^c") { ide_cmd("copy"); return; }
+    if (ev == "^x") { ide_cmd("cut"); return; }
+    if (ev == "^v") { ide_cmd("paste"); return; }
+    if (ev == "^a") { ide_cmd("selall"); return; }
+    if (ev == "^d") { ide_cmd("dupline"); return; }
+    if (ev == "^/") { ide_cmd("comment"); return; }
+    if (ev == "^f") { ide_cmd("find"); return; }
+    if (ev == "^g") { ide_cmd("goto"); return; }
+    if (ev == "^s") { ide_cmd("save"); return; }
+    if (ev == "^]") { ide_cmd("indent"); return; }
+    if (ev == "^[") { ide_cmd("unindent"); return; }
+    if (ev == "enter") { key_enter(); ide_scroll_to_cursor(); return; }
+    if (ev == "backspace") { key_backspace(); ide_scroll_to_cursor(); return; }
+    if (ev == "delete") { key_delete(); return; }
+    // movement: "+" = shift (extend selection), "^" = ctrl
+    local extend = 0;
+    local k = ev;
+    if (k[1] == "+" && len(k) > 2) { extend = 1; k = substr(k, 2, len(k)); }
+    local ctrl = 0;
+    if (k[1] == "^" && len(k) > 2) { ctrl = 1; k = substr(k, 2, len(k)); }
+    move_begin(extend);
+    last_edit = "";
+    local n = len(ed);
+    if (k == "left arrow") {
+        if (ctrl == 1) { word_left(); }
+        else if (ecx > 1) { ecx -= 1; } else if (ecy > 1) { ecy -= 1; ecx = len(ed[ecy]) + 1; }
+        want_x = ecx;
+    } else if (k == "right arrow") {
+        if (ctrl == 1) { word_right(); }
+        else if (ecx <= len(ed[ecy])) { ecx += 1; } else if (ecy < n) { ecy += 1; ecx = 1; }
+        want_x = ecx;
+    } else if (k == "up arrow") {
+        if (want_x < ecx) { want_x = ecx; }
+        if (ecy > 1) { ecy -= 1; ecx = want_x; clamp_cursor(); }
+    } else if (k == "down arrow") {
+        if (want_x < ecx) { want_x = ecx; }
+        if (ecy < n) { ecy += 1; ecx = want_x; clamp_cursor(); }
+    } else if (k == "home") {
+        if (ctrl == 1) { ecy = 1; ecx = 1; }
+        else {
+            // smart home: first non-blank, then column 1
+            local ind = indent_of(ed[ecy]) + 1;
+            if (ecx == ind) { ecx = 1; } else { ecx = ind; }
+        }
+        want_x = ecx;
+    } else if (k == "end") {
+        if (ctrl == 1) { ecy = n; }
+        ecx = len(ed[ecy]) + 1;
+        want_x = ecx;
+    } else if (k == "page up") {
+        ecy -= ed_rows - 1;
+        etop -= ed_rows - 1;
+        if (etop < 1) { etop = 1; }
+        clamp_cursor();
+    } else if (k == "page down") {
+        ecy += ed_rows - 1;
+        etop += ed_rows - 1;
+        if (etop > n - ed_rows + 1) { etop = n - ed_rows + 1; }
+        if (etop < 1) { etop = 1; }
+        clamp_cursor();
+    }
+    if (k == "left arrow" || k == "right arrow" || k == "home" || k == "end") { want_x = 0; }
+    ide_scroll_to_cursor();
+}
+
+// ===========================================================================
+// mouse
+// ===========================================================================
+
+proc ide_mouse() {
+    local px = round(mouse_x() + 240);
+    local py = round(180 - mouse_y());
+    if (px < 0) { px = 0; }
+    if (py < 0) { py = 0; }
+    if (px > 479) { px = 479; }
+    if (py > 359) { py = 359; }
+    local moved = 0;
+    if (px != mx || py != my) { moved = 1; }
+    mx = px;
+    my = py;
+    mwas = mdown;
+    if (mouse_down()) { mdown = 1; } else { mdown = 0; }
+    local c = floor(mx / 8);
+    local r = floor(my / 16);
+    if (mdown == 1 && mwas == 0) { ide_press(c, r); }
+    else if (mdown == 1 && moved == 1) { ide_drag(c, r); }
+    else if (mdown == 0 && mwas == 1) {
+        if (mdrag == 3 && cv_win > 0) {
+            wm_event(cv_win, "mouseup", mx - (cv_x + 1) * 8, my - (cv_y + 1) * 16, "");
+        }
+        mdrag = 0;
+    }
+    // hover in an open menu
+    if (menu_open > 0 && moved == 1) {
+        local item = menu_item_at(c, r);
+        if (item > 0 && item != menu_sel) { menu_sel = item; ide_dirty = 1; }
+    }
+}
+
+proc menu_item_at(c, r) {
+    if (c <= menu_px0 || c >= menu_px1 - 1) { return 0; }
+    local row = 1;
+    for i = 1 to len(mi_menu) {
+        if (mi_menu[i] == menu_open) {
+            row += 1;
+            if (row == r && mi_label[i] != "-") { return i; }
+        }
+    }
+    return 0;
+}
+
+proc ide_press(c, r) {
+    ide_dirty = 1;
+    // modal dialog
+    if (dlg_kind > 0) {
+        local by = dlg_y + dlg_h - 2;
+        if (r == by) {
+            local mid = dlg_x + floor(dlg_w / 2);
+            if (dlg_kind == 1) { dialog_answer("ok"); }
+            else if (c >= mid - 14 && c < mid - 7) { dialog_answer("y"); }
+            else if (c >= mid - 4 && c < mid + 3) { dialog_answer("n"); }
+            else if (c >= mid + 6 && c < mid + 14) { dialog_answer("c"); }
+        }
+        return;
+    }
+    if (len(pr_kind) > 0 && r != ROW_STATUS) { pr_kind = ""; }
+    // menus
+    if (menu_open > 0) {
+        local item = menu_item_at(c, r);
+        if (item > 0) { ide_cmd(mi_cmd[item]); return; }
+        menu_open = 0;
+        ide_full = 1;
+        if (r != 0) { return; }
+    }
+    if (r == 0) {
+        for i = 1 to len(mn_title) {
+            if (c >= mn_x[i] - 1 && c <= mn_x[i] + len(mn_title[i])) {
+                menu_open = i;
+                menu_sel = menu_first(i);
+                return;
+            }
+        }
+        return;
+    }
+    if (ac_open == 1) {
+        if (c >= ac_x && c < ac_x + 24 && r >= ac_y && r < ac_y + len(ac_items)) {
+            ac_sel = r - ac_y + 1;
+            ac_accept();
+            return;
+        }
+        ac_open = 0;
+        ide_full = 1;
+    }
+    // graphics preview
+    if (cv_win > 0 && c >= cv_x && c < cv_x + cv_w && r >= cv_y && r < cv_y + cv_h) {
+        focus = 3;
+        if (r == cv_y && c >= cv_x + 1 && c <= cv_x + 3) {
+            if (proc_slot(win_pid[cv_win]) > 0) { wm_event(cv_win, "close", 0, 0, ""); }
+            else { wm_close(cv_win); cv_check(); }
+            return;
+        }
+        if (r > cv_y && r < cv_y + cv_h - 1 && c > cv_x && c < cv_x + cv_w - 1) {
+            mdrag = 3;
+            wm_event(cv_win, "mousedown", mx - (cv_x + 1) * 8, my - (cv_y + 1) * 16, "");
+        }
+        return;
+    }
+    // tabs row
+    if (r == ROW_TABS) {
+        if (c >= IC - 8) {
+            if (run_pid > 0) { ide_cmd("stop"); } else { ide_cmd("run"); }
+            return;
+        }
+        local x = 0;
+        for i = 1 to len(tab_path) {
+            local p = tab_path[i];
+            local name = fs_name_of(p);
+            if (tab_dirty[i] == 1) { name = name .. "*"; }
+            local lw = len(name) + 2;
+            if (i == cur_tab) { lw += 2; }
+            if (c >= x && c < x + lw) {
+                if (i == cur_tab && c >= x + lw - 2) { ide_cmd("close"); }
+                else { tab_activate(i); }
+                return;
+            }
+            x += lw + 1;
+        }
+        return;
+    }
+    // output panel
+    if (out_h > 0 && r == out_top) {
+        if (c >= IC - 19 && c < IC - 12) { ide_cmd("clearout"); return; }
+        if (c >= IC - 12 && c < IC - 9) {
+            if (out_h < 9) { out_h += 2; if (out_h > 9) { out_h = 9; } ide_layout(); }
+            return;
+        }
+        if (c >= IC - 9 && c < IC - 6) {
+            if (out_h > 3) { out_h -= 2; if (out_h < 3) { out_h = 3; } ide_layout(); }
+            return;
+        }
+        if (c >= IC - 6 && c < IC - 3) { out_h = 0; ide_layout(); return; }
+        if (err_line > 0 && c >= 9) { ide_goto_error(); return; }
+        focus = 1;
+        return;
+    }
+    if (out_h > 0 && r > out_top && r < ROW_STATUS) {
+        focus = 1;
+        return;
+    }
+    if (r == ROW_STATUS && out_h == 0) { out_h = 5; ide_layout(); return; }
+    // file tree
+    if (show_tree == 1 && c < TREE_W && r >= ed_y0 && r < out_top) {
+        focus = 2;
+        if (r == ed_y0) {
+            if (c >= TREE_W - 5) { ide_cmd("new"); }
+            return;
+        }
+        tree_click(tr_top + r - ed_y0 - 1);
+        return;
+    }
+    // scrollbar
+    if (c == IC - 1 && r >= ed_y0 && r < out_top) {
+        mdrag = 2;
+        ide_scrollbar(r);
+        return;
+    }
+    // editor
+    if (r >= ed_y0 && r < out_top && cur_tab > 0) {
+        focus = 0;
+        local y = etop + r - ed_y0;
+        if (y > len(ed)) { y = len(ed); }
+        local x = eleft + c - txt_x0;
+        if (c < txt_x0) {
+            // gutter: select the whole line
+            sel_on = 1; say = y; sax = 1;
+            ecy = y; ecx = len(ed[y]) + 1;
+            if (y < len(ed)) { ecy = y + 1; ecx = 1; }
+            return;
+        }
+        if (x < 1) { x = 1; }
+        if (x > len(ed[y]) + 1) { x = len(ed[y]) + 1; }
+        local t = now_secs();
+        if (t - last_click < 0.4 && last_click_x == x && last_click_y == y) {
+            select_word(y, x);
+            last_click = 0;
+            return;
+        }
+        last_click = t;
+        last_click_x = x;
+        last_click_y = y;
+        sel_on = 1;
+        say = y;
+        sax = x;
+        ecy = y;
+        ecx = x;
+        want_x = 0;
+        last_edit = "";
+        mdrag = 1;
+    }
+}
+
+proc ide_scrollbar(r) {
+    local n = len(ed);
+    if (n <= ed_rows) { return; }
+    local frac = (r - ed_y0) / (ed_rows - 1);
+    etop = round(1 + frac * (n - ed_rows));
+    if (etop < 1) { etop = 1; }
+    if (etop > n - ed_rows + 1) { etop = n - ed_rows + 1; }
+    ide_dirty = 1;
+}
+
+proc ide_drag(c, r) {
+    if (mdrag == 1 && cur_tab > 0) {
+        local y = etop + r - ed_y0;
+        if (r < ed_y0) { y = etop - 1; }
+        if (r >= out_top) { y = etop + ed_rows; }
+        if (y < 1) { y = 1; }
+        if (y > len(ed)) { y = len(ed); }
+        local x = eleft + c - txt_x0;
+        if (x < 1) { x = 1; }
+        if (x > len(ed[y]) + 1) { x = len(ed[y]) + 1; }
+        if (x != ecx || y != ecy) {
+            ecy = y;
+            ecx = x;
+            ide_scroll_to_cursor();
+            ide_dirty = 1;
+        }
+    } else if (mdrag == 2) {
+        ide_scrollbar(r);
+    } else if (mdrag == 3 && cv_win > 0) {
+        wm_event(cv_win, "drag", mx - (cv_x + 1) * 8, my - (cv_y + 1) * 16, "");
+    }
+}
+
+// ===========================================================================
+// main loop
+// ===========================================================================
+
+proc ide_tick() {
+    frames += 1;
+    if (len(tr_path) == 0) { tree_build(); }
+    local n = 0;
+    while (len(kb_queue) > 0 && n < 48) {
+        local ev = kb_queue[1];
+        del(kb_queue, 1);
+        last_key_time = days2000() * 86400;
+        ide_key(ev);
+        n += 1;
+    }
+    ide_mouse();
+    sched_run(9);
+    power_req = -1;
+    ide_check_run();
+    cv_check();
+    if (len(status_msg) > 0 && now_secs() >= status_until) { status_msg = ""; ide_dirty = 1; }
+    ide_render();
+    tty_render();
+    if (focus == 1) { cur_t = con; } else { cur_t = 0; }
+    tty_cursor_update();
+    ide_caret();
+    ide_pointer();
+}

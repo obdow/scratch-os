@@ -1,0 +1,170 @@
+-- cube - a shaded 3D cube you can orbit with the mouse
+--@caps gui
+--
+-- drag      orbit the camera (let go while moving to fling it)
+-- arrows    nudge the rotation      +/-  zoom      space  auto-spin on/off
+-- w         wireframe on/off        r    reset     q      quit
+--
+-- Every frame is drawn with gfx.poly (filled convex polygons) and gfx.line;
+-- gfx.batch/gfx.flush make the whole frame appear at once.
+
+local W, H = 320, 256
+local win = gui.window("3D Cube", W, H)
+
+local verts = {
+  {-1, -1, -1}, { 1, -1, -1}, { 1,  1, -1}, {-1,  1, -1},
+  {-1, -1,  1}, { 1, -1,  1}, { 1,  1,  1}, {-1,  1,  1},
+}
+-- four corners (in perimeter order), outward normal, dark and bright colour
+local faces = {
+  {v = {1, 2, 3, 4}, n = { 0,  0, -1}, dark = 1, bright = 9},    -- blue
+  {v = {5, 6, 7, 8}, n = { 0,  0,  1}, dark = 2, bright = 10},   -- green
+  {v = {1, 4, 8, 5}, n = {-1,  0,  0}, dark = 4, bright = 12},   -- red
+  {v = {2, 3, 7, 6}, n = { 1,  0,  0}, dark = 3, bright = 11},   -- cyan
+  {v = {1, 2, 6, 5}, n = { 0, -1,  0}, dark = 5, bright = 13},   -- magenta
+  {v = {4, 3, 7, 8}, n = { 0,  1,  0}, dark = 6, bright = 14},   -- brown / yellow
+}
+local edges = {{1,2},{2,3},{3,4},{4,1},{5,6},{6,7},{7,8},{8,5},{1,5},{2,6},{3,7},{4,8}}
+
+-- direction towards the light: upper left, in front of the cube
+local LX, LY, LZ = -0.48, 0.64, -0.6
+
+local yaw, pitch = 0.6, -0.45
+local spin = 0.015                -- auto-rotation speed (radians per frame)
+local vyaw, vpitch = spin, 0
+local dist = 4.2
+local wire = false
+local dragging = false
+local lastx, lasty = 0, 0
+local moved_x, moved_y = 0, 0
+local stars = {}
+for i = 1, 40 do stars[i] = {math.random(0, 999) / 1000, math.random(0, 999) / 1000, math.random(7, 8)} end
+
+-- rotate a vector by yaw (around Y) then pitch (around X)
+local cy_, sy_, cp_, sp_ = 1, 0, 1, 0
+local function rot(x, y, z)
+  local x1 = x * cy_ + z * sy_
+  local z1 = z * cy_ - x * sy_
+  local y2 = y * cp_ - z1 * sp_
+  local z2 = y * sp_ + z1 * cp_
+  return x1, y2, z2
+end
+
+local px, py, pz = {}, {}, {}
+
+local function draw()
+  cy_, sy_ = math.cos(yaw), math.sin(yaw)
+  cp_, sp_ = math.cos(pitch), math.sin(pitch)
+  local f = math.min(W, H) * 0.62
+  local cx, cyc = W / 2, H / 2 + 6
+  for i, v in ipairs(verts) do
+    local x, y, z = rot(v[1], v[2], v[3])
+    local d = z + dist
+    px[i] = cx + f * x / d
+    py[i] = cyc - f * y / d
+    pz[i] = z
+  end
+
+  gfx.batch()
+  gfx.clear(win, 0)
+  for _, s in ipairs(stars) do gfx.pixel(win, s[1] * W, s[2] * H, s[3]) end
+
+  if wire then
+    for _, e in ipairs(edges) do
+      gfx.line(win, px[e[1]], py[e[1]], px[e[2]], py[e[2]], 11, 1)
+    end
+    for i = 1, 8 do gfx.disc(win, px[i], py[i], 2, 14) end
+  else
+    for _, fc in ipairs(faces) do
+      local nx, ny, nz = rot(fc.n[1], fc.n[2], fc.n[3])
+      -- face centre in camera space (the cube is centred on the origin)
+      local a, b, c, d = fc.v[1], fc.v[2], fc.v[3], fc.v[4]
+      local mx = (verts[a][1] + verts[c][1]) / 2
+      local my = (verts[a][2] + verts[c][2]) / 2
+      local mz = (verts[a][3] + verts[c][3]) / 2
+      local ccx, ccy, ccz = rot(mx, my, mz)
+      -- visible if the normal points towards the camera at (0, 0, -dist)
+      if nx * ccx + ny * ccy + nz * (ccz + dist) < 0 then
+        -- Lambert term: how directly the face points at the light
+        local light = nx * LX + ny * LY + nz * LZ
+        local col = fc.dark
+        if light > 0.35 then col = fc.bright end
+        gfx.poly(win, {px[a], py[a], px[b], py[b], px[c], py[c], px[d], py[d]}, col)
+        gfx.line(win, px[a], py[a], px[b], py[b], 0, 1)
+        gfx.line(win, px[b], py[b], px[c], py[c], 0, 1)
+        gfx.line(win, px[c], py[c], px[d], py[d], 0, 1)
+        gfx.line(win, px[d], py[d], px[a], py[a], 0, 1)
+      end
+    end
+  end
+
+  gfx.text(win, 4, 2, "3D CUBE", 15)
+  gfx.text(win, 4, H - 18, "drag: orbit  w: wire  space: spin", 8)
+  gfx.text(win, W - 9 * 8 - 4, 2, string.format("%4d %3d", math.floor(yaw * 57.3) % 360, math.floor(pitch * 57.3)), 7)
+  gfx.flush()
+end
+
+local function clamp_pitch()
+  if pitch > 1.5 then pitch = 1.5 end
+  if pitch < -1.5 then pitch = -1.5 end
+end
+
+draw()
+local running = true
+local auto = true
+while running do
+  local changed = false
+  local e = gui.event(win)
+  while e do
+    if e.type == "close" then running = false
+    elseif e.type == "mousedown" then
+      dragging = true
+      lastx, lasty = e.x, e.y
+      vyaw, vpitch = 0, 0
+    elseif e.type == "drag" and dragging then
+      local dx, dy = e.x - lastx, e.y - lasty
+      lastx, lasty = e.x, e.y
+      yaw = yaw + dx * 0.012
+      pitch = pitch + dy * 0.012
+      clamp_pitch()
+      vyaw, vpitch = dx * 0.012, dy * 0.012
+      changed = true
+    elseif e.type == "mouseup" then
+      dragging = false
+    elseif e.type == "key" then
+      local k = e.key
+      if k == "q" or k == "escape" then running = false
+      elseif k == "left arrow" then vyaw = vyaw - 0.02
+      elseif k == "right arrow" then vyaw = vyaw + 0.02
+      elseif k == "up arrow" then vpitch = vpitch - 0.02
+      elseif k == "down arrow" then vpitch = vpitch + 0.02
+      elseif k == " " then auto = not auto
+      elseif k == "w" then wire = not wire changed = true
+      elseif k == "+" or k == "=" then dist = math.max(2.6, dist - 0.3) changed = true
+      elseif k == "-" or k == "_" then dist = math.min(9, dist + 0.3) changed = true
+      elseif k == "r" then yaw, pitch, dist, vyaw, vpitch = 0.6, -0.45, 4.2, spin, 0 changed = true
+      end
+    elseif e.type == "resize" then
+      W, H = e.x, e.y
+      changed = true
+    end
+    e = gui.event(win)
+  end
+  if not running then break end
+  if not dragging then
+    -- inertia: drift back towards the auto-spin speed
+    local target = 0
+    if auto then target = spin end
+    vyaw = vyaw + (target - vyaw) * 0.03
+    vpitch = vpitch * 0.94
+    if math.abs(vyaw) > 0.0005 or math.abs(vpitch) > 0.0005 then
+      yaw = yaw + vyaw
+      pitch = pitch + vpitch
+      clamp_pitch()
+      changed = true
+    end
+  end
+  if changed then draw() end
+  sleep(0.02)
+end
+gui.close(win)

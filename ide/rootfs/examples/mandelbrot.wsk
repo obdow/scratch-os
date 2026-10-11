@@ -1,0 +1,19 @@
+-- mandelbrot.wsk - ASCII Mandelbrot set in the output panel
+local chars = " .:-=+*#%@"
+local w, h = term.size()
+w = math.min(w, 58)
+for row = 0, h - 2 do
+  local line = ""
+  local y = (row / (h - 2)) * 2.4 - 1.2
+  for col = 0, w - 1 do
+    local x = (col / w) * 3.2 - 2.2
+    local zx, zy, i = 0, 0, 0
+    while i < 30 and zx * zx + zy * zy < 4 do
+      zx, zy = zx * zx - zy * zy + x, 2 * zx * zy + y
+      i = i + 1
+    end
+    local k = math.floor(i / 30 * (#chars - 1)) + 1
+    line = line .. chars:sub(k, k)
+  end
+  print(line)
+end

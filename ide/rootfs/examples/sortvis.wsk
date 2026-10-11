@@ -1,0 +1,59 @@
+-- sortvis.wsk - watch bubble sort and insertion sort work
+--@caps gui
+local W, H = 320, 192
+local win = gui.window("Sorting", W, H)
+W, H = gui.size(win)
+local N = 40
+local function shuffled()
+  local t = {}
+  for i = 1, N do t[i] = i end
+  for i = N, 2, -1 do
+    local j = math.random(1, i)
+    t[i], t[j] = t[j], t[i]
+  end
+  return t
+end
+local function draw(t, a, b, title)
+  gfx.batch()
+  gfx.clear(win, 0)
+  local bw = W / N
+  for i = 1, N do
+    local c = 3
+    if i == a or i == b then c = 12 end
+    local h = t[i] * (H - 24) / N
+    gfx.fill(win, (i - 1) * bw, H - h, bw - 1, h, c)
+  end
+  gfx.text(win, 4, 2, title, 15)
+  gfx.flush()
+end
+local function closed()
+  local e = gui.event(win)
+  while e do
+    if e.type == "close" then return true end
+    e = gui.event(win)
+  end
+  return false
+end
+while true do
+  local t = shuffled()
+  for i = 1, N do
+    for j = 1, N - i do
+      if t[j] > t[j + 1] then t[j], t[j + 1] = t[j + 1], t[j] end
+      if j % 3 == 0 then draw(t, j, j + 1, "Bubble sort") if closed() then return end end
+    end
+  end
+  sleep(1)
+  t = shuffled()
+  for i = 2, N do
+    local v = t[i]
+    local j = i - 1
+    while j >= 1 and t[j] > v do
+      t[j + 1] = t[j]
+      j = j - 1
+      draw(t, j + 1, i, "Insertion sort")
+      if closed() then return end
+    end
+    t[j + 1] = v
+  end
+  sleep(1)
+end

@@ -301,6 +301,9 @@ proc vm_pow(a, b) {
 
 // raise a runtime error in the running process (unwinds to pcall)
 var vm_raised = 0;
+var vm_last_err = "";      // last uncaught runtime error (used by the IDE)
+var vm_last_err_line = 0;
+var vm_last_err_pid = 0;
 proc vm_raise(msg) {
     vm_raised = 1;
     local full = msg;
@@ -324,6 +327,9 @@ proc vm_raise(msg) {
         }
         c -= 5;
     }
+    vm_last_err = msg;
+    vm_last_err_line = vm_line;
+    vm_last_err_pid = p_pid[vm_slot];
     fd_write(p_err_k[vm_slot], p_err_i[vm_slot], "\e[91m" .. full .. "\e[0m\n");
     vm_running = 0;
     vm_exited = 1;

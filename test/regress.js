@@ -9,7 +9,7 @@ const { launch } = require('./harness');
 const CHECKS = [
   // [command, substring expected on screen afterwards, wait ms]
   ['clear', 'user@scratchos', 800],
-  ['test.wsk', '30 passed, 0 failed', 6000],
+  ['test.wsk', '32 passed, 0 failed', 6000],
   ['clear', 'user@scratchos', 800],
   ['echo hello $USER | rev', 'resu olleh', 2500],
   ['ls /bin | grep edit', 'edit.wsk', 2500],

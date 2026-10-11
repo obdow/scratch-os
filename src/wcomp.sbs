@@ -1047,36 +1047,64 @@ proc c_exprstat() recursive {
     if (tk_is("=") || tk_is(",")) {
         // assignment
         if (tk_is(",")) {
-            // multiple assignment: only simple names
-            clear(c_tmpk); clear(c_tmps); clear(c_tmpkey);
-            add(c_tmpk, e_kind); add(c_tmps, e_slot); add(c_tmpkey, e_key);
-            if (e_kind != EK_LOCAL && e_kind != EK_GLOBAL && e_kind != EK_MLOCAL) { c_error("multiple assignment supports only variables"); return; }
-            while (tk_is(",")) {
+            // multiple assignment: a, t[i], obj.f = x, y, z
+            // Table targets leave their table (and key) on the stack while they are
+            // parsed; the values are then parked in hidden locals and stored from
+            // the last target to the first, so each target's parts are on top.
+            local enc = "";
+            local nt = 0;
+            forever {
+                local k0 = e_kind;
+                local s0 = e_slot;
+                if (k0 == EK_NATIVE || k0 == EK_MODULE) {
+                    k0 = EK_GLOBAL;
+                    s0 = c_global_slot(tk_v[c_i - 1]);
+                }
+                if (k0 != EK_LOCAL && k0 != EK_GLOBAL && k0 != EK_MLOCAL && k0 != EK_INDEX && k0 != EK_FIELD) {
+                    c_error("cannot assign to this expression");
+                    return;
+                }
+                enc = enc .. k0 .. "\x02" .. s0 .. "\x02" .. e_key .. "\x01";
+                nt += 1;
+                e_kind = EK_NONE;
+                if (!tk_is(",")) { break; }
                 c_i += 1;
                 c_suffixedexp();
-                if (e_kind != EK_LOCAL && e_kind != EK_GLOBAL && e_kind != EK_MLOCAL) { c_error("multiple assignment supports only variables"); return; }
-                add(c_tmpk, e_kind); add(c_tmps, e_slot); add(c_tmpkey, e_key);
             }
             c_check("=");
-            local nt = len(c_tmpk);
-            // copy targets to locals of this frame, because nested expressions reuse c_tmp*
-            local enc = "";
-            for k = 1 to nt { enc = enc .. c_tmpk[k] .. ":" .. c_tmps[k] .. ","; }
             c_explist_into(nt);
-            // assign in reverse order
-            clear(c_tmpk); clear(c_tmps);
-            local num = "";
-            local part = 0;
-            local kk = 0;
+            // park the values
+            local first = c_nlocals;
+            for k = 1 to nt { c_new_local("(ma)"); }
+            local k5 = nt;
+            while (k5 >= 1) {
+                emit2(OP_SETL, first + k5 - 1);
+                k5 -= 1;
+            }
+            // decode targets
+            clear(c_tmpk); clear(c_tmps); clear(c_tmpkey);
+            local field = 0;
+            local cur = "";
+            local tk = 0;
+            local ts = 0;
             for k = 1 to len(enc) {
                 local ch = enc[k];
-                if (ch == ":") { kk = num; num = ""; }
-                else if (ch == ",") { add(c_tmpk, kk); add(c_tmps, num); num = ""; }
-                else { num = num .. ch; }
+                if (ch == "\x02") {
+                    if (field == 0) { tk = cur; } else { ts = cur; }
+                    field += 1;
+                    cur = "";
+                } else if (ch == "\x01") {
+                    add(c_tmpk, tk); add(c_tmps, ts); add(c_tmpkey, cur);
+                    field = 0;
+                    cur = "";
+                } else {
+                    cur = cur .. ch;
+                }
             }
             local k4 = nt;
             while (k4 >= 1) {
-                c_store(c_tmpk[k4], c_tmps[k4], "");
+                emit2(OP_GETL, first + k4 - 1);
+                c_store(c_tmpk[k4], c_tmps[k4], c_tmpkey[k4]);
                 k4 -= 1;
             }
             return;

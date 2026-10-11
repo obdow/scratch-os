@@ -1,0 +1,44 @@
+// ===========================================================================
+// Whisker IDE - entry point
+//
+// A stand-alone development environment for the Whisker language.  It
+// reuses the ScratchOS kernel modules unchanged (pen text engine, keyboard
+// clones, file system, Whisker compiler + VM, natives, canvas drawing) and
+// replaces the shell/desktop with the IDE user interface in ide.sbs.
+// ===========================================================================
+
+include "../kbd.sbs";
+
+global list ide_export;      // File > Export / Import go through this list monitor
+
+sprite Kernel {
+    costumes "glyphs";
+    include "../gfx.sbs";
+    include "../str.sbs";
+    include "../tty.sbs";
+    include "../fs.sbs";
+    include "../proc.sbs";
+    include "../shell.sbs";
+    include "../boot.sbs";
+    include "../heap.sbs";
+    include "../wcomp.sbs";
+    include "../vm.sbs";
+    include "../natives.sbs";
+    include "../natives_sys.sbs";
+    include "../caps.sbs";
+    include "../wm.sbs";
+    include "ide.sbs";
+
+    var con = 0;            // the Output panel tty (kernel messages go here too)
+    var frames = 0;
+    var gui = 0;
+
+    proc kernel_boot() { }
+
+    on flag {
+        ide_boot();
+        forever {
+            ide_tick();
+        }
+    }
+}

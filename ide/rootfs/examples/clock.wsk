@@ -1,0 +1,36 @@
+-- clock.wsk - an analog clock drawn with lines and discs
+--@caps gui
+local W, H = 200, 200
+local win = gui.window("Clock", W, H)
+W, H = gui.size(win)
+local function hand(cx, cy, a, len, c, size)
+  gfx.line(win, cx, cy, cx + len * math.sin(a), cy - len * math.cos(a), c, size)
+end
+local last = ""
+while true do
+  local e = gui.event(win)
+  if e and e.type == "close" then break end
+  if e and e.type == "resize" then W, H = e.x, e.y last = "" end
+  local d = os.date()
+  if d ~= last then
+    last = d
+    local h, m, s = tonumber(d:sub(12, 13)), tonumber(d:sub(15, 16)), tonumber(d:sub(18, 19))
+    local cx, cy = W / 2, H / 2
+    local r = math.min(W, H) / 2 - 8
+    gfx.batch()
+    gfx.clear(win, 1)
+    gfx.disc(win, cx, cy, r, 15)
+    gfx.circle(win, cx, cy, r, 7)
+    for i = 0, 11 do
+      local a = i * math.pi / 6
+      gfx.line(win, cx + (r - 8) * math.sin(a), cy - (r - 8) * math.cos(a), cx + (r - 2) * math.sin(a), cy - (r - 2) * math.cos(a), 0, 2)
+    end
+    hand(cx, cy, (h % 12 + m / 60) * math.pi / 6, r * 0.5, 0, 3)
+    hand(cx, cy, (m + s / 60) * math.pi / 30, r * 0.75, 0, 2)
+    hand(cx, cy, s * math.pi / 30, r * 0.85, 4, 1)
+    gfx.disc(win, cx, cy, 3, 4)
+    gfx.flush()
+  end
+  sleep(0.2)
+end
+gui.close(win)

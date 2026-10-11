@@ -1,0 +1,9 @@
+-- main.wsk - your first Whisker program
+-- Press Ctrl+Enter (or click [Run]) to run it.
+
+local name = "World"
+print("Hello, " .. name .. "!")
+
+for i = 1, 5 do
+  print(string.rep("*", i))
+end

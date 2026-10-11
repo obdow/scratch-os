@@ -1,0 +1,15 @@
+-- shapes.wsk - object-style tables and methods
+local Shape = {}
+function Shape.new(kind, size)
+  local s = {kind = kind, size = size}
+  function s:area()
+    if self.kind == "square" then return self.size ^ 2 end
+    return math.pi * self.size ^ 2
+  end
+  return s
+end
+local list = {Shape.new("square", 3), Shape.new("circle", 2), Shape.new("square", 5)}
+table.sort(list, function(a, b) return a:area() < b:area() end)
+for _, s in ipairs(list) do
+  print(string.format("%-7s size %d  area %6.2f", s.kind, s.size, s:area()))
+end

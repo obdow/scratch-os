@@ -1,0 +1,10 @@
+-- input.wsk - reading input.  Type into the output panel and press Enter.
+io.write("What is your name? ")
+local name = io.read()
+io.write("How old are you? ")
+local age = tonumber(io.read())
+if age then
+  print("Hi " .. name .. ", in ten years you will be " .. (age + 10) .. ".")
+else
+  print("Hi " .. name .. "!")
+end

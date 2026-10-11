@@ -60,4 +60,10 @@ check("not", not nil == true)
 check("nested tables", ({{1}, {2, {3}}})[2][2][1] == 3)
 check("len string", #"hello" == 5)
 check("byte/char", string.byte("A") == 65 and string.char(72, 105) == "Hi")
+local sw = {1, 2}
+sw[1], sw[2] = sw[2], sw[1]
+check("swap index", sw[1] == 2 and sw[2] == 1)
+local o2 = {a = 1}
+o2.a, o2.b = 5, 6
+check("field multi-assign", o2.a == 5 and o2.b == 6)
 print(string.format("%d passed, %d failed", pass, fail))

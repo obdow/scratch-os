@@ -44,7 +44,10 @@ sprite Kernel {
     }
 
     // route one key event
-    proc input_event(ev) {
+    proc input_event(event) {
+        local ev = event;
+        // the OS ignores modifiers on special keys ("^enter", "+up arrow")
+        if (len(ev) > 2 && (ev[1] == "^" || ev[1] == "+")) { ev = substr(ev, 2, len(ev)); }
         if (ev == "caps lock") { kb_caps = 1 - kb_caps; return; }
         local t = con;
         if (gui == 1) {

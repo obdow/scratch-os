@@ -1,0 +1,12 @@
+-- errors.wsk - error handling.  Run it, then click the red error marker.
+local ok, err = pcall(function()
+  error("something went wrong")
+end)
+print("caught:", ok, err)
+
+local function divide(a, b)
+  if b == 0 then error("division by zero") end
+  return a / b
+end
+print(divide(10, 2))
+print(divide(1, 0))        -- this one is not caught: the IDE marks the line

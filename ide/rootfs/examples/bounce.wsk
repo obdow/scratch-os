@@ -1,0 +1,35 @@
+-- bounce.wsk - bouncing balls in a graphics window (click to add a ball)
+--@caps gui
+local W, H = 320, 200
+local win = gui.window("Bounce", W, H)
+W, H = gui.size(win)
+local balls = {}
+local function add_ball(x, y)
+  balls[#balls + 1] = {x = x, y = y, vx = math.random(-4, 4) + 0.5, vy = math.random(-4, 1),
+    r = math.random(5, 12), c = math.random(9, 15)}
+end
+for i = 1, 4 do add_ball(math.random(20, W - 20), math.random(20, H / 2)) end
+local running = true
+while running do
+  local e = gui.event(win)
+  while e do
+    if e.type == "close" then running = false
+    elseif e.type == "mousedown" then add_ball(e.x, e.y)
+    elseif e.type == "resize" then W, H = e.x, e.y end
+    e = gui.event(win)
+  end
+  for _, b in ipairs(balls) do
+    b.vy = b.vy + 0.3
+    b.x, b.y = b.x + b.vx, b.y + b.vy
+    if b.x < b.r then b.x = b.r b.vx = -b.vx end
+    if b.x > W - b.r then b.x = W - b.r b.vx = -b.vx end
+    if b.y > H - b.r then b.y = H - b.r b.vy = -b.vy * 0.9 end
+  end
+  gfx.batch()
+  gfx.clear(win, 1)
+  for _, b in ipairs(balls) do gfx.disc(win, b.x, b.y, b.r, b.c) end
+  gfx.text(win, 4, 2, #balls .. " balls - click to add", 15)
+  gfx.flush()
+  sleep(0.03)
+end
+gui.close(win)

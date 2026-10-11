@@ -1594,7 +1594,8 @@ class SpriteGen:
             # body with the now-complete saved list.
             saved_final = list(ctx.saved)
             # discard old blocks generated for this proc
-            self.blocks = {k: v for k, v in self.blocks.items() if k not in set(self._collect_new)}
+            new_ids = set(self._collect_new)
+            self.blocks = {k: v for k, v in self.blocks.items() if k not in new_ids}
             ctx2 = Ctx(p['name'], info)
             ctx2.saved = saved_final
             ctx2.fixed_saved = True

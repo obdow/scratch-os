@@ -32,6 +32,9 @@ sprite Keyboard {
 
     proc kb_emit() {
         if (my_kind == 3) {
+            // special keys report modifiers as a prefix: "^enter", "+left arrow"
+            if (key("control")) { add(kb_queue, "^" .. my_out); return; }
+            if (key("shift")) { add(kb_queue, "+" .. my_out); return; }
             add(kb_queue, my_out);
             return;
         }

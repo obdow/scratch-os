@@ -86,6 +86,44 @@ repeat local e = gui.waitevent(win) until e.type == "close"
 
 See [docs/WHISKER.md](docs/WHISKER.md) for the full language and library reference.
 
+## Whisker IDE
+
+`WhiskerIDE.sb3` is a separate project: a standalone development environment
+for Whisker. It reuses the ScratchOS runtime (compiler, VM, heap, natives,
+file system, text engine and canvas code) but has its own full-screen UI,
+so there is no shell or desktop. Open it in TurboWarp and click the flag.
+
+- **Editor with tabs**: syntax highlighting (keywords, strings, numbers,
+  comments, library names, and multi-line `--[[ ]]` / `[[ ]]`), line numbers,
+  a scrollbar, mouse and shift+arrow selection, cut/copy/paste, multi-level
+  undo/redo, auto-indent and auto-dedent, toggle comment, duplicate or delete
+  line, indent/unindent, find, find next, replace, and go to line.
+- **Autocomplete** for keywords, library modules and their functions
+  (`string.u` offers `string.upper`), and for identifiers in the file.
+  It opens as you type, or on Ctrl+Space.
+- **File tree** for `/projects`, `/examples` and `/docs`, with menu items to
+  create, rename, delete and save files.
+- **Run / Stop** (Ctrl+Enter / Esc). Output goes to a resizable output panel,
+  which also takes keyboard input for `io.read()`. Compile and runtime errors
+  are shown in the output header and the status bar. The line is marked in
+  the gutter, and Run > Go to error jumps to it. Run > Check syntax compiles
+  without running.
+- **Graphics preview**: programs that call `gui.window` / `gfx.*` draw into
+  a floating preview window with full mouse and keyboard events. Try
+  `examples/bounce.wsk`, `clock.wsk` and `cube.wsk`.
+- **Examples and docs**: 13 example programs, a quick-start guide and the
+  full language reference.
+- Two colour themes (blue and dark), and output panel sizes.
+- **Export / import**: the IDE file system lives in memory. File > Export
+  copies the current file into the stage list `ide_export`; right-click the
+  list to save it as a `.txt` file. File > Import reads one back the same way.
+
+Shortcuts: Ctrl+Enter run, Esc stop (or open the menu), Ctrl+S save, Ctrl+Z/Y
+undo/redo, Ctrl+X/C/V, Ctrl+A, Ctrl+F find, Ctrl+G go to line, Ctrl+D
+duplicate line, Ctrl+/ comment, Ctrl+] / Ctrl+[ indent, Ctrl+Space complete,
+Esc opens the menu bar; arrows or a menu's first letter move through it. The browser may
+intercept a few Ctrl shortcuts; the same commands are all in the menus.
+
 ## How it is built
 
 Hand-placing tens of thousands of blocks is not practical, so the kernel is
@@ -94,8 +132,10 @@ ordinary Scratch blocks. The output is a normal project you can open and edit
 in the Scratch/TurboWarp editor, about 23,000 blocks in total.
 
 ```
-build.py            build entry point -> ScratchOS.sb3
+build.py            build entry point -> ScratchOS.sb3 (--ide -> WhiskerIDE.sb3)
 src/*.sbs           the kernel (Kernel sprite) and keyboard (Keyboard sprite)
+src/ide/            the Whisker IDE front end (shares the kernel sources)
+ide/rootfs/         files baked into the IDE (/projects, /examples, /docs)
 rootfs/             files baked into the file system image (/bin, /etc, /home, /usr)
 tools/sbc.py        SBS -> Scratch 3 compiler
 tools/assets.py     glyph / rectangle costumes from the VGA font
@@ -109,6 +149,7 @@ Requirements: Python 3 with Pillow. To build:
 
 ```
 python3 build.py                 # writes ScratchOS.sb3
+python3 build.py --ide           # writes WhiskerIDE.sb3
 ```
 
 To test (Node 18+ and a Chromium for Playwright):
