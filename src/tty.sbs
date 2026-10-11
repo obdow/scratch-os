@@ -21,6 +21,7 @@
 const MAX_TTY = 8;
 const TTY_CELLS = 1320;
 const ATTR_DEFAULT = 7;
+const WRAP_ROWS = 132;   // soft-wrap flags kept per tty
 
 list cell_ch;
 list cell_at;
@@ -73,6 +74,8 @@ var last_key_time = 0;
 proc tty_init() {
     clear(cell_ch);
     clear(cell_at);
+    clear(row_wrap);
+    repeat (MAX_TTY * WRAP_ROWS) { add(row_wrap, 0); }
     repeat (MAX_TTY * TTY_CELLS) {
         add(cell_ch, 32);
         add(cell_at, ATTR_DEFAULT);
@@ -140,6 +143,7 @@ proc tty_clear(t) {
         cell_ch[b + i] = 32;
         cell_at[b + i] = a;
     }
+    for r = 1 to WRAP_ROWS { row_wrap[(t - 1) * WRAP_ROWS + r] = 0; }
     tty_top[t] = 0;
     tty_cx[t] = 0;
     tty_cy[t] = 0;
@@ -175,8 +179,27 @@ proc tty_scroll(t) {
         cell_ch[b + i] = 32;
         cell_at[b + i] = a;
     }
+    row_wrap[tty_wrapi(t, h - 1)] = 0;
     tty_py[t] = tty_py[t] - 1;
     tty_full[t] = 1;
+}
+
+// row_wrap marks rows whose text continues on the next row because it hit
+// the right margin (a soft wrap).  Resizing uses it to reflow text.
+list row_wrap;
+
+proc tty_wrapi(t, row) {
+    return (t - 1) * WRAP_ROWS + (row + tty_top[t]) % tty_h[t] + 1;
+}
+
+proc tty_softwrap(t) {
+    row_wrap[tty_wrapi(t, tty_cy[t])] = 1;
+    tty_newline(t);
+}
+
+proc tty_hardnl(t) {
+    row_wrap[tty_wrapi(t, tty_cy[t])] = 0;
+    tty_newline(t);
 }
 
 proc tty_newline(t) {
@@ -190,7 +213,7 @@ proc tty_newline(t) {
 
 // put one CP437 code with control handling
 proc tty_putc(t, code) {
-    if (code == 10) { tty_newline(t); return; }
+    if (code == 10) { tty_hardnl(t); return; }
     if (code == 13) { tty_cx[t] = 0; return; }
     if (code == 8) {
         if (tty_cx[t] > 0) { tty_cx[t] = tty_cx[t] - 1; }
@@ -203,7 +226,7 @@ proc tty_putc(t, code) {
         return;
     }
     if (code == 7) { return; }
-    if (tty_cx[t] >= tty_w[t]) { tty_newline(t); }
+    if (tty_cx[t] >= tty_w[t]) { tty_softwrap(t); }
     local row = tty_cy[t];
     local col = tty_cx[t];
     local i = tty_base[t] + ((row + tty_top[t]) % tty_h[t]) * tty_w[t] + col + 1;
@@ -355,14 +378,14 @@ proc tty_line_redraw(t, k, extra) {
     }
     repeat (extra) { tty_putc(t, 32); }
     // if we ended exactly at the right margin, wrap now so the cursor is visible
-    if (tty_cx[t] >= tty_w[t]) { tty_newline(t); }
+    if (tty_cx[t] >= tty_w[t]) { tty_softwrap(t); }
     tty_line_cursor(t, tty_lpos[t]);
 }
 
 proc tty_line_begin(t) {
     tty_line[t] = "";
     tty_lpos[t] = 0;
-    if (tty_cx[t] >= tty_w[t]) { tty_newline(t); }
+    if (tty_cx[t] >= tty_w[t]) { tty_softwrap(t); }
     tty_px[t] = tty_cx[t];
     tty_py[t] = tty_cy[t];
     tty_hpos[t] = len(hist) + 1;
@@ -383,7 +406,7 @@ proc tty_key(t, ev) {
     local pos = tty_lpos[t];
     if (len(line) == 0) {
         // (re)anchor the edit line at the current cursor (handles type-ahead)
-        if (tty_cx[t] >= tty_w[t]) { tty_newline(t); }
+        if (tty_cx[t] >= tty_w[t]) { tty_softwrap(t); }
         tty_px[t] = tty_cx[t];
         tty_py[t] = tty_cy[t];
     }
@@ -450,7 +473,7 @@ proc tty_key(t, ev) {
             if (tty_cy[t] > tty_h[t] - 1) { tty_cy[t] = tty_h[t] - 1; }
             tty_cx[t] = tty_w[t];
         }
-        tty_newline(t);
+        tty_hardnl(t);
         add(tin_tty, t);
         add(tin_line, line);
         if (tty_echo[t] == 1 && line != "") {
@@ -596,13 +619,125 @@ proc tty_cursor_update() {
     }
 }
 
-// change the size of a tty, keeping as much text as fits (bottom rows win)
+// change the size of a tty.  Text is reflowed: rows joined by soft wraps
+// form logical lines, which are wrapped again at the new width.  Raw-mode
+// (full-screen) programs keep a plain cell copy and redraw themselves.
 list rs_ch;
 list rs_at;
-proc tty_resize(t, nw, nh) {
+list rf_ls;      // logical line: start index into rs_*
+list rf_ll;      // logical line: length in cells
+list rf_sr;      // logical line: first row in the new layout
+
+proc tty_resize(t, nw, want_h) {
     local w = tty_w[t];
     local h = tty_h[t];
+    local nh = want_h;
+    if (nw * nh > TTY_CELLS) { nh = floor(TTY_CELLS / nw); }
     if (nw == w && nh == h) { return; }
+    if (tty_mode[t] == 1) {
+        tty_resize_copy(t, nw, nh);
+        return;
+    }
+    local a = tty_attr[t];
+    local blank_bg = floor(a / 16);
+    clear(rs_ch); clear(rs_at); clear(rf_ls); clear(rf_ll); clear(rf_sr);
+    local cur_line = 1;
+    local cur_off = 0;
+    local ed_line = 0;
+    local ed_off = 0;
+    local prev_wrap = 0;
+    local line_row = 0;
+    for r = 0 to h - 1 {
+        if (r == 0 || prev_wrap == 0) {
+            add(rf_ls, len(rs_ch) + 1);
+            add(rf_ll, 0);
+            line_row = r;
+        }
+        local L = len(rf_ls);
+        local rowoff = (r - line_row) * w;
+        if (r == tty_cy[t]) { cur_line = L; cur_off = rowoff + tty_cx[t]; }
+        if (r == tty_py[t]) { ed_line = L; ed_off = rowoff + tty_px[t]; }
+        local rb = tty_base[t] + ((r + tty_top[t]) % h) * w;
+        for c = 1 to w { add(rs_ch, cell_ch[rb + c]); add(rs_at, cell_at[rb + c]); }
+        rf_ll[L] = rowoff + w;
+        prev_wrap = row_wrap[tty_wrapi(t, r)];
+    }
+    // trim trailing blanks of every logical line
+    local last = 0;
+    for L = 1 to len(rf_ls) {
+        local st = rf_ls[L];
+        local n = rf_ll[L];
+        while (n > 0 && cell_blank(rs_ch[st + n - 1], rs_at[st + n - 1], blank_bg) == 1) { n -= 1; }
+        if (L == cur_line && n < cur_off) { n = cur_off; }
+        if (L == ed_line && n < ed_off) { n = ed_off; }
+        rf_ll[L] = n;
+        if (n > 0 || L <= cur_line) { last = L; }
+    }
+    // lay out at the new width
+    local total = 0;
+    for L = 1 to last {
+        add(rf_sr, total);
+        local rows = ceil(rf_ll[L] / nw);
+        if (rows < 1) { rows = 1; }
+        total += rows;
+    }
+    local crow = rf_sr[cur_line] + floor(cur_off / nw);
+    local ccol = cur_off % nw;
+    if (cur_off > 0 && ccol == 0 && cur_off >= rf_ll[cur_line]) {
+        // cursor right after a line that exactly fills its last row
+        crow -= 1;
+        ccol = nw;
+    }
+    local off = total - nh;
+    if (off > crow) { off = crow; }
+    if (off < 0) { off = 0; }
+    // write the new grid
+    tty_w[t] = nw;
+    tty_h[t] = nh;
+    tty_top[t] = 0;
+    local b = tty_base[t];
+    for i = 1 to nw * nh { cell_ch[b + i] = 32; cell_at[b + i] = a; }
+    for r = 1 to WRAP_ROWS { row_wrap[(t - 1) * WRAP_ROWS + r] = 0; }
+    for L = 1 to last {
+        local st2 = rf_ls[L];
+        local n2 = rf_ll[L];
+        local r0 = rf_sr[L] - off;
+        for k = 0 to n2 - 1 {
+            local row = r0 + floor(k / nw);
+            if (row >= 0 && row < nh) {
+                local idx = b + row * nw + k % nw + 1;
+                cell_ch[idx] = rs_ch[st2 + k];
+                cell_at[idx] = rs_at[st2 + k];
+            }
+        }
+        local rows2 = ceil(n2 / nw);
+        for q = 0 to rows2 - 2 {
+            local wr = r0 + q;
+            if (wr >= 0 && wr < nh) { row_wrap[(t - 1) * WRAP_ROWS + wr + 1] = 1; }
+        }
+    }
+    tty_cy[t] = crow - off;
+    tty_cx[t] = ccol;
+    if (ed_line > 0) {
+        tty_py[t] = rf_sr[ed_line] + floor(ed_off / nw) - off;
+        tty_px[t] = ed_off % nw;
+    } else {
+        tty_py[t] = tty_cy[t];
+        tty_px[t] = tty_cx[t];
+    }
+    tty_full[t] = 1;
+    clear(rs_ch); clear(rs_at); clear(rf_ls); clear(rf_ll); clear(rf_sr);
+}
+
+proc cell_blank(ch, at, bg) {
+    if ((ch == 32 || ch == 0) && floor(at / 16) == bg) { return 1; }
+    return 0;
+}
+
+// plain resize for raw-mode programs: keep cells, bottom rows win
+proc tty_resize_copy(t, nw, nh) {
+    local w = tty_w[t];
+    local h = tty_h[t];
     clear(rs_ch);
     clear(rs_at);
     for r = 0 to h - 1 {
@@ -628,6 +763,7 @@ proc tty_resize(t, nw, nh) {
             }
         }
     }
+    for r = 1 to WRAP_ROWS { row_wrap[(t - 1) * WRAP_ROWS + r] = 0; }
     tty_cy[t] = tty_cy[t] - off;
     tty_py[t] = tty_py[t] - off;
     if (tty_cx[t] > nw) { tty_cx[t] = nw; }

@@ -657,6 +657,11 @@ proc wm_cache_vis() {
             add(vr_y, (win_y[w] + 1) * 16);
             add(vr_w, (win_w[w] - 2) * 8);
             add(vr_h, (win_h[w] - 2) * 16);
+            // never draw over the taskbar (and the strip below it) or off screen
+            rects_subtract(-2000, TASK_ROW * 16, 4480, 2000);
+            rects_subtract(-2000, -2000, 2000, 4360);
+            rects_subtract(WM_COLS * 8, -2000, 2000, 4360);
+            rects_subtract(-2000, -2000, 4480, 2000);
             // subtract windows above
             for j = k + 1 to len(wz) {
                 local o = wz[j];
