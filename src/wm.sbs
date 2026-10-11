@@ -454,10 +454,11 @@ proc wm_compose_window(w, focused) {
         ta = 14 + 16 * 1;
         tl = 201; tr = 187; bl = 200; br = 188; hz = 205; vt = 186;
     }
-    // content cells
+    // content cells: the attribute encodes the window-relative position, so a
+    // moved window's content is seen as changed by wm_diff and gets redrawn
     for r = y + 1 to y + hh - 2 {
         for c = x + 1 to x + ww - 2 {
-            ui_set(c, r, -1, 0, w);
+            ui_set(c, r, -1, 1000 + (r - y) * 64 + (c - x), w);
         }
     }
     // frame
