@@ -28,6 +28,12 @@ def build_data(root):
                 paths.append((vpath.rstrip('/') + '/' + fn))
                 types.append('f')
                 contents.append(text)
+    # directories that must exist even when empty (git does not store them)
+    for d in ('/tmp', '/home/user', '/home/user/projects'):
+        if d not in paths:
+            paths.insert(0 if d == '/tmp' else len(paths), d)
+            types.insert(0 if d == '/tmp' else len(types), 'd')
+            contents.insert(0 if d == '/tmp' else len(contents), '')
     return {
         'rootfs_paths': paths,
         'rootfs_types': types,

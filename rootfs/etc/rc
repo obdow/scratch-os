@@ -1,0 +1,6 @@
+# /etc/rc - system start-up script, run by init (pid 1)
+export EDITOR=edit
+export PAGER=more
+echo -e "\e[97m[\e[92m  OK  \e[97m]\e[0m Ran /etc/rc start-up script"
+echo
+cat /etc/motd

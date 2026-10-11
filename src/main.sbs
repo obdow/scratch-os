@@ -1,0 +1,103 @@
+// ===========================================================================
+// ScratchOS - kernel entry point
+//
+// Sprites:
+//   Keyboard  clone-per-key input listeners + frame pacer (kbd.sbs)
+//   Kernel    everything else: graphics, terminals, file system, processes,
+//             shell, Whisker compiler/VM, window manager.  It is hidden and
+//             draws only by stamping into the pen layer.
+// ===========================================================================
+
+include "kbd.sbs";
+
+sprite Kernel {
+    costumes "glyphs";
+    include "gfx.sbs";
+    include "str.sbs";
+    include "tty.sbs";
+    include "fs.sbs";
+    include "proc.sbs";
+    include "shell.sbs";
+    include "boot.sbs";
+    include "stubs_m2.sbs";
+
+    var con = 0;            // console tty
+    var frames = 0;
+    var gui = 0;            // 1 while the desktop is running
+
+    proc kernel_init() {
+        gfx_init();
+        tty_init();
+        con = tty_alloc(60, 22, 0, 0, 0);
+        tty_vis[con] = 1;
+        cur_t = con;
+        gui = 0;
+        halted = 0;
+        power_req = -1;
+        gfx_fill(0, 352, 480, 8, 0);
+    }
+
+    // route one key event
+    proc input_event(ev) {
+        if (ev == "caps lock") { kb_caps = 1 - kb_caps; return; }
+        local t = con;
+        if (gui == 1) {
+            t = wm_focus_tty();
+            if (t == 0) { wm_key(ev); return; }
+        }
+        local fs = proc_slot(tty_fgpid[t]);
+        if (ev == "^c") {
+            if (tty_interrupt(t) == 0) {
+                // interrupt the line being typed at a shell prompt
+                tty_write(t, "^C\n");
+                if (fs > 0 && p_kind[fs] == PK_SHELL) {
+                    sh_state[fs] = SH_PROMPT;
+                    sh_rest[fs] = "";
+                    p_state[fs] = PS_READY;
+                } else {
+                    tty_line_begin(t);
+                }
+            }
+            return;
+        }
+        if (tty_mode[t] == 1) {
+            if (fs > 0) { add(kq_pid, p_pid[fs]); add(kq_ev, ev); }
+            return;
+        }
+        tty_key(t, ev);
+    }
+
+    proc input_poll() {
+        local n = 0;
+        while (len(kb_queue) > 0 && n < 64) {
+            local ev = kb_queue[1];
+            del(kb_queue, 1);
+            last_key_time = days2000() * 86400;
+            input_event(ev);
+            n += 1;
+        }
+    }
+
+    proc tick() {
+        frames += 1;
+        input_poll();
+        sched_run(10);
+        tty_render();
+        tty_cursor_update();
+    }
+
+    proc kernel_boot() nowarp {
+        kernel_init();
+        boot_seq();
+    }
+
+    on flag {
+        kernel_boot();
+        forever {
+            if (halted == 0) {
+                tick();
+                if (power_req != -1) { power_off(); }
+            }
+        }
+    }
+}

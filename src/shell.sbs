@@ -1,0 +1,738 @@
+// ===========================================================================
+// shell.sbs - the native ScratchOS shell, /bin/sh (included in sprite Kernel)
+//
+// Unix-like syntax:
+//   cmd args...           'single' "double $VAR" \escapes   # comments
+//   a | b | c             pipelines
+//   > file  >> file  < file  2> file   redirection
+//   a ; b   a && b   a || b   a &      sequencing / background jobs
+//   NAME=value            variable assignment     $NAME ${NAME} $? $$ ~
+//
+// The shell is a state machine run as a native process.  Built-in commands
+// run inside the shell; everything else is looked up on $PATH and started
+// as a Whisker program (see vm.sbs).
+// ===========================================================================
+
+const SH_PROMPT = 0;
+const SH_READ = 1;
+const SH_RUN = 2;
+const SH_WAIT = 3;
+
+list sh_state;
+list sh_rest;        // unexecuted remainder of the current command line
+list sh_conn;        // connector before the next element (";" "&&" "||")
+list sh_status;      // $?
+list sh_wait;        // process group being waited on
+list sh_waitpid;     // pid whose status we want
+list sh_script;      // script text ("" for interactive)
+list sh_spos;        // position in script
+list sh_inter;       // interactive?
+list sh_oldpwd;
+
+list env_k = ["PATH", "HOME", "USER", "HOSTNAME", "SHELL", "TERM", "OS", "LANG"];
+list env_v = ["/bin:/usr/bin", "/home/user", "user", "scratchos", "/bin/sh", "vga", "ScratchOS", "cp437"];
+
+list job_sh;         // background jobs: shell pid, pgid, command
+list job_pgid;
+list job_cmd;
+
+list tok_v;          // tokens of the current element
+list tok_t;          // 0 word, 1 operator
+list sh_argv;        // argv of the command being started
+var sh_tokend = 0;
+var sh_tokconn = "";
+var sh_err = "";
+
+list builtins = ["cd", "pwd", "echo", "exit", "export", "unset", "set", "env", "history", "help",
+                 "clear", "jobs", "fg", "kill", "source", ".", "true", "false", "type", "which",
+                 "wait", "startx", "shutdown", "reboot", "halt", "caps", "sh", "logout", "uptime"];
+
+proc shell_init() {
+    clear(sh_state); clear(sh_rest); clear(sh_conn); clear(sh_status); clear(sh_wait);
+    clear(sh_waitpid); clear(sh_script); clear(sh_spos); clear(sh_inter); clear(sh_oldpwd);
+    for i = 1 to MAX_PROC {
+        add(sh_state, 0); add(sh_rest, ""); add(sh_conn, ";"); add(sh_status, 0); add(sh_wait, 0);
+        add(sh_waitpid, 0); add(sh_script, ""); add(sh_spos, 1); add(sh_inter, 0); add(sh_oldpwd, 1);
+    }
+    clear(job_sh); clear(job_pgid); clear(job_cmd);
+}
+
+// start a shell process. script = "" for an interactive shell
+proc shell_spawn(parent_slot, script, name) {
+    local s = proc_alloc(name, PK_SHELL, parent_slot);
+    if (s == 0) { return 0; }
+    sh_state[s] = SH_PROMPT;
+    sh_rest[s] = "";
+    sh_conn[s] = ";";
+    sh_status[s] = 0;
+    sh_script[s] = script;
+    sh_spos[s] = 1;
+    sh_inter[s] = 0;
+    if (len(script) == 0) { sh_inter[s] = 1; }
+    sh_oldpwd[s] = p_cwd[s];
+    p_path[s] = "/bin/sh";
+    p_caps[s] = "|files|proc|gui|system|";
+    return s;
+}
+
+proc env_get(name) {
+    local i = index(env_k, name);
+    if (i == 0) { return ""; }
+    return env_v[i];
+}
+
+proc env_set(name, value) {
+    local i = index(env_k, name);
+    if (i == 0) {
+        add(env_k, name);
+        add(env_v, value);
+    } else {
+        env_v[i] = value;
+    }
+}
+
+// path for display: /home/user -> ~
+proc pretty_path(ino) {
+    local p = fs_path(ino);
+    local home = env_get("HOME");
+    if (streq(substr(p, 1, len(home)), home) == 1) {
+        if (len(p) == len(home)) { return "~"; }
+        if (p[len(home) + 1] == "/") { return "~" .. substr(p, len(home) + 1, len(p)); }
+    }
+    return p;
+}
+
+proc sh_out(s, text) {
+    fd_write(p_out_k[s], p_out_i[s], text);
+}
+
+proc sh_errmsg(s, text) {
+    fd_write(p_err_k[s], p_err_i[s], "\e[91m" .. text .. "\e[0m\n");
+}
+
+// --- tokenizer ------------------------------------------------------------------
+
+proc is_name_char(c) {
+    return char_class[ord(c) + 1] == 1 || char_class[ord(c) + 1] == 2;
+}
+
+// tokenize the first and-or element of `line` into tok_v / tok_t
+proc sh_tokenize(s, line) {
+    clear(tok_v);
+    clear(tok_t);
+    sh_tokconn = "";
+    local n = len(line);
+    local i = 1;
+    local word = "";
+    local inword = 0;
+    forever {
+        if (i > n) { break; }
+        local c = line[i];
+        if (contains(" \t", c) && len(c) == 1) {
+            if (inword == 1) { add(tok_v, word); add(tok_t, 0); word = ""; inword = 0; }
+            i += 1;
+        } else if (c == "#" && inword == 0) {
+            i = n + 1;
+        } else if (c == "'") {
+            inword = 1;
+            i += 1;
+            while (i <= n && line[i] != "'") { word = word .. line[i]; i += 1; }
+            i += 1;
+        } else if (c == "\"") {
+            inword = 1;
+            i += 1;
+            while (i <= n && line[i] != "\"") {
+                if (line[i] == "\\" && i < n && contains("\"\\$", line[i + 1])) {
+                    word = word .. line[i + 1];
+                    i += 2;
+                } else if (line[i] == "$") {
+                    i = sh_expand_var(s, line, i);
+                    word = word .. sh_err;
+                } else {
+                    word = word .. line[i];
+                    i += 1;
+                }
+            }
+            i += 1;
+        } else if (c == "\\") {
+            inword = 1;
+            if (i < n) { word = word .. line[i + 1]; }
+            i += 2;
+        } else if (c == "$") {
+            inword = 1;
+            i = sh_expand_var(s, line, i);
+            word = word .. sh_err;
+        } else if (c == "~" && inword == 0 && (i == n || line[i + 1] == "/" || contains(" \t", line[i + 1]))) {
+            inword = 1;
+            word = word .. env_get("HOME");
+            i += 1;
+        } else if (contains("|&;<>", c)) {
+            if (inword == 1) {
+                // "2>" redirect
+                if (c == ">" && word == "2") {
+                    word = "";
+                    inword = 0;
+                    if (i < n && line[i + 1] == ">") { add(tok_v, "2>>"); i += 2; } else { add(tok_v, "2>"); i += 1; }
+                    add(tok_t, 1);
+                    continue;
+                }
+                add(tok_v, word); add(tok_t, 0); word = ""; inword = 0;
+            }
+            local op = c;
+            if (i < n && line[i + 1] == c && c != ";" && c != "<") { op = c .. c; }
+            i += len(op);
+            if (op == ";" || op == "&&" || op == "||" || op == "&") {
+                sh_tokconn = op;
+                sh_tokend = i;
+                return;
+            }
+            add(tok_v, op);
+            add(tok_t, 1);
+        } else {
+            inword = 1;
+            word = word .. c;
+            i += 1;
+        }
+    }
+    if (inword == 1) { add(tok_v, word); add(tok_t, 0); }
+    sh_tokend = n + 1;
+}
+
+// expand $NAME at position i; result in sh_err, returns next position
+proc sh_expand_var(s, line, i) {
+    local n = len(line);
+    local j = i + 1;
+    local name = "";
+    if (j > n) { sh_err = "$"; return j; }
+    if (line[j] == "?") { sh_err = sh_status[s]; return j + 1; }
+    if (line[j] == "$") { sh_err = p_pid[s]; return j + 1; }
+    if (line[j] == "{") {
+        j += 1;
+        while (j <= n && line[j] != "}") { name = name .. line[j]; j += 1; }
+        sh_err = env_get(name);
+        return j + 1;
+    }
+    while (j <= n && is_name_char(line[j]) == 1) { name = name .. line[j]; j += 1; }
+    if (len(name) == 0) { sh_err = "$"; return j; }
+    sh_err = env_get(name);
+    return j;
+}
+
+// --- main state machine ---------------------------------------------------------
+
+proc shell_prompt(s) {
+    local t = p_tty[s];
+    sh_out(s, "\e[92m" .. env_get("USER") .. "@" .. env_get("HOSTNAME") .. "\e[0m:\e[94m" .. pretty_path(p_cwd[s]) .. "\e[0m$ ");
+    if (p_out_k[s] == FD_TTY && t > 0) {
+        tty_line_begin(t);
+        tty_fgpid[t] = p_pid[s];
+    }
+}
+
+proc shell_step(s) {
+    local st = sh_state[s];
+    if (st == SH_PROMPT) {
+        if (sh_inter[s] == 1) { shell_prompt(s); }
+        sh_state[s] = SH_READ;
+        st = SH_READ;
+    }
+    if (st == SH_READ) {
+        if (sh_inter[s] == 1) {
+            local r = fd_readline(p_in_k[s], p_in_i[s], s);
+            if (r == 0) { proc_block(s, BLK_IO); return; }
+            if (r == -1) { proc_exit(s, sh_status[s]); return; }
+            sh_rest[s] = fd_got;
+        } else {
+            // next script line
+            local src = sh_script[s];
+            local pos = sh_spos[s];
+            local n = len(src);
+            if (pos > n) { proc_exit(s, sh_status[s]); return; }
+            local j = pos;
+            while (j <= n && src[j] != "\n") { j += 1; }
+            sh_rest[s] = substr(src, pos, j - 1);
+            sh_spos[s] = j + 1;
+        }
+        sh_conn[s] = ";";
+        sh_state[s] = SH_RUN;
+        return;
+    }
+    if (st == SH_RUN) {
+        sh_run_next(s);
+        return;
+    }
+    if (st == SH_WAIT) {
+        if (pgid_alive(sh_wait[s]) == 1) { proc_block(s, BLK_IO); return; }
+        local code = proc_status(sh_waitpid[s]);
+        if (len(code) == 0) { code = 0; }
+        sh_status[s] = code;
+        if (p_tty[s] > 0 && tty_used[p_tty[s]] == 1) {
+            tty_fgpid[p_tty[s]] = p_pid[s];
+            if (code == 130 && sh_inter[s] == 1) { tty_write(p_tty[s], "\n"); }
+        }
+        sh_state[s] = SH_RUN;
+        return;
+    }
+}
+
+// execute the next and-or element of sh_rest
+proc sh_run_next(s) {
+    local line = sh_rest[s];
+    if (len(str_trim(line)) == 0) {
+        sh_rest[s] = "";
+        sh_state[s] = SH_PROMPT;
+        return;
+    }
+    sh_tokenize(s, line);
+    local conn = sh_conn[s];
+    sh_rest[s] = substr(line, sh_tokend, len(line));
+    local bg = 0;
+    if (sh_tokconn == "&") {
+        bg = 1;
+        sh_conn[s] = ";";
+    } else if (len(sh_tokconn) == 0) {
+        sh_conn[s] = ";";
+    } else {
+        sh_conn[s] = sh_tokconn;
+    }
+    if (len(tok_v) == 0) { return; }
+    if (conn == "&&" && sh_status[s] != 0) { return; }
+    if (conn == "||" && sh_status[s] == 0) { return; }
+    local pg = sh_pipeline(s, bg, line);
+    if (pg > 0 && bg == 0) {
+        sh_wait[s] = pg;
+        sh_state[s] = SH_WAIT;
+    }
+}
+
+// run tok_v as a pipeline. returns pgid to wait on, or 0 if finished already
+proc sh_pipeline(s, bg, cmdline) {
+    // count commands
+    local ncmd = 1;
+    for i = 1 to len(tok_v) {
+        if (tok_t[i] == 1 && tok_v[i] == "|") { ncmd += 1; }
+    }
+    local pgid = 0;
+    local lastpid = 0;
+    local in_k = p_in_k[s];
+    local in_i = p_in_i[s];
+    local start = 1;
+    local cmdno = 1;
+    local status = 0;
+    while (cmdno <= ncmd) {
+        // find end of this command
+        local stop = start;
+        while (stop <= len(tok_v) && !(tok_t[stop] == 1 && tok_v[stop] == "|")) { stop += 1; }
+        // default output: next pipe or shell stdout
+        local out_k = p_out_k[s];
+        local out_i = p_out_i[s];
+        local err_k = p_err_k[s];
+        local err_i = p_err_i[s];
+        local pipe = 0;
+        if (cmdno < ncmd) {
+            pipe = pipe_new();
+            if (pipe == 0) { sh_errmsg(s, "sh: too many pipes"); return 0; }
+            out_k = FD_PIPE;
+            out_i = pipe;
+        }
+        // collect argv + redirections
+        clear(sh_argv);
+        local cin_k = in_k;
+        local cin_i = in_i;
+        local i = start;
+        local bad = 0;
+        while (i < stop) {
+            if (tok_t[i] == 1) {
+                local op = tok_v[i];
+                if (i + 1 >= stop || tok_t[i + 1] == 1) { sh_errmsg(s, "sh: syntax error near '" .. op .. "'"); bad = 1; break; }
+                local target = tok_v[i + 1];
+                if (op == "<") {
+                    local ino = fs_lookup(target, p_cwd[s]);
+                    if (ino == 0 || fs_type[ino] == FT_DIR) { sh_errmsg(s, "sh: " .. target .. ": " .. fs_err); bad = 1; break; }
+                    // feed file content through a pipe
+                    local fp = pipe_new();
+                    pipe_r[fp] = 1;
+                    pipe_write(fp, fs_data[ino]);
+                    pipe_r[fp] = 0;
+                    cin_k = FD_PIPE;
+                    cin_i = fp;
+                } else {
+                    local ino2 = fs_lookup(target, p_cwd[s]);
+                    if (ino2 > 0 && fs_type[ino2] == FT_DIR) { sh_errmsg(s, "sh: " .. target .. ": is a directory"); bad = 1; break; }
+                    if (ino2 == 0) { ino2 = fs_create(target, FT_FILE, p_cwd[s]); }
+                    if (ino2 == 0) { sh_errmsg(s, "sh: " .. target .. ": " .. fs_err); bad = 1; break; }
+                    if (op == ">" || op == "2>") { fs_data[ino2] = ""; }
+                    fs_mtime[ino2] = fs_now();
+                    if (op == ">" || op == ">>") { out_k = FD_FILE; out_i = ino2; }
+                    else { err_k = FD_FILE; err_i = ino2; }
+                }
+                i += 2;
+            } else {
+                add(sh_argv, tok_v[i]);
+                i += 1;
+            }
+        }
+        if (bad == 1) {
+            if (pipe > 0) { pipe_gc(pipe); }
+            sh_status[s] = 2;
+            return pgid;
+        }
+        local pid = 0;
+        if (len(sh_argv) > 0) {
+            // reference counts for this command's pipe ends
+            if (pipe > 0) { pipe_r[pipe] = pipe_r[pipe] + 1; }
+            local name = sh_argv[1];
+            if (str_find(name, "=", 1) > 1 && ncmd == 1) {
+                // NAME=value assignments
+                for k = 1 to len(sh_argv) {
+                    local a = sh_argv[k];
+                    local eq = str_find(a, "=", 1);
+                    if (eq > 1) { env_set(substr(a, 1, eq - 1), substr(a, eq + 1, len(a))); }
+                }
+                sh_status[s] = 0;
+            } else if (index(builtins, name) > 0 && ncmd == 1 && bg == 0) {
+                status = sh_builtin(s, out_k, out_i, err_k, err_i);
+                sh_status[s] = status;
+            } else if (index(builtins, name) > 0 && name != "sh") {
+                // builtin inside a pipeline: run now, output goes to the pipe
+                status = sh_builtin(s, out_k, out_i, err_k, err_i);
+            } else {
+                pid = sh_exec(s, name, cin_k, cin_i, out_k, out_i, err_k, err_i, pgid);
+                if (pid > 0) {
+                    if (pgid == 0) { pgid = pid; }
+                    lastpid = pid;
+                    p_name[proc_slot(pid)] = cmdline;
+                } else {
+                    status = 127;
+                    sh_status[s] = 127;
+                }
+            }
+            if (pipe > 0) {
+                pipe_r[pipe] = pipe_r[pipe] - 1;
+            }
+        }
+        // free the input pipe if nobody holds it any more
+        if (cin_k == FD_PIPE) { pipe_gc(cin_i); }
+        if (pipe > 0) {
+            in_k = FD_PIPE;
+            in_i = pipe;
+        }
+        // keep pipe alive for the reader: the next sh_exec takes a reader ref
+        start = stop + 1;
+        cmdno += 1;
+    }
+    if (pgid > 0) {
+        sh_waitpid[s] = lastpid;
+        if (bg == 1) {
+            add(job_sh, p_pid[s]);
+            add(job_pgid, pgid);
+            add(job_cmd, cmdline);
+            sh_out(s, "[" .. len(job_pgid) .. "] " .. pgid .. "\n");
+            return 0;
+        }
+        local t = p_tty[s];
+        if (t > 0 && p_out_k[s] == FD_TTY) { tty_fgpid[t] = lastpid; }
+        return pgid;
+    }
+    return 0;
+}
+
+// resolve a command name on $PATH; returns inode or 0
+proc sh_resolve(s, name) {
+    if (contains(name, "/")) {
+        local ino = fs_lookup(name, p_cwd[s]);
+        if (ino > 0 && fs_type[ino] == FT_FILE) { return ino; }
+        ino = fs_lookup(name .. ".wsk", p_cwd[s]);
+        if (ino > 0 && fs_type[ino] == FT_FILE) { return ino; }
+        return 0;
+    }
+    local path = env_get("PATH") .. ":";
+    local dir = "";
+    for i = 1 to len(path) {
+        local c = path[i];
+        if (c == ":") {
+            if (len(dir) > 0) {
+                local d = fs_lookup(dir, 1);
+                if (d > 0) {
+                    local f = fs_child(d, name);
+                    if (f > 0 && fs_type[f] == FT_FILE) { return f; }
+                    f = fs_child(d, name .. ".wsk");
+                    if (f > 0 && fs_type[f] == FT_FILE) { return f; }
+                }
+            }
+            dir = "";
+        } else {
+            dir = dir .. c;
+        }
+    }
+    return 0;
+}
+
+// start an external command; returns pid or 0
+proc sh_exec(s, name, in_k, in_i, out_k, out_i, err_k, err_i, pgid) {
+    local ino = 0;
+    local is_script = 0;
+    if (name == "sh") {
+        if (len(sh_argv) < 2) { sh_errmsg(s, "sh: usage: sh script"); return 0; }
+        ino = fs_lookup(sh_argv[2], p_cwd[s]);
+        if (ino == 0 || fs_type[ino] == FT_DIR) { sh_errmsg(s, "sh: " .. sh_argv[2] .. ": " .. fs_err); return 0; }
+        is_script = 1;
+    } else {
+        ino = sh_resolve(s, name);
+        if (ino == 0) {
+            sh_errmsg(s, name .. ": command not found");
+            return 0;
+        }
+        // shell scripts: files ending in .sh
+        local fname = fs_name[ino];
+        if (len(fname) > 3 && substr(fname, len(fname) - 2, len(fname)) == ".sh") { is_script = 1; }
+    }
+    local c = 0;
+    if (is_script == 1) {
+        c = shell_spawn(s, fs_data[ino] .. "\n", fs_path(ino));
+        if (c > 0) { sh_inter[c] = 0; }
+    } else {
+        c = vm_spawn(s, ino);
+    }
+    if (c == 0) { return 0; }
+    p_in_k[c] = in_k; p_in_i[c] = in_i;
+    p_out_k[c] = out_k; p_out_i[c] = out_i;
+    p_err_k[c] = err_k; p_err_i[c] = err_i;
+    fd_open_ref(in_k, in_i, 0);
+    fd_open_ref(out_k, out_i, 1);
+    fd_open_ref(err_k, err_i, 1);
+    if (pgid > 0) { p_pgid[c] = pgid; } else { p_pgid[c] = p_pid[c]; }
+    return p_pid[c];
+}
+
+// --- builtins -------------------------------------------------------------------
+
+proc sh_builtin(s, out_k, out_i, err_k, err_i) {
+    local name = sh_argv[1];
+    local argc = len(sh_argv) - 1;
+    if (name == "cd") {
+        local target = env_get("HOME");
+        if (argc >= 1) { target = sh_argv[2]; }
+        if (target == "-") {
+            local tmp = p_cwd[s];
+            p_cwd[s] = sh_oldpwd[s];
+            sh_oldpwd[s] = tmp;
+            fd_write(out_k, out_i, fs_path(p_cwd[s]) .. "\n");
+            return 0;
+        }
+        local ino = fs_lookup(target, p_cwd[s]);
+        if (ino == 0) { fd_write(err_k, err_i, "\e[91mcd: " .. target .. ": " .. fs_err .. "\e[0m\n"); return 1; }
+        if (fs_type[ino] != FT_DIR) { fd_write(err_k, err_i, "\e[91mcd: " .. target .. ": not a directory\e[0m\n"); return 1; }
+        sh_oldpwd[s] = p_cwd[s];
+        p_cwd[s] = ino;
+        env_set("PWD", fs_path(ino));
+        return 0;
+    }
+    if (name == "pwd") {
+        fd_write(out_k, out_i, fs_path(p_cwd[s]) .. "\n");
+        return 0;
+    }
+    if (name == "echo") {
+        local first = 2;
+        local nl = 1;
+        local esc = 0;
+        while (first <= len(sh_argv) && (sh_argv[first] == "-n" || sh_argv[first] == "-e")) {
+            if (sh_argv[first] == "-n") { nl = 0; } else { esc = 1; }
+            first += 1;
+        }
+        local outs = "";
+        for i = first to len(sh_argv) {
+            if (i > first) { outs = outs .. " "; }
+            outs = outs .. sh_argv[i];
+        }
+        if (esc == 1) { outs = unescape_str(outs); }
+        if (nl == 1) { outs = outs .. "\n"; }
+        fd_write(out_k, out_i, outs);
+        return 0;
+    }
+    if (name == "exit" || name == "logout") {
+        local code = 0;
+        if (argc >= 1) { code = sh_argv[2]; }
+        proc_exit(s, code);
+        return code;
+    }
+    if (name == "export" || name == "set") {
+        if (argc == 0) {
+            for i = 1 to len(env_k) { fd_write(out_k, out_i, env_k[i] .. "=" .. env_v[i] .. "\n"); }
+            return 0;
+        }
+        for i = 2 to len(sh_argv) {
+            local a = sh_argv[i];
+            local eq = str_find(a, "=", 1);
+            if (eq > 1) { env_set(substr(a, 1, eq - 1), substr(a, eq + 1, len(a))); }
+        }
+        return 0;
+    }
+    if (name == "env") {
+        for i = 1 to len(env_k) { fd_write(out_k, out_i, env_k[i] .. "=" .. env_v[i] .. "\n"); }
+        return 0;
+    }
+    if (name == "unset") {
+        for i = 2 to len(sh_argv) {
+            local k = index(env_k, sh_argv[i]);
+            if (k > 0) { del(env_k, k); del(env_v, k); }
+        }
+        return 0;
+    }
+    if (name == "history") {
+        for i = 1 to len(hist) { fd_write(out_k, out_i, pad_left(i, 4) .. "  " .. hist[i] .. "\n"); }
+        return 0;
+    }
+    if (name == "clear") {
+        fd_write(out_k, out_i, "\e[2J\e[H");
+        return 0;
+    }
+    if (name == "true") { return 0; }
+    if (name == "false") { return 1; }
+    if (name == "help") {
+        local ino = fs_lookup("/usr/share/help.txt", 1);
+        if (ino > 0) { fd_write(out_k, out_i, fs_data[ino]); }
+        return 0;
+    }
+    if (name == "type" || name == "which") {
+        local rc = 0;
+        for i = 2 to len(sh_argv) {
+            local a = sh_argv[i];
+            if (index(builtins, a) > 0) {
+                fd_write(out_k, out_i, a .. " is a shell builtin\n");
+            } else {
+                local ino = sh_resolve(s, a);
+                if (ino > 0) { fd_write(out_k, out_i, a .. " is " .. fs_path(ino) .. "\n"); }
+                else { fd_write(err_k, err_i, a .. ": not found\n"); rc = 1; }
+            }
+        }
+        return rc;
+    }
+    if (name == "jobs") {
+        local i = 1;
+        while (i <= len(job_pgid)) {
+            if (pgid_alive(job_pgid[i]) == 0) {
+                del(job_sh, i); del(job_pgid, i); del(job_cmd, i);
+            } else {
+                if (job_sh[i] == p_pid[s]) {
+                    fd_write(out_k, out_i, "[" .. i .. "] Running   " .. job_pgid[i] .. "  " .. job_cmd[i] .. "\n");
+                }
+                i += 1;
+            }
+        }
+        return 0;
+    }
+    if (name == "fg") {
+        local j = len(job_pgid);
+        if (argc >= 1) { j = sh_argv[2]; }
+        if (j < 1 || j > len(job_pgid) || pgid_alive(job_pgid[j]) == 0) {
+            fd_write(err_k, err_i, "fg: no such job\n");
+            return 1;
+        }
+        local g = job_pgid[j];
+        fd_write(out_k, out_i, job_cmd[j] .. "\n");
+        del(job_sh, j); del(job_pgid, j); del(job_cmd, j);
+        // find a pid in the group to hand the tty to
+        for k = 1 to MAX_PROC {
+            if (p_state[k] != PS_FREE && p_pgid[k] == g) {
+                sh_waitpid[s] = p_pid[k];
+                if (p_tty[s] > 0) { tty_fgpid[p_tty[s]] = p_pid[k]; }
+            }
+        }
+        sh_wait[s] = g;
+        sh_state[s] = SH_WAIT;
+        return 0;
+    }
+    if (name == "kill") {
+        if (argc < 1) { fd_write(err_k, err_i, "usage: kill [-9] pid...\n"); return 1; }
+        local rc = 0;
+        for i = 2 to len(sh_argv) {
+            local a = sh_argv[i];
+            if (a[1] != "-") {
+                local ks = proc_slot(a);
+                if (ks == 0) { fd_write(err_k, err_i, "kill: (" .. a .. ") - no such process\n"); rc = 1; }
+                else if (p_kind[ks] == PK_INIT) { fd_write(err_k, err_i, "kill: cannot kill init\n"); rc = 1; }
+                else { proc_kill(ks, 143); }
+            }
+        }
+        return rc;
+    }
+    if (name == "source" || name == ".") {
+        if (argc < 1) { return 1; }
+        local ino = fs_lookup(sh_argv[2], p_cwd[s]);
+        if (ino == 0) { fd_write(err_k, err_i, "source: " .. sh_argv[2] .. ": " .. fs_err .. "\n"); return 1; }
+        // splice the file's lines in front of the remaining command line
+        local body = fs_data[ino];
+        local joined = "";
+        for i = 1 to len(body) {
+            if (body[i] == "\n") { joined = joined .. ";"; } else { joined = joined .. body[i]; }
+        }
+        sh_rest[s] = joined .. ";" .. sh_rest[s];
+        return 0;
+    }
+    if (name == "wait") {
+        // wait for all background jobs of this shell
+        for i = 1 to len(job_pgid) {
+            if (job_sh[i] == p_pid[s] && pgid_alive(job_pgid[i]) == 1) {
+                sh_wait[s] = job_pgid[i];
+                sh_waitpid[s] = job_pgid[i];
+                sh_state[s] = SH_WAIT;
+                sh_rest[s] = "wait;" .. sh_rest[s];
+                return 0;
+            }
+        }
+        return 0;
+    }
+    if (name == "startx") {
+        return wm_start(s);
+    }
+    if (name == "shutdown" || name == "halt") {
+        sys_power(0);
+        return 0;
+    }
+    if (name == "reboot") {
+        sys_power(1);
+        return 0;
+    }
+    if (name == "uptime") {
+        fd_write(out_k, out_i, "up " .. fmt_duration(now_secs() - uptime0) .. ", " .. proc_count .. " processes\n");
+        return 0;
+    }
+    if (name == "caps") {
+        return caps_command(out_k, out_i, err_k, err_i);
+    }
+    return 0;
+}
+
+proc fmt_duration(secs) {
+    local t = floor(secs);
+    local h = floor(t / 3600);
+    local m = floor(t / 60) % 60;
+    local sec = t % 60;
+    local out = "";
+    if (h > 0) { out = h .. "h "; }
+    return out .. m .. "m " .. sec .. "s";
+}
+
+// interpret \n \t \e \\ escapes
+proc unescape_str(str) {
+    local out = "";
+    local i = 1;
+    local n = len(str);
+    while (i <= n) {
+        local c = str[i];
+        if (c == "\\" && i < n) {
+            local d = str[i + 1];
+            if (d == "n") { out = out .. "\n"; }
+            else if (d == "t") { out = out .. "\t"; }
+            else if (d == "e") { out = out .. "\e"; }
+            else if (d == "\\") { out = out .. "\\"; }
+            else { out = out .. c .. d; }
+            i += 2;
+        } else {
+            out = out .. c;
+            i += 1;
+        }
+    }
+    return out;
+}

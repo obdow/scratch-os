@@ -1,0 +1,319 @@
+// ===========================================================================
+// fs.sbs - in-memory hierarchical file system (included inside sprite Kernel)
+//
+// Inodes are parallel lists indexed by inode number (1 = root "/").
+// Directory lookup uses fs_key = "<parent inode>/<name>", searched with
+// Scratch's list `item # of`, so names are case-insensitive but
+// case-preserving (like macOS / Windows file systems).
+//
+// The disk image is rebuilt at every boot from rootfs/ (baked into the
+// project as list data); nothing persists between sessions.
+// ===========================================================================
+
+const FT_DIR = "d";
+const FT_FILE = "f";
+
+list fs_used;
+list fs_name;
+list fs_parent;
+list fs_type;
+list fs_data;
+list fs_mtime;
+list fs_key;
+
+list rootfs_paths = data("rootfs_paths");
+list rootfs_types = data("rootfs_types");
+list rootfs_data = data("rootfs_data");
+
+list fs_tmp;            // scratch result list (directory listings, path parts)
+var fs_err = "";        // last error message
+var fs_base = "";       // last path component (set by fs_lookup_parent)
+var fs_count = 0;
+
+proc fs_now() {
+    return days2000();
+}
+
+proc fs_init() {
+    clear(fs_used); clear(fs_name); clear(fs_parent); clear(fs_type);
+    clear(fs_data); clear(fs_mtime); clear(fs_key);
+    add(fs_used, 1);
+    add(fs_name, "");
+    add(fs_parent, 0);
+    add(fs_type, FT_DIR);
+    add(fs_data, "");
+    add(fs_mtime, fs_now());
+    add(fs_key, "\x01root");
+    fs_count = 1;
+}
+
+// load the baked disk image
+proc fs_load_rootfs() {
+    for i = 1 to len(rootfs_paths) {
+        local p = rootfs_paths[i];
+        if (rootfs_types[i] == FT_DIR) {
+            fs_mkdir_p(p);
+        } else {
+            local ino = fs_create(p, FT_FILE, 1);
+            if (ino > 0) { fs_data[ino] = rootfs_data[i]; }
+        }
+    }
+}
+
+proc fs_alloc() {
+    local i = index(fs_used, 0);
+    if (i == 0) {
+        add(fs_used, 1); add(fs_name, ""); add(fs_parent, 0); add(fs_type, FT_FILE);
+        add(fs_data, ""); add(fs_mtime, 0); add(fs_key, "");
+        i = len(fs_used);
+    } else {
+        fs_used[i] = 1;
+    }
+    fs_count += 1;
+    return i;
+}
+
+// child of directory `dir` named `name`, or 0
+proc fs_child(dir, name) {
+    return index(fs_key, dir .. "/" .. name);
+}
+
+// split path into fs_tmp components (ignores empty parts)
+proc fs_split(path) {
+    clear(fs_tmp);
+    local cur = "";
+    local n = len(path);
+    for i = 1 to n {
+        local c = path[i];
+        if (c == "/") {
+            if (len(cur) > 0) { add(fs_tmp, cur); }
+            cur = "";
+        } else {
+            cur = cur .. c;
+        }
+    }
+    if (len(cur) > 0) { add(fs_tmp, cur); }
+}
+
+// resolve a path relative to directory inode `cwd`; returns inode or 0
+proc fs_lookup(path, cwd) {
+    local ino = cwd;
+    if (len(path) == 0) { fs_err = "empty path"; return 0; }
+    if (path[1] == "/") { ino = 1; }
+    fs_split(path);
+    local n = len(fs_tmp);
+    for k = 1 to n {
+        local part = fs_tmp[k];
+        if (fs_type[ino] != FT_DIR) { fs_err = "not a directory"; return 0; }
+        if (part == ".") {
+            // stay
+        } else if (part == "..") {
+            if (ino != 1) { ino = fs_parent[ino]; }
+        } else {
+            local c = fs_child(ino, part);
+            if (c == 0) { fs_err = "no such file or directory"; return 0; }
+            ino = c;
+        }
+    }
+    return ino;
+}
+
+// resolve the parent directory of `path`; sets fs_base to the final name
+proc fs_lookup_parent(path, cwd) {
+    // strip trailing slashes
+    local p = path;
+    while (len(p) > 1 && p[len(p)] == "/") { p = substr(p, 1, len(p) - 1); }
+    local i = len(p);
+    while (i > 0 && p[i] != "/") { i -= 1; }
+    fs_base = substr(p, i + 1, len(p));
+    local dir = cwd;
+    if (i == 1) {
+        dir = 1;
+    } else if (i > 1) {
+        dir = fs_lookup(substr(p, 1, i - 1), cwd);
+        if (dir == 0) { return 0; }
+    }
+    if (fs_type[dir] != FT_DIR) { fs_err = "not a directory"; return 0; }
+    if (len(fs_base) == 0 || fs_base == "." || fs_base == "..") { fs_err = "invalid name"; return 0; }
+    return dir;
+}
+
+// create file/dir; returns inode (existing inode if `ok_exists` and same type)
+proc fs_create(path, type, cwd) {
+    local dir = fs_lookup_parent(path, cwd);
+    if (dir == 0) { return 0; }
+    local ex = fs_child(dir, fs_base);
+    if (ex > 0) {
+        if (fs_type[ex] == type) { return ex; }
+        fs_err = "file exists";
+        return 0;
+    }
+    local ino = fs_alloc();
+    fs_name[ino] = fs_base;
+    fs_parent[ino] = dir;
+    fs_type[ino] = type;
+    fs_data[ino] = "";
+    fs_mtime[ino] = fs_now();
+    fs_key[ino] = dir .. "/" .. fs_base;
+    fs_mtime[dir] = fs_now();
+    return ino;
+}
+
+proc fs_mkdir_p(path) {
+    local ino = 1;
+    if (path[1] != "/") { return 0; }
+    fs_split(path);
+    // copy parts since fs_create reuses fs_tmp
+    local n = len(fs_tmp);
+    local acc = "";
+    local parts = "";
+    for k = 1 to n {
+        acc = acc .. "/" .. fs_tmp[k];
+        add(fs_parts, acc);
+    }
+    for k = 1 to n {
+        ino = fs_create(fs_parts[k], FT_DIR, 1);
+        if (ino == 0) { clear(fs_parts); return 0; }
+    }
+    clear(fs_parts);
+    return ino;
+}
+list fs_parts;
+
+proc fs_path(ino) {
+    if (ino == 1) { return "/"; }
+    local p = "";
+    local i = ino;
+    while (i != 1 && i != 0) {
+        p = "/" .. fs_name[i] .. p;
+        i = fs_parent[i];
+    }
+    return p;
+}
+
+// list children of dir into fs_tmp (inode numbers), sorted by name
+proc fs_list(dir) {
+    clear(fs_tmp);
+    local n = len(fs_used);
+    for i = 1 to n {
+        if (fs_used[i] == 1 && fs_parent[i] == dir && i != 1) {
+            // insertion sort by name (case-insensitive compare)
+            local nm = fs_name[i];
+            local k = len(fs_tmp);
+            while (k > 0 && fs_name[fs_tmp[k]] > nm) { k -= 1; }
+            insert(fs_tmp, k + 1, i);
+        }
+    }
+}
+
+proc fs_is_empty(dir) {
+    local n = len(fs_used);
+    for i = 2 to n {
+        if (fs_used[i] == 1 && fs_parent[i] == dir) { return 0; }
+    }
+    return 1;
+}
+
+proc fs_free(ino) {
+    fs_used[ino] = 0;
+    fs_key[ino] = "\x01free";
+    fs_data[ino] = "";
+    fs_name[ino] = "";
+    fs_parent[ino] = 0;
+    fs_count -= 1;
+}
+
+// remove inode (recursive for directories when rec = 1)
+proc fs_remove(ino, rec) recursive {
+    if (ino == 1) { fs_err = "cannot remove root"; return 0; }
+    if (fs_type[ino] == FT_DIR) {
+        if (fs_is_empty(ino) == 0) {
+            if (rec == 0) { fs_err = "directory not empty"; return 0; }
+            local n = len(fs_used);
+            for i = 2 to n {
+                if (fs_used[i] == 1 && fs_parent[i] == ino) {
+                    if (fs_remove(i, 1) == 0) { return 0; }
+                }
+            }
+        }
+    }
+    fs_mtime[fs_parent[ino]] = fs_now();
+    fs_free(ino);
+    return 1;
+}
+
+// is `a` equal to or an ancestor of `b`?
+proc fs_is_ancestor(a, b) {
+    local i = b;
+    while (i != 0) {
+        if (i == a) { return 1; }
+        if (i == 1) { return 0; }
+        i = fs_parent[i];
+    }
+    return 0;
+}
+
+proc fs_rename(ino, newdir, newname) {
+    if (fs_type[newdir] != FT_DIR) { fs_err = "not a directory"; return 0; }
+    if (fs_type[ino] == FT_DIR && fs_is_ancestor(ino, newdir) == 1) { fs_err = "cannot move a directory into itself"; return 0; }
+    local ex = fs_child(newdir, newname);
+    if (ex > 0 && ex != ino) {
+        if (fs_type[ex] == FT_DIR) { fs_err = "target is a directory"; return 0; }
+        fs_free(ex);
+    }
+    fs_parent[ino] = newdir;
+    fs_name[ino] = newname;
+    fs_key[ino] = newdir .. "/" .. newname;
+    fs_mtime[newdir] = fs_now();
+    return 1;
+}
+
+// deep copy of a file or directory into newdir/newname
+proc fs_copy(ino, newdir, newname) recursive {
+    if (fs_type[ino] == FT_DIR && fs_is_ancestor(ino, newdir) == 1) { fs_err = "cannot copy a directory into itself"; return 0; }
+    local ex = fs_child(newdir, newname);
+    local dst = 0;
+    if (ex > 0) {
+        if (fs_type[ex] != fs_type[ino]) { fs_err = "file exists"; return 0; }
+        dst = ex;
+    } else {
+        dst = fs_alloc();
+        fs_name[dst] = newname;
+        fs_parent[dst] = newdir;
+        fs_type[dst] = fs_type[ino];
+        fs_key[dst] = newdir .. "/" .. newname;
+    }
+    fs_data[dst] = fs_data[ino];
+    fs_mtime[dst] = fs_now();
+    if (fs_type[ino] == FT_DIR) {
+        local n = len(fs_used);
+        for i = 2 to n {
+            if (fs_used[i] == 1 && fs_parent[i] == ino && i != dst) {
+                if (fs_copy(i, dst, fs_name[i]) == 0) { return 0; }
+            }
+        }
+    }
+    return dst;
+}
+
+proc fs_total_bytes() {
+    local total = 0;
+    for i = 1 to len(fs_used) {
+        if (fs_used[i] == 1) { total += len(fs_data[i]); }
+    }
+    return total;
+}
+
+// does modifying `ino` (or creating inside dir `ino`) need the "files" capability?
+// Free areas: /home and /tmp.
+proc fs_protected(ino) {
+    local i = ino;
+    while (i != 1 && i != 0) {
+        if (fs_parent[i] == 1) {
+            if (fs_name[i] == "home" || fs_name[i] == "tmp") { return 0; }
+            return 1;
+        }
+        i = fs_parent[i];
+    }
+    return 1;
+}

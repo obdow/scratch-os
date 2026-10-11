@@ -1,0 +1,402 @@
+// ===========================================================================
+// proc.sbs - processes, pipes, file descriptors and the scheduler
+// (included inside sprite Kernel)
+//
+// A process occupies one slot of the parallel p_* lists.  Kinds:
+//   PK_SHELL  native shell (shell.sbs)
+//   PK_VM     Whisker program running on the bytecode VM (vm.sbs)
+//   PK_INIT   pid 1, keeps a login shell alive on the console
+//
+// Scheduling is preemptive: every frame the kernel gives processes a time
+// budget; VM processes run a fixed instruction quantum and are switched out
+// even in an infinite loop.  A process blocked on I/O simply retries the
+// blocking operation once per frame.
+// ===========================================================================
+
+const MAX_PROC = 32;
+
+const PS_FREE = 0;
+const PS_READY = 1;
+const PS_BLOCKED = 2;
+const PS_STOPPED = 4;
+
+const PK_SHELL = 1;
+const PK_VM = 2;
+const PK_INIT = 3;
+
+const BLK_NONE = 0;
+const BLK_IO = 1;
+const BLK_SLEEP = 2;
+const BLK_PROMPT = 3;
+
+const FD_TTY = 0;
+const FD_PIPE = 1;
+const FD_NULL = 2;
+const FD_FILE = 3;
+
+const MAX_PIPE = 64;
+
+list p_pid;
+list p_state;
+list p_kind;
+list p_name;
+list p_parent;
+list p_tty;
+list p_in_k;
+list p_in_i;
+list p_out_k;
+list p_out_i;
+list p_err_k;
+list p_err_i;
+list p_cwd;
+list p_wake;
+list p_cpu;
+list p_start;
+list p_pgid;
+list p_caps;       // granted capabilities, "|cap1|cap2|"
+list p_path;       // program path
+list p_block;
+list p_raw;        // raw keyboard mode
+list p_killed;     // pending kill
+list p_exitcode;
+// VM registers (vm.sbs)
+list p_pc;
+list p_sp;
+list p_fp;
+list p_csp;
+list p_glob;
+list p_seg;
+list p_line;
+list p_sbase;
+list p_cbase;
+list p_win;        // focus window for gui programs
+
+list ex_pid;       // exit statuses of finished processes
+list ex_code;
+
+list pipe_used;
+list pipe_w;
+list pipe_r;
+list pipe_part;
+list pl_pipe;
+list pl_text;
+
+list kq_pid;       // raw key events for processes
+list kq_ev;
+
+var next_pid = 1;
+var sched_next = 1;
+var fd_got = "";
+var cur_slot = 0;      // slot of process currently executing
+var now_s = 0;         // time in seconds at frame start
+var uptime0 = 0;
+var proc_count = 0;
+
+proc now_secs() {
+    return days2000() * 86400;
+}
+
+proc proc_init() {
+    clear(p_pid); clear(p_state); clear(p_kind); clear(p_name); clear(p_parent); clear(p_tty);
+    clear(p_in_k); clear(p_in_i); clear(p_out_k); clear(p_out_i); clear(p_err_k); clear(p_err_i);
+    clear(p_cwd); clear(p_wake); clear(p_cpu); clear(p_start); clear(p_pgid); clear(p_caps);
+    clear(p_path); clear(p_block); clear(p_raw); clear(p_killed); clear(p_exitcode);
+    clear(p_pc); clear(p_sp); clear(p_fp); clear(p_csp); clear(p_glob); clear(p_seg); clear(p_line);
+    clear(p_sbase); clear(p_cbase); clear(p_win);
+    for i = 1 to MAX_PROC {
+        add(p_pid, 0); add(p_state, PS_FREE); add(p_kind, 0); add(p_name, ""); add(p_parent, 0);
+        add(p_tty, 0); add(p_in_k, FD_NULL); add(p_in_i, 0); add(p_out_k, FD_NULL); add(p_out_i, 0);
+        add(p_err_k, FD_NULL); add(p_err_i, 0); add(p_cwd, 1); add(p_wake, 0); add(p_cpu, 0);
+        add(p_start, 0); add(p_pgid, 0); add(p_caps, "|"); add(p_path, ""); add(p_block, 0);
+        add(p_raw, 0); add(p_killed, 0); add(p_exitcode, 0);
+        add(p_pc, 0); add(p_sp, 0); add(p_fp, 0); add(p_csp, 0); add(p_glob, 0); add(p_seg, 0);
+        add(p_line, 0); add(p_sbase, 0); add(p_cbase, 0); add(p_win, 0);
+    }
+    clear(ex_pid); clear(ex_code);
+    clear(pipe_used); clear(pipe_w); clear(pipe_r); clear(pipe_part);
+    for i = 1 to MAX_PIPE { add(pipe_used, 0); add(pipe_w, 0); add(pipe_r, 0); add(pipe_part, ""); }
+    clear(pl_pipe); clear(pl_text);
+    clear(kq_pid); clear(kq_ev);
+    next_pid = 1;
+    proc_count = 0;
+}
+
+proc proc_slot(pid) {
+    if (pid < 1) { return 0; }
+    return index(p_pid, pid);
+}
+
+// allocate a process slot; returns slot (pid in p_pid[slot]) or 0
+proc proc_alloc(name, kind, parent_slot) {
+    local s = index(p_state, PS_FREE);
+    if (s == 0) { return 0; }
+    p_pid[s] = next_pid;
+    next_pid += 1;
+    p_state[s] = PS_READY;
+    p_kind[s] = kind;
+    p_name[s] = name;
+    p_cpu[s] = 0;
+    p_start[s] = now_secs();
+    p_block[s] = BLK_NONE;
+    p_raw[s] = 0;
+    p_killed[s] = 0;
+    p_exitcode[s] = 0;
+    p_path[s] = "";
+    p_win[s] = 0;
+    p_glob[s] = 0;
+    p_seg[s] = 0;
+    if (parent_slot > 0) {
+        p_parent[s] = p_pid[parent_slot];
+        p_tty[s] = p_tty[parent_slot];
+        p_cwd[s] = p_cwd[parent_slot];
+        p_in_k[s] = p_in_k[parent_slot]; p_in_i[s] = p_in_i[parent_slot];
+        p_out_k[s] = p_out_k[parent_slot]; p_out_i[s] = p_out_i[parent_slot];
+        p_err_k[s] = p_err_k[parent_slot]; p_err_i[s] = p_err_i[parent_slot];
+        p_pgid[s] = p_pgid[parent_slot];
+        p_caps[s] = "|";
+    } else {
+        p_parent[s] = 0;
+        p_tty[s] = 0;
+        p_cwd[s] = 1;
+        p_in_k[s] = FD_NULL; p_out_k[s] = FD_NULL; p_err_k[s] = FD_NULL;
+        p_pgid[s] = p_pid[s];
+        p_caps[s] = "|";
+    }
+    proc_count += 1;
+    return s;
+}
+
+// --- file descriptors ---------------------------------------------------------
+
+proc fd_open_ref(kind, id, is_writer) {
+    if (kind == FD_PIPE) {
+        if (is_writer == 1) { pipe_w[id] = pipe_w[id] + 1; } else { pipe_r[id] = pipe_r[id] + 1; }
+    }
+}
+
+proc fd_close_ref(kind, id, is_writer) {
+    if (kind == FD_PIPE) {
+        if (is_writer == 1) { pipe_w[id] = pipe_w[id] - 1; } else { pipe_r[id] = pipe_r[id] - 1; }
+        pipe_gc(id);
+    }
+}
+
+proc fd_write(kind, id, s) {
+    if (kind == FD_TTY) {
+        if (id > 0 && tty_used[id] == 1) { tty_write(id, s); }
+    } else if (kind == FD_PIPE) {
+        pipe_write(id, s);
+    } else if (kind == FD_FILE) {
+        if (fs_used[id] == 1) {
+            fs_data[id] = fs_data[id] .. s;
+            fs_mtime[id] = fs_now();
+        }
+    }
+}
+
+// read a line: returns 1 (line in fd_got), 0 (would block), -1 (EOF)
+proc fd_readline(kind, id, slot) {
+    if (kind == FD_TTY) {
+        if (id == 0 || tty_used[id] == 0) { return -1; }
+        local fgs = proc_slot(tty_fgpid[id]);
+        if (fgs == 0 || p_pgid[fgs] != p_pgid[slot]) { return 0; }
+        if (tty_getline(id) == 1) {
+            fd_got = tty_got;
+            return 1;
+        }
+        if (tty_eof[id] == 1) { tty_eof[id] = 0; return -1; }
+        return 0;
+    }
+    if (kind == FD_PIPE) {
+        return pipe_readline(id);
+    }
+    return -1;
+}
+
+// --- pipes --------------------------------------------------------------------
+
+proc pipe_new() {
+    local id = index(pipe_used, 0);
+    if (id == 0) { return 0; }
+    pipe_used[id] = 1;
+    pipe_w[id] = 0;
+    pipe_r[id] = 0;
+    pipe_part[id] = "";
+    return id;
+}
+
+proc pipe_gc(id) {
+    if (pipe_used[id] == 1 && pipe_w[id] <= 0 && pipe_r[id] <= 0) {
+        pipe_used[id] = 0;
+        local i = 1;
+        while (i <= len(pl_pipe)) {
+            if (pl_pipe[i] == id) { del(pl_pipe, i); del(pl_text, i); } else { i += 1; }
+        }
+    }
+}
+
+proc pipe_write(id, s) {
+    if (pipe_used[id] == 0) { return; }
+    if (pipe_r[id] <= 0) { return; }  // nobody will ever read it
+    local part = pipe_part[id];
+    local n = len(s);
+    local start = 1;
+    for i = 1 to n {
+        if (s[i] == "\n") {
+            add(pl_pipe, id);
+            add(pl_text, part .. substr(s, start, i - 1));
+            part = "";
+            start = i + 1;
+        }
+    }
+    if (start <= n) { part = part .. substr(s, start, n); }
+    pipe_part[id] = part;
+}
+
+proc pipe_readline(id) {
+    local i = index(pl_pipe, id);
+    if (i > 0) {
+        fd_got = pl_text[i];
+        del(pl_pipe, i);
+        del(pl_text, i);
+        return 1;
+    }
+    if (pipe_w[id] <= 0) {
+        if (len(pipe_part[id]) > 0) {
+            fd_got = pipe_part[id];
+            pipe_part[id] = "";
+            return 1;
+        }
+        return -1;
+    }
+    return 0;
+}
+
+// --- process lifecycle --------------------------------------------------------
+
+proc proc_exit(s, code) {
+    if (p_state[s] == PS_FREE) { return; }
+    local pid = p_pid[s];
+    // release resources
+    fd_close_ref(p_in_k[s], p_in_i[s], 0);
+    fd_close_ref(p_out_k[s], p_out_i[s], 1);
+    fd_close_ref(p_err_k[s], p_err_i[s], 1);
+    if (p_kind[s] == PK_VM) { vm_release(s); }
+    wm_proc_exit(pid);
+    // drop queued raw keys
+    local i = 1;
+    while (i <= len(kq_pid)) {
+        if (kq_pid[i] == pid) { del(kq_pid, i); del(kq_ev, i); } else { i += 1; }
+    }
+    // give the terminal back to the parent
+    local t = p_tty[s];
+    if (t > 0 && tty_used[t] == 1 && tty_fgpid[t] == pid) {
+        local ps = proc_slot(p_parent[s]);
+        if (ps > 0) { tty_fgpid[t] = p_parent[s]; } else { tty_fgpid[t] = 0; }
+        if (tty_mode[t] == 1) { tty_mode[t] = 0; tty_curvis[t] = 1; }
+    }
+    add(ex_pid, pid);
+    add(ex_code, code);
+    if (len(ex_pid) > 64) { del(ex_pid, 1); del(ex_code, 1); }
+    p_state[s] = PS_FREE;
+    p_pid[s] = 0;
+    p_kind[s] = 0;
+    proc_count -= 1;
+}
+
+// exit status of a finished pid (or "" if unknown / still running)
+proc proc_status(pid) {
+    local i = index(ex_pid, pid);
+    if (i == 0) { return ""; }
+    return ex_code[i];
+}
+
+// is any process of process group g still alive?
+proc pgid_alive(g) {
+    for s = 1 to MAX_PROC {
+        if (p_state[s] != PS_FREE && p_pgid[s] == g && p_kind[s] != PK_SHELL) { return 1; }
+    }
+    return 0;
+}
+
+// kill a process (and, for shells, nothing else)
+proc proc_kill(s, code) {
+    if (p_state[s] == PS_FREE) { return; }
+    if (p_kind[s] == PK_INIT) { return; }
+    proc_exit(s, code);
+}
+
+// interrupt the foreground job of tty t (Ctrl+C)
+proc tty_interrupt(t) {
+    local fg = tty_fgpid[t];
+    local s = proc_slot(fg);
+    if (s == 0) { return 0; }
+    if (p_kind[s] == PK_SHELL || p_kind[s] == PK_INIT) { return 0; }
+    local g = p_pgid[s];
+    for k = 1 to MAX_PROC {
+        if (p_state[k] != PS_FREE && p_pgid[k] == g && p_kind[k] != PK_SHELL && p_kind[k] != PK_INIT) {
+            proc_exit(k, 130);
+        }
+    }
+    return 1;
+}
+
+// does process s hold capability `cap`?
+proc has_cap(s, cap) {
+    return contains(p_caps[s], "|" .. cap .. "|");
+}
+
+// --- scheduler ----------------------------------------------------------------
+
+proc proc_step(s) {
+    cur_slot = s;
+    local k = p_kind[s];
+    if (k == PK_VM) {
+        vm_run(s, 4000);
+    } else if (k == PK_SHELL) {
+        shell_step(s);
+    } else if (k == PK_INIT) {
+        init_step(s);
+    }
+    cur_slot = 0;
+}
+
+proc sched_run(budget_ms) {
+    local t0 = days2000() * 86400000;
+    now_s = t0 / 1000;
+    // wake blocked processes so they retry their blocking operation
+    for s = 1 to MAX_PROC {
+        if (p_state[s] == PS_BLOCKED) {
+            local b = p_block[s];
+            if (b == BLK_IO) {
+                p_state[s] = PS_READY;
+            } else if (b == BLK_SLEEP) {
+                if (now_s >= p_wake[s]) { p_state[s] = PS_READY; }
+            }
+        }
+    }
+    local rounds = 0;
+    forever {
+        local ran = 0;
+        for k = 1 to MAX_PROC {
+            local s = (sched_next + k - 2) % MAX_PROC + 1;
+            if (p_state[s] == PS_READY) {
+                p_block[s] = BLK_NONE;
+                proc_step(s);
+                ran = 1;
+                if (days2000() * 86400000 - t0 > budget_ms) {
+                    sched_next = s % MAX_PROC + 1;
+                    return;
+                }
+            }
+        }
+        rounds += 1;
+        if (ran == 0 || rounds > 50) { return; }
+    }
+}
+
+// block the current process (VM retries the blocking instruction)
+proc proc_block(s, reason) {
+    p_state[s] = PS_BLOCKED;
+    p_block[s] = reason;
+}

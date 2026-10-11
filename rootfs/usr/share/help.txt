@@ -1,0 +1,12 @@
+ScratchOS shell - quick reference
+
+ Files     ls cd pwd cat mkdir rmdir rm cp mv touch tree find
+ Text      echo grep wc head tail sort more edit
+ System    ps kill top free uptime uname date clear history
+ Desktop   startx            Power  shutdown reboot
+ Language  run program.wsk   whisker (interactive)   man whisker
+
+ Syntax    a | b   a > f   a >> f   a < f   a && b   a || b   a &
+           NAME=value   $NAME   $?   ~   'quoted'   "quoted $VAR"
+
+ Keys      Up/Down history  Left/Right/Home/End edit  Ctrl+C interrupt

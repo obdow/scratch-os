@@ -1,0 +1,218 @@
+// ===========================================================================
+// boot.sbs - BIOS POST, bootloader, kernel start-up log, init (pid 1)
+// and power management (included inside sprite Kernel)
+// ===========================================================================
+
+const OS_NAME = "ScratchOS";
+const OS_VERSION = "1.0";
+const KERNEL_NAME = "scratch-kernel";
+
+var boot_t0 = 0;
+var skip_boot = 0;
+var power_req = -1;      // -1 none, 0 shutdown, 1 reboot
+var halted = 0;
+
+proc boot_time() {
+    local t = floor((now_secs() - boot_t0) * 1000000) / 1000000;
+    local s = "" .. floor(t);
+    local frac = "" .. floor((t - floor(t)) * 1000000);
+    while (len(frac) < 6) { frac = "0" .. frac; }
+    return pad_left(s, 5) .. "." .. frac;
+}
+
+proc klog(msg) {
+    tty_write(con, "\e[32m[" .. boot_time() .. "]\e[0m " .. msg .. "\n");
+}
+
+proc kok(msg) {
+    tty_write(con, "\e[97m[\e[92m  OK  \e[97m]\e[0m " .. msg .. "\n");
+}
+
+// drain keyboard during boot: ESC skips the animations
+proc boot_keys() {
+    while (len(kb_queue) > 0) {
+        if (kb_queue[1] == "escape") { skip_boot = 1; }
+        del(kb_queue, 1);
+    }
+}
+
+proc boot_pause(sec) nowarp {
+    boot_keys();
+    tty_render();
+    if (skip_boot == 0) { wait(sec); }
+}
+
+proc boot_seq() nowarp {
+    skip_boot = 0;
+    boot_t0 = now_secs();
+    // ---- BIOS POST -----------------------------------------------------------
+    tty_write(con, "\e[2J\e[H");
+    tty_write(con, "\e[93m  ▄▄▄▄  \e[97m ScratchBIOS (C) 2026 Pen & Stamp Technologies\n");
+    tty_write(con, "\e[93m █ ▀▀ █ \e[37m Release 1.0.26  -  PnP / Clone-Input aware\n");
+    tty_write(con, "\e[93m ▀▄▄▄▄▀ \e[0m\n\n");
+    tty_write(con, "Main Processor : Scratch VM (TurboWarp JIT) @ 60 Hz\n");
+    tty_write(con, "Memory Testing : ");
+    local x0 = tty_cx[con];
+    local y0 = tty_cy[con];
+    local mem = 0;
+    while (mem < 65536) {
+        mem += 2048;
+        tty_goto(con, x0, y0);
+        tty_write(con, mem .. "K");
+        boot_pause(0.01);
+    }
+    tty_write(con, " OK\n");
+    boot_pause(0.15);
+    tty_write(con, "Display        : Pen Display Adapter, 480x360, VGA 8x16 font\n");
+    boot_pause(0.1);
+    tty_write(con, "Keyboard       : " .. len(kb_names) .. "-key clone listener array ... ");
+    wait_until(kb_ready == 1);
+    tty_write(con, "OK\n");
+    boot_pause(0.1);
+    tty_write(con, "Storage        : SB3 ROM disk, " .. len(rootfs_paths) .. " objects\n");
+    boot_pause(0.1);
+    tty_write(con, "Mouse          : Stage pointer device\n\n");
+    boot_pause(0.2);
+    tty_write(con, "\e[37mPress \e[97mESC\e[37m to skip boot animations\e[0m\n\n");
+    tty_write(con, "Booting from ROM disk");
+    repeat (6) {
+        tty_write(con, ".");
+        boot_pause(0.12);
+    }
+    tty_write(con, "\n");
+    boot_pause(0.3);
+    // ---- bootloader ------------------------------------------------------------
+    tty_write(con, "\e[2J\e[H");
+    tty_write(con, "\e[97;44m" .. pad_right("  PenBoot 1.0 - " .. OS_NAME .. " boot manager", 60) .. "\e[0m\n\n");
+    tty_write(con, "  \e[30;47m " .. pad_right(OS_NAME .. " " .. OS_VERSION .. " (" .. KERNEL_NAME .. ")", 40) .. "\e[0m\n");
+    tty_write(con, "   " .. OS_NAME .. " " .. OS_VERSION .. " (recovery mode)\n\n");
+    tty_write(con, "  Loading kernel  [");
+    repeat (30) {
+        tty_write(con, "\e[92m█\e[0m");
+        boot_pause(0.025);
+    }
+    tty_write(con, "]\n");
+    boot_pause(0.2);
+    // ---- kernel log -------------------------------------------------------------
+    tty_write(con, "\e[2J\e[H");
+    boot_t0 = now_secs();
+    klog(OS_NAME .. " " .. OS_VERSION .. " (" .. KERNEL_NAME .. ") #1 PREEMPT");
+    klog("Command line: root=/dev/sb3 console=tty1 font=vga8x16");
+    klog("Pen framebuffer: 480x360, 60x22 text console, 16 colours");
+    boot_pause(0.05);
+    klog("Memory: 200000 list cells per segment, heap ready");
+    fs_init();
+    fs_load_rootfs();
+    boot_pause(0.05);
+    kok("Mounted root file system (" .. fs_count .. " inodes, " .. floor(fs_total_bytes() / 1024) .. " KiB)");
+    boot_pause(0.05);
+    kok("Started keyboard service (" .. len(kb_names) .. " clone listeners)");
+    boot_pause(0.05);
+    proc_init();
+    shell_init();
+    vm_init();
+    kok("Started process scheduler (preemptive, " .. MAX_PROC .. " slots)");
+    boot_pause(0.05);
+    kok("Started Whisker virtual machine");
+    boot_pause(0.05);
+    caps_init();
+    kok("Loaded capability policy (/etc/caps)");
+    boot_pause(0.05);
+    wm_init();
+    kok("Started window manager (run 'startx' for the desktop)");
+    boot_pause(0.05);
+    kok("Reached target Multi-User System");
+    boot_pause(0.15);
+    uptime0 = now_secs();
+    // ---- init ----------------------------------------------------------------------
+    local s = proc_alloc("init", PK_INIT, 0);
+    p_tty[s] = con;
+    p_in_k[s] = FD_TTY; p_in_i[s] = con;
+    p_out_k[s] = FD_TTY; p_out_i[s] = con;
+    p_err_k[s] = FD_TTY; p_err_i[s] = con;
+    p_caps[s] = "|files|proc|gui|system|";
+    init_state = 0;
+}
+
+list kb_names = data("kb_keys");
+
+var init_state = 0;
+var init_child = 0;
+
+// pid 1: run /etc/rc, then keep an interactive shell alive on the console
+proc init_step(s) {
+    if (init_state == 0) {
+        local rc = fs_lookup("/etc/rc", 1);
+        if (rc > 0) {
+            local c = shell_spawn(s, fs_data[rc] .. "\n", "/etc/rc");
+            sh_inter[c] = 0;
+            p_pgid[c] = p_pid[c];
+            init_child = p_pid[c];
+            tty_fgpid[con] = p_pid[c];
+            init_state = 1;
+        } else {
+            init_state = 2;
+        }
+        return;
+    }
+    if (init_state == 1) {
+        if (proc_slot(init_child) > 0) { proc_block(s, BLK_IO); return; }
+        init_state = 2;
+    }
+    if (init_state == 2) {
+        local c = shell_spawn(s, "", "-sh");
+        p_pgid[c] = p_pid[c];
+        init_child = p_pid[c];
+        tty_fgpid[con] = p_pid[c];
+        p_cwd[c] = fs_lookup("/home/user", 1);
+        if (p_cwd[c] == 0) { p_cwd[c] = 1; }
+        init_state = 3;
+        return;
+    }
+    if (init_state == 3) {
+        if (proc_slot(init_child) > 0) { proc_block(s, BLK_IO); return; }
+        tty_write(con, "\n\e[93m" .. OS_NAME .. " " .. OS_VERSION .. " tty1\e[0m - shell exited, respawning\n\n");
+        init_state = 2;
+    }
+}
+
+// --- power management ---------------------------------------------------------------
+
+proc sys_power(mode) {
+    power_req = mode;
+}
+
+proc power_off() nowarp {
+    local reboot = power_req;
+    power_req = -1;
+    wm_stop_all();
+    tty_write(con, "\n");
+    for s = 1 to MAX_PROC {
+        if (p_state[s] != PS_FREE && p_kind[s] != PK_INIT) {
+            klog("Stopping " .. p_name[s] .. " (pid " .. p_pid[s] .. ")");
+            proc_exit(s, 143);
+            tty_render();
+            wait(0.02);
+        }
+    }
+    kok("Unmounted root file system");
+    kok("Reached target Shutdown");
+    tty_render();
+    wait(0.4);
+    for s = 1 to MAX_PROC { if (p_state[s] != PS_FREE) { proc_exit(s, 0); } }
+    if (reboot == 1) {
+        klog("Rebooting.");
+        tty_render();
+        wait(0.6);
+        kernel_boot();
+        return;
+    }
+    tty_write(con, "\e[2J\e[H");
+    tty_write(con, "\n\n\n\n\n\n\n\n\n");
+    tty_write(con, "\e[93m          It is now safe to close this browser tab.\e[0m\n\n");
+    tty_write(con, "\e[37m          (click the green flag to boot " .. OS_NAME .. " again)\e[0m\n");
+    tty_render();
+    tty_curvis[con] = 0;
+    tty_cursor_update();
+    halted = 1;
+}

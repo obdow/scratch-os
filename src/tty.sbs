@@ -381,6 +381,12 @@ proc tty_line_set(t, s) {
 proc tty_key(t, ev) {
     local line = tty_line[t];
     local pos = tty_lpos[t];
+    if (len(line) == 0) {
+        // (re)anchor the edit line at the current cursor (handles type-ahead)
+        if (tty_cx[t] >= tty_w[t]) { tty_newline(t); }
+        tty_px[t] = tty_cx[t];
+        tty_py[t] = tty_cy[t];
+    }
     if (len(ev) == 1) {
         tty_line[t] = substr(line, 1, pos) .. ev .. substr(line, pos + 1, len(line));
         tty_lpos[t] = pos + 1;
