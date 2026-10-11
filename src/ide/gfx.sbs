@@ -7,12 +7,15 @@
 // effects.  See tools/ide_assets.py for the derivation and the index map.
 // ===========================================================================
 
-const SCREEN_W = 480;
-const SCREEN_H = 360;
+// the stage size is set by build.py (SCR_W x SCR_H pixels, SCR_COLS x SCR_ROWS cells)
+const SCREEN_W = SCR_W;
+const SCREEN_H = SCR_H;
+const HALF_W = SCR_W / 2;
+const HALF_H = SCR_H / 2;
 const CELL_W = 8;
 const CELL_H = 16;
-const COLS = 60;
-const ROWS = 22;
+const COLS = SCR_COLS;
+const ROWS = SCR_ROWS;
 
 list pal_gb = data("ide_pal_gb");     // costume number of glyph 0 in the entry's base set
 list pal_rb = data("ide_pal_rb");     // costume number of the 1x1 rect in the entry's base set
@@ -42,6 +45,11 @@ proc gfx_init() {
     gfx_pen_col = -1;
     gfx_pen_size = -1;
     size(100);
+    // a hair off 90 degrees: at exactly 100% and 90 degrees Scratch samples
+    // raster costumes with nearest-neighbour filtering, which would decimate
+    // the 2x anti-aliased glyphs when the pen renders at 1x; with linear
+    // filtering a 1x stamp averages each 2x2 block exactly
+    point(90.001);
     hide();
 }
 
@@ -72,7 +80,7 @@ proc gfx_ansi_theme(n) {
 // Stamp glyph `code` (0..255; codes without a glyph show '?') with its top-left at screen pixel (x, y).
 proc gfx_glyph(x, y, code, c) {
     gfx_color(c);
-    goto(x - 240, 180 - y);
+    goto(x - HALF_W, HALF_H - y);
     costume(gfx_gbase + gmap[code + 1]);
     stamp();
     gfx_stamps += 1;
@@ -97,7 +105,7 @@ proc gfx_fill(x, y, w, h, c) {
         local tx = x;
         forever {
             if (tx + sw > x + w) { tx = x + w - sw; }
-            goto(tx - 240, 180 - ty);
+            goto(tx - HALF_W, HALF_H - ty);
             stamp();
             if (tx + sw >= x + w) { break; }
             tx += sw;
@@ -125,9 +133,9 @@ proc gfx_line(x1, y1, x2, y2, c, sz) {
         gfx_pen_size = sz;
         pen_size(sz);
     }
-    goto(x1 - 239.5, 179.5 - y1);
+    goto(x1 - HALF_W + 0.5, HALF_H - 0.5 - y1);
     pen_down();
-    goto(x2 - 239.5, 179.5 - y2);
+    goto(x2 - HALF_W + 0.5, HALF_H - 0.5 - y2);
     pen_up();
     gfx_stamps += 1;
 }

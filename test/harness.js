@@ -47,11 +47,25 @@ async function launch(sb3Path, opts = {}) {
     await s.loadProject(buf.buffer);
     if (hq) s.renderer.setUseHighQualityRender(true);
     s.start();
-    s.greenFlag();
   }, { b64, hq: !!opts.hq });
 
+  // projects can set a custom stage size (TurboWarp config): fit the page to it
+  const stage = await page.evaluate(() => ({ w: vm.runtime.stageWidth, h: vm.runtime.stageHeight }));
+  if (stage.w !== 480 || stage.h !== 360) {
+    await page.setViewportSize({ width: stage.w * scale, height: stage.h * scale });
+    await page.evaluate(({ w, h }) => {
+      const d = document.getElementById('project');
+      d.style.width = w + 'px';
+      d.style.height = h + 'px';
+      scaffolding.width = w;
+      scaffolding.height = h;
+      scaffolding.relayout();
+    }, { w: stage.w * scale, h: stage.h * scale });
+  }
+  await page.evaluate(() => scaffolding.greenFlag());
+
   const api = {
-    browser, page, logs,
+    browser, page, logs, stage,
     sleep: (ms) => page.waitForTimeout(ms),
     async shot(file) {
       const el = await page.$('canvas');

@@ -1,7 +1,7 @@
 // ===========================================================================
 // ide.sbs - the Whisker IDE user interface (included inside sprite Kernel)
 //
-// Screen (60 x 22 cells):
+// Screen (SCR_COLS x SCR_ROWS cells, 120 x 34 on the IDE's 960x544 stage):
 //   row 0        menu bar
 //   row 1        tabs + Run/Stop button
 //   rows 2..     file tree (left, optional) | editor (gutter, text, scrollbar)
@@ -15,13 +15,16 @@
 // them itself), cells of the graphics preview -2 (canvas display list).
 // ===========================================================================
 
-const IC = 60;            // columns
-const IR = 22;            // rows
+const IC = SCR_COLS;      // columns (the stage size is set in build.py)
+const IR = SCR_ROWS;      // rows
 const ROW_TABS = 1;
-const ROW_STATUS = 21;
-const TREE_W = 16;
+const ROW_STATUS = SCR_ROWS - 1;
+const TREE_W = 24;
 const GUT_W = 5;
 const OUT_WIN = 99;       // own[] value for output-panel cells
+const OUT_SMALL = 4;      // output panel heights (rows)
+const OUT_MEDIUM = 8;
+const OUT_LARGE = 16;
 
 list sc_ch;
 list sc_at;
@@ -30,8 +33,8 @@ list so_at;
 
 // --- layout ------------------------------------------------------------------------
 var show_tree = 1;
-var out_h = 5;
-var out_top = 15;
+var out_h = OUT_MEDIUM;
+var out_top = 25;
 var ed_x0 = 0;
 var ed_y0 = 2;
 var ed_rows = 13;
@@ -187,14 +190,12 @@ var mx = 0;
 var my = 0;
 var mdown = 0;
 var mwas = 0;
-var mdrag = 0;            // 1 editor selection, 2 scrollbar, 3 graphics
+var mdrag = 0;            // 1 editor selection, 2 editor scrollbar, 3 graphics, 4 tree scrollbar
 var last_click = 0;
 var last_click_x = -1;
 var last_click_y = -1;
-var ptr_on = 0;
-var ptr_px = 0;
-var ptr_py = 0;
-var ptr_stamp = 0;
+var sb_grab = 0;          // scrollbar drag: pointer offset inside the thumb (pixels)
+var wheel = 0;            // mouse wheel notches (+ down), from the arrow-key hats
 var caret_on = 0;
 var caret_c = 0;
 var caret_r = 0;
@@ -203,8 +204,7 @@ var caret_r = 0;
 // boot
 // ===========================================================================
 
-proc ide_boot() nowarp {
-    gfx_init();
+proc ide_boot() {
     tty_init();
     fs_init();
     fs_load_rootfs();
@@ -238,7 +238,6 @@ proc ide_boot() nowarp {
     add(tr_exp, "/projects");
     add(tr_exp, "/examples");
     ide_theme(0);
-    ide_splash();
     ide_layout();
     open_file("/projects/main.wsk");
     tty_write(con, "\e[97mWhisker IDE\e[0m - " .. OS_NAME .. " " .. OS_VERSION .. " runtime.  "
@@ -248,15 +247,19 @@ proc ide_boot() nowarp {
     ide_dirty = 1;
 }
 
-proc ide_splash() nowarp {
-    gfx_fill(0, 0, 480, 360, C_EDBG);
-    gfx_fill(224, 124, 32, 32, C_ACCENT);
-    gfx_glyph(236, 132, ord("W"), C_ONACC);
+// drawn before ide_boot (main.sbs yields one frame so it shows while booting)
+proc ide_splash() {
+    gfx_init();
+    ide_theme(0);
+    gfx_fill(0, 0, SCR_W, SCR_H, C_EDBG);
+    local cx = SCR_W / 2;
+    local cy = SCR_H / 2;
+    gfx_fill(cx - 16, cy - 56, 32, 32, C_ACCENT);
+    gfx_glyph(cx - 4, cy - 48, ord("W"), C_ONACC);
     local t = "Whisker IDE";
-    for i = 1 to len(t) { gfx_glyph(196 + (i - 1) * 8, 172, ord(t[i]), C_TEXT); }
+    for i = 1 to len(t) { gfx_glyph(cx - 44 + (i - 1) * 8, cy - 8, ord(t[i]), C_TEXT); }
     local u = "loading...";
-    for i = 1 to len(u) { gfx_glyph(200 + (i - 1) * 8, 196, ord(u[i]), C_DIM); }
-    wait(0.4);
+    for i = 1 to len(u) { gfx_glyph(cx - 40 + (i - 1) * 8, cy + 16, ord(u[i]), C_DIM); }
 }
 
 // 0 dark, 1 light: UI colours, editor colours and the 16 terminal colours
@@ -1281,10 +1284,8 @@ const D_RIGHT = 8;
 const D_POP = 16;         // + edge mask: popup border colour
 const D_UNDER = 32;       // 2px accent underline (active tab, focused panel title)
 const D_CARET = 33;       // 2px accent bar on the left edge (prompt caret)
-const D_THUMB = 34;       // scrollbar thumb (middle)
-const D_THUMB_T = 35;     // scrollbar thumb (top end)
-const D_THUMB_B = 36;     // scrollbar thumb (bottom end)
-const D_THUMB_1 = 37;     // scrollbar thumb (single cell)
+const D_SB = 100;         // D_SB + ((a * 17 + b) * 4 + ends): scrollbar thumb covering
+                          // pixel rows a..b-1 of the cell; ends 1 = top, 2 = bottom
 const D_LEFT = 38;        // 2px accent bar on the left edge (selected item)
 
 const G_CLOSE = 158;      // the IDE font draws a close cross in this slot
@@ -1431,7 +1432,7 @@ proc ide_compose_tree() {
     puts(1, r0, "Project", hat);
     puts(TREE_W - 3, r0, "+", C_DIM + AB * C_PANEL);
     if (focus == 2) { deco_row(r0, 1, 7, D_UNDER); }
-    local rows = out_top - r0 - 1;
+    local rows = tree_rows();
     if (tr_top > len(tr_path) - rows + 1) { tr_top = len(tr_path) - rows + 1; }
     if (tr_top < 1) { tr_top = 1; }
     for k = 0 to rows - 1 {
@@ -1458,11 +1459,74 @@ proc ide_compose_tree() {
             fill_row(r, 0, TREE_W - 1, fg + AB * bg);
             put(1 + ind, r, icon, icol + AB * bg);
             if (tr_dir[i] == 1) { fg = C_FOLDER; if (i == tr_sel) { fg = C_TEXT; } }
-            puts(3 + ind, r, substr(name, 1, TREE_W - 4 - ind), fg + AB * bg);
-            if (len(name) > TREE_W - 4 - ind) { put(TREE_W - 2, r, 175, C_DIM + AB * bg); }
+            puts(3 + ind, r, substr(name, 1, TREE_W - 6 - ind), fg + AB * bg);
+            if (len(name) > TREE_W - 6 - ind) { put(TREE_W - 3, r, 175, C_DIM + AB * bg); }
         }
     }
     for r = r0 to out_top - 1 { deco_row(r, TREE_W - 1, TREE_W - 1, D_RIGHT); }
+    compose_vscroll(TREE_W - 2, r0 + 1, rows, len(tr_path), tr_top);
+}
+
+// ---------------------------------------------------------------------------
+// scrollbars: pixel-precise thumbs over a column of cells
+// ---------------------------------------------------------------------------
+
+var sb_ty = 0;            // thumb top, pixels from the track top
+var sb_th = 0;            // thumb height in pixels
+
+// thumb geometry for n lines, `rows` visible, first visible line `top`
+proc sb_geom(n, rows, top) {
+    local track = rows * 16;
+    sb_th = floor(track * rows / n);
+    if (sb_th < 12) { sb_th = 12; }
+    if (sb_th > track) { sb_th = track; }
+    sb_ty = round((top - 1) * (track - sb_th) / (n - rows));
+    if (sb_ty > track - sb_th) { sb_ty = track - sb_th; }
+    if (sb_ty < 0) { sb_ty = 0; }
+}
+
+// draw the thumb (as decos) into column `col`, rows row0 .. row0 + rows - 1
+proc compose_vscroll(col, row0, rows, n, top) {
+    if (n <= rows) { return; }
+    sb_geom(n, rows, top);
+    local y0 = sb_ty;
+    local y1 = sb_ty + sb_th;
+    for k = floor(y0 / 16) to floor((y1 - 1) / 16) {
+        local a = y0 - k * 16;
+        if (a < 0) { a = 0; }
+        local b = y1 - k * 16;
+        if (b > 16) { b = 16; }
+        local ends = 0;
+        if (y0 >= k * 16) { ends += 1; }
+        if (y1 <= k * 16 + 16) { ends += 2; }
+        put_deco(col, row0 + k, D_SB + (a * 17 + b) * 4 + ends);
+    }
+}
+
+// first visible line for a pointer at pixel y (the thumb follows the
+// pointer, keeping the grab offset)
+proc sb_top_at(py, row0, rows, n) {
+    local track = rows * 16;
+    sb_geom(n, rows, 1);
+    local span = track - sb_th;
+    if (span < 1) { return 1; }
+    local t = 1 + round((py - sb_grab - row0 * 16) * (n - rows) / span);
+    if (t > n - rows + 1) { t = n - rows + 1; }
+    if (t < 1) { t = 1; }
+    return t;
+}
+
+// pointer pressed in a scrollbar column: grab the thumb where it was hit,
+// or centre the thumb on the pointer when the track was clicked
+proc sb_press(py, row0, rows, n, top) {
+    sb_geom(n, rows, top);
+    local rel = py - row0 * 16;
+    if (rel >= sb_ty && rel < sb_ty + sb_th) { sb_grab = rel - sb_ty; }
+    else { sb_grab = floor(sb_th / 2); }
+}
+
+proc tree_rows() {
+    return out_top - ed_y0 - 1;
 }
 
 proc ide_compose_editor() {
@@ -1523,21 +1587,7 @@ proc ide_compose_editor() {
     // scrollbar (only when the file is taller than the view)
     local sb = IC - 1;
     for r = 0 to ed_rows - 1 { put(sb, ed_y0 + r, 32, C_FG + AB * C_EDBG); }
-    if (n > ed_rows) {
-        local th = floor(ed_rows * ed_rows / n);
-        if (th < 1) { th = 1; }
-        local tp = floor((etop - 1) * (ed_rows - th) / (n - ed_rows));
-        if (tp > ed_rows - th) { tp = ed_rows - th; }
-        if (th == 1) { deco_row(ed_y0 + tp, sb, sb, D_THUMB_1); }
-        else {
-            for r = 0 to th - 1 {
-                local d = D_THUMB;
-                if (r == 0) { d = D_THUMB_T; }
-                if (r == th - 1) { d = D_THUMB_B; }
-                deco_row(ed_y0 + tp + r, sb, sb, d);
-            }
-        }
-    }
+    compose_vscroll(sb, ed_y0, ed_rows, n, etop);
 }
 
 proc ide_compose_output() {
@@ -1728,10 +1778,17 @@ proc ide_deco(x, y, deco) {
     }
     if (d == D_UNDER) { gfx_fill(x, y + 14, 8, 2, C_ACCENT); return; }
     if (d == D_CARET) { gfx_fill(x, y + 2, 2, 12, C_ACCENT); return; }
-    if (d == D_THUMB) { gfx_fill(x + 2, y, 4, 16, C_SCROLL); return; }
-    if (d == D_THUMB_T) { gfx_fill(x + 3, y + 2, 2, 1, C_SCROLL); gfx_fill(x + 2, y + 3, 4, 13, C_SCROLL); return; }
-    if (d == D_THUMB_B) { gfx_fill(x + 2, y, 4, 13, C_SCROLL); gfx_fill(x + 3, y + 13, 2, 1, C_SCROLL); return; }
-    if (d == D_THUMB_1) { gfx_fill(x + 3, y + 2, 2, 1, C_SCROLL); gfx_fill(x + 2, y + 3, 4, 10, C_SCROLL); gfx_fill(x + 3, y + 13, 2, 1, C_SCROLL); return; }
+    if (d >= D_SB) {
+        local v = d - D_SB;
+        local ends = v % 4;
+        v = floor(v / 4);
+        local top = y + floor(v / 17);
+        local bot = y + v % 17;
+        if (ends % 2 == 1) { gfx_fill(x + 3, top, 2, 1, C_SCROLL); top += 1; }
+        if (ends >= 2) { gfx_fill(x + 3, bot - 1, 2, 1, C_SCROLL); bot -= 1; }
+        if (bot > top) { gfx_fill(x + 2, top, 4, bot - top, C_SCROLL); }
+        return;
+    }
     if (d == D_LEFT) { gfx_fill(x, y, 2, 16, C_ACCENT); return; }
 }
 
@@ -1780,7 +1837,7 @@ proc ide_render() {
     }
     if (tty_cells > 0) { tty_full[con] = 1; }
     if (canvas_cells > 0 && cv_win > 0) { canvas_repaint(cv_win); }
-    if (ide_full == 1) { gfx_fill(0, 352, 480, 8, C_PANEL); }
+    if (ide_full == 1 && SCR_H > IR * 16) { gfx_fill(0, IR * 16, SCR_W, SCR_H - IR * 16, C_PANEL); }
     ide_full = 0;
     caret_on = 0;
 }
@@ -1807,34 +1864,6 @@ proc ide_caret() {
         caret_c = c;
         caret_r = r;
     }
-}
-
-proc ide_pointer() {
-    if (ptr_on == 1) {
-        if (mx == ptr_px && my == ptr_py && gfx_stamps == ptr_stamp) { return; }
-        if (mx != ptr_px || my != ptr_py) {
-            local c0 = floor(ptr_px / 8);
-            local r0 = floor(ptr_py / 16);
-            for r = r0 to r0 + 1 {
-                for c = c0 to c0 + 1 {
-                    if (c < IC && r < IR) { ide_draw_cell(r * IC + c + 1); }
-                }
-            }
-            if (ptr_py + 16 > 352) { gfx_fill(ptr_px, 352, 16, 8, C_PANEL); }
-            if (caret_on == 1 && (caret_c == c0 || caret_c == c0 + 1) && (caret_r == r0 || caret_r == r0 + 1)) { caret_on = 0; }
-        }
-    }
-    gfx_color(C_PTROUT);
-    goto(mx - 240, 180 - my);
-    costume(CURSOR_MASK_COSTUME);
-    stamp();
-    gfx_color(C_ONACC);
-    costume(CURSOR_COSTUME);
-    stamp();
-    ptr_on = 1;
-    ptr_px = mx;
-    ptr_py = my;
-    ptr_stamp = gfx_stamps;
 }
 
 // ===========================================================================
@@ -2212,9 +2241,9 @@ proc ide_cmd(cmd) {
     if (cmd == "clearout") { tty_attr[con] = 7; tty_clear(con); err_msg = ""; return; }
     if (cmd == "tree") { show_tree = 1 - show_tree; ide_layout(); return; }
     if (cmd == "out0") { out_h = 0; ide_layout(); return; }
-    if (cmd == "out3") { out_h = 3; ide_layout(); return; }
-    if (cmd == "out5") { out_h = 5; ide_layout(); return; }
-    if (cmd == "out9") { out_h = 9; ide_layout(); return; }
+    if (cmd == "out3") { out_h = OUT_SMALL; ide_layout(); return; }
+    if (cmd == "out5") { out_h = OUT_MEDIUM; ide_layout(); return; }
+    if (cmd == "out9") { out_h = OUT_LARGE; ide_layout(); return; }
     if (cmd == "theme0") { ide_theme(0); return; }
     if (cmd == "theme1") { ide_theme(1); return; }
     if (cmd == "help") { open_file("/docs/quickstart.txt"); return; }
@@ -2419,12 +2448,12 @@ proc ide_edit_key(ev) {
 // ===========================================================================
 
 proc ide_mouse() {
-    local px = round(mouse_x() + 240);
-    local py = round(180 - mouse_y());
+    local px = round(mouse_x() + SCR_W / 2);
+    local py = round(SCR_H / 2 - mouse_y());
     if (px < 0) { px = 0; }
     if (py < 0) { py = 0; }
-    if (px > 479) { px = 479; }
-    if (py > 359) { py = 359; }
+    if (px > SCR_W - 1) { px = SCR_W - 1; }
+    if (py > SCR_H - 1) { py = SCR_H - 1; }
     local moved = 0;
     if (px != mx || py != my) { moved = 1; }
     mx = px;
@@ -2538,11 +2567,11 @@ proc ide_press(c, r) {
     if (out_h > 0 && r == out_top) {
         if (c >= IC - 19 && c < IC - 12) { ide_cmd("clearout"); return; }
         if (c >= IC - 12 && c < IC - 9) {
-            if (out_h < 9) { out_h += 2; if (out_h > 9) { out_h = 9; } ide_layout(); }
+            if (out_h < OUT_LARGE) { out_h += 3; if (out_h > OUT_LARGE) { out_h = OUT_LARGE; } ide_layout(); }
             return;
         }
         if (c >= IC - 9 && c < IC - 6) {
-            if (out_h > 3) { out_h -= 2; if (out_h < 3) { out_h = 3; } ide_layout(); }
+            if (out_h > OUT_SMALL) { out_h -= 3; if (out_h < OUT_SMALL) { out_h = OUT_SMALL; } ide_layout(); }
             return;
         }
         if (c >= IC - 6 && c < IC - 3) { out_h = 0; ide_layout(); return; }
@@ -2554,7 +2583,7 @@ proc ide_press(c, r) {
         focus = 1;
         return;
     }
-    if (r == ROW_STATUS && out_h == 0) { out_h = 5; ide_layout(); return; }
+    if (r == ROW_STATUS && out_h == 0) { out_h = OUT_MEDIUM; ide_layout(); return; }
     // file tree
     if (show_tree == 1 && c < TREE_W && r >= ed_y0 && r < out_top) {
         focus = 2;
@@ -2562,13 +2591,22 @@ proc ide_press(c, r) {
             if (c >= TREE_W - 5) { ide_cmd("new"); }
             return;
         }
+        if (c == TREE_W - 2 && len(tr_path) > tree_rows()) {
+            mdrag = 4;
+            sb_press(my, ed_y0 + 1, tree_rows(), len(tr_path), tr_top);
+            ide_drag(c, r);
+            return;
+        }
         tree_click(tr_top + r - ed_y0 - 1);
         return;
     }
     // scrollbar
     if (c == IC - 1 && r >= ed_y0 && r < out_top) {
-        mdrag = 2;
-        ide_scrollbar(r);
+        if (len(ed) > ed_rows) {
+            mdrag = 2;
+            sb_press(my, ed_y0, ed_rows, len(ed), etop);
+            ide_drag(c, r);
+        }
         return;
     }
     // editor
@@ -2606,13 +2644,19 @@ proc ide_press(c, r) {
     }
 }
 
-proc ide_scrollbar(r) {
-    local n = len(ed);
-    if (n <= ed_rows) { return; }
-    local frac = (r - ed_y0) / (ed_rows - 1);
-    etop = round(1 + frac * (n - ed_rows));
-    if (etop < 1) { etop = 1; }
-    if (etop > n - ed_rows + 1) { etop = n - ed_rows + 1; }
+// scroll a pane by `lines` (mouse wheel)
+proc ide_wheel(lines) {
+    local c = floor(mx / 8);
+    local r = floor(my / 16);
+    if (show_tree == 1 && c < TREE_W && r > ed_y0 && r < out_top) {
+        tr_top += lines;
+        if (tr_top > len(tr_path) - tree_rows() + 1) { tr_top = len(tr_path) - tree_rows() + 1; }
+        if (tr_top < 1) { tr_top = 1; }
+    } else if (r >= ed_y0 && r < out_top && cur_tab > 0) {
+        etop += lines;
+        if (etop > len(ed) - ed_rows + 1) { etop = len(ed) - ed_rows + 1; }
+        if (etop < 1) { etop = 1; }
+    }
     ide_dirty = 1;
 }
 
@@ -2633,7 +2677,11 @@ proc ide_drag(c, r) {
             ide_dirty = 1;
         }
     } else if (mdrag == 2) {
-        ide_scrollbar(r);
+        local t = sb_top_at(my, ed_y0, ed_rows, len(ed));
+        if (t != etop) { etop = t; ide_dirty = 1; }
+    } else if (mdrag == 4) {
+        local t2 = sb_top_at(my, ed_y0 + 1, tree_rows(), len(tr_path));
+        if (t2 != tr_top) { tr_top = t2; ide_dirty = 1; }
     } else if (mdrag == 3 && cv_win > 0) {
         wm_event(cv_win, "drag", mx - (cv_x + 1) * 8, my - (cv_y + 1) * 16, "");
     }
@@ -2655,6 +2703,11 @@ proc ide_tick() {
         n += 1;
     }
     ide_mouse();
+    if (wheel != 0) {
+        local w = wheel;
+        wheel = 0;
+        if (menu_open == 0 && dlg_kind == 0) { ide_wheel(w * 3); }
+    }
     sched_run(9);
     power_req = -1;
     ide_check_run();
@@ -2665,5 +2718,4 @@ proc ide_tick() {
     if (focus == 1) { cur_t = con; } else { cur_t = 0; }
     tty_cursor_update();
     ide_caret();
-    ide_pointer();
 }

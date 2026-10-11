@@ -6,8 +6,8 @@
 // taken after each.  Special commands:
 //   @sleep=ms   wait        @key=Name    press a key (Playwright key name)
 //   @shot       screenshot  @ctrl=c      ctrl+key
-//   @click=x,y  mouse click at stage coords (0..480, 0..360)
-//   @drag=x1,y1,x2,y2
+//   @click=x,y  mouse click at stage coords (0..stage width, 0..stage height)
+//   @drag=x1,y1,x2,y2   @move=x1,y1,x2,y2   @wheel=x,y,dy
 // Options: --scale=N renders the stage N times larger, --hq uses the
 // high-quality pen (as the Whisker IDE's TurboWarp settings request).
 const fs = require('fs');
@@ -71,10 +71,20 @@ async function main() {
       await p.keyboard.down('Control'); await h.sleep(30); await tap(c.slice(6)); await p.keyboard.up('Control'); await h.sleep(30);
       continue;
     }
+    if (c.startsWith('@wheel=')) {
+      // @wheel=x,y,dy  scroll the mouse wheel over a stage point
+      const box = await (await p.$('canvas')).boundingBox();
+      const v = c.split('=')[1].split(',').map(Number);
+      await p.mouse.move(box.x + v[0] * box.width / h.stage.w, box.y + v[1] * box.height / h.stage.h);
+      await h.sleep(60);
+      await p.mouse.wheel(0, v[2]);
+      await h.sleep(250);
+      continue;
+    }
     if (c.startsWith('@move=')) {
       const box = await (await p.$('canvas')).boundingBox();
       const v = c.split('=')[1].split(',').map(Number);
-      const sx = box.width / 480, sy = box.height / 360;
+      const sx = box.width / h.stage.w, sy = box.height / h.stage.h;
       for (let k = 0; k <= 24; k++) {
         await p.mouse.move(box.x + (v[0] + (v[2] - v[0]) * k / 24) * sx, box.y + (v[1] + (v[3] - v[1]) * k / 24) * sy);
         await h.sleep(35);
@@ -84,7 +94,7 @@ async function main() {
     if (c.startsWith('@click=') || c.startsWith('@drag=')) {
       const box = await (await p.$('canvas')).boundingBox();
       const v = c.split('=')[1].split(',').map(Number);
-      const sx = box.width / 480, sy = box.height / 360;
+      const sx = box.width / h.stage.w, sy = box.height / h.stage.h;
       await p.mouse.move(box.x + v[0] * sx, box.y + v[1] * sy);
       await h.sleep(60);
       await p.mouse.down();

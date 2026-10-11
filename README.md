@@ -93,12 +93,21 @@ for Whisker. It reuses the ScratchOS runtime (compiler, VM, heap, natives,
 file system, text engine and canvas code) but has its own full-screen UI,
 so there is no shell or desktop. Open it in TurboWarp and click the flag.
 
-The IDE has its own look, separate from ScratchOS: text is set in
-**JetBrains Mono** (anti-aliased glyph costumes, rendered with TurboWarp's
-high-quality pen), and the flat dark and light themes are modelled on modern
-desktop IDEs. It has a title bar with a Run/Stop button, tabs with accent
-underlines, a project tree, thin 1px borders, popup menus and dialogs, and a
-slim scrollbar. ScratchOS itself keeps the VGA font and palette.
+The IDE has its own look, separate from ScratchOS:
+
+- **A larger custom stage**: 960×544, or 120×34 text cells, set through
+  TurboWarp's project settings. Use fullscreen or a large player for the
+  best view.
+- **Text in JetBrains Mono**: anti-aliased glyph costumes.
+- **Flat dark and light themes** modelled on modern desktop IDEs, with a
+  title bar holding a Run/Stop button, tabs with accent underlines, a
+  project tree, thin 1px borders, and popup menus and dialogs.
+- **Pixel-smooth scrollbars** on the editor and the project tree: drag the
+  thumb or click the track. The mouse wheel scrolls whichever one the
+  pointer is over.
+- **The normal system mouse cursor**.
+
+ScratchOS itself keeps the 480×360 stage, VGA font and palette.
 
 - **Editor with tabs**: syntax highlighting (keywords, strings, numbers,
   comments, library names, and multi-line `--[[ ]]` / `[[ ]]`), line numbers,

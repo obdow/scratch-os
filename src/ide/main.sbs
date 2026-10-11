@@ -37,7 +37,19 @@ sprite Kernel {
 
     proc kernel_boot() { }
 
+    // Scratch turns the mouse wheel into "up/down arrow key pressed" hat
+    // events without setting the key state, which tells it apart from a
+    // real arrow key.
+    on key "up arrow" {
+        if (!(key("up arrow"))) { wheel -= 1; }
+    }
+    on key "down arrow" {
+        if (!(key("down arrow"))) { wheel += 1; }
+    }
+
     on flag {
+        ide_splash();
+        wait(0);                // show the splash while booting
         ide_boot();
         forever {
             ide_tick();

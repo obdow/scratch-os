@@ -39,6 +39,17 @@ TW_CONFIG = {
 }
 
 
+# stage size: ScratchOS uses Scratch's 480x360; the IDE uses a larger custom
+# TurboWarp stage.  Both are a whole number of 8x16 text cells.
+OS_STAGE = (480, 360)
+IDE_STAGE = (960, 544)
+
+
+def backdrop_svg(w, h):
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}">'
+            f'<rect width="{w}" height="{h}" fill="#000000"/></svg>').encode()
+
+
 def build(main, out, rootfs_dir=None, ide=False):
     data = rootfs.build_data(rootfs_dir or os.path.join(ROOT, 'rootfs'))
     data.update(osdata.build_data())
@@ -60,15 +71,21 @@ def build(main, out, rootfs_dir=None, ide=False):
             'CURSOR_MASK_COSTUME': assets.CURSOR_MASK_COSTUME,
             'ORD_SENTINEL': assets.GLYPH_BASE + ord('?'),
         })
+    sw, sh = IDE_STAGE if ide else OS_STAGE
+    prog.consts.update({'SCR_W': sw, 'SCR_H': sh, 'SCR_COLS': sw // 8, 'SCR_ROWS': sh // 16})
     prog.consts.update(data.get('_consts', {}))
     prog.consts.update(data['_native_consts'])
     prog.load(main)
-    targets, asset_bytes = prog.build_targets(assets.costume_group)
+    def costume_group(group):
+        if group == 'backdrop' and ide:
+            return [assets.make_costume('black', backdrop_svg(sw, sh), 'svg', sw // 2, sh // 2, 1)]
+        return assets.costume_group(group)
+    targets, asset_bytes = prog.build_targets(costume_group)
     stage = targets[0]
     cfg_text = ("Configuration for https://turbowarp.org/\n"
                 "You can move, resize, and minimize this comment, but don't edit it by hand. "
                 "This comment can be deleted to remove the stored settings.\n"
-                + json.dumps(dict(TW_CONFIG, hq=True) if ide else TW_CONFIG) + " // _twconfig_")
+                + json.dumps(dict(TW_CONFIG, width=sw, height=sh) if ide else TW_CONFIG) + " // _twconfig_")
     stage['comments']['twconfig'] = {'blockId': None, 'x': 0, 'y': 0, 'width': 350, 'height': 170,
                                      'minimized': False, 'text': cfg_text}
     project = {

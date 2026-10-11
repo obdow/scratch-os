@@ -17,8 +17,8 @@
 //              repainted when it is uncovered or moved
 // ===========================================================================
 
-const WM_COLS = 60;
-const WM_ROWS = 22;
+const WM_COLS = SCR_COLS;
+const WM_ROWS = SCR_ROWS;
 const TASK_ROW = 21;
 const MAX_WIN = 16;
 const WK_TERM = 1;

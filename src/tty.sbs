@@ -19,7 +19,7 @@
 // ===========================================================================
 
 const MAX_TTY = 8;
-const TTY_CELLS = 1320;
+const TTY_CELLS = SCR_COLS * SCR_ROWS;   // a tty can cover the whole screen
 const ATTR_DEFAULT = 7;
 const WRAP_ROWS = 132;   // soft-wrap flags kept per tty
 

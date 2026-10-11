@@ -25,8 +25,8 @@ Only the characters the IDE actually shows get a glyph (GLYPHS: printable
 ASCII, the UI symbols and the few non-ASCII characters in the bundled
 files); any other code is drawn as '?'.  Glyphs are rendered from
 JetBrains Mono at 4x and box-filtered to the costume's 2x resolution
-(16x32 pixels for an 8x16 cell), so they are anti-aliased and stay crisp
-with TurboWarp's high-quality pen.  The UI symbols (triangles, dot, stop
+(16x32 pixels for an 8x16 cell); stamped at 1x with linear filtering
+(see src/ide/gfx.sbs) each 2x2 block is averaged, so text is anti-aliased.  The UI symbols (triangles, dot, stop
 square, close cross, separator line) are drawn procedurally.
 
 Palette indices (pal_* lists, 1-based in Scratch):
@@ -162,8 +162,10 @@ def layout():
     n = len(bases)
     return {
         'GLYPH_BASE': 1,
-        'CURSOR_COSTUME': 1 + n * SET_SIZE,
-        'CURSOR_MASK_COSTUME': 2 + n * SET_SIZE,
+        # no drawn pointer in the IDE (the system cursor is used); the
+        # shared window manager code still names these costumes
+        'CURSOR_COSTUME': 1,
+        'CURSOR_MASK_COSTUME': 1,
         'IDE_SETS': n,
         'ORD_SENTINEL': 1 + QMARK,
     }
@@ -279,23 +281,6 @@ def _coloured(mask, rgb):
     return img
 
 
-# modern arrow pointer, in stage pixels (fits an 8x16 box)
-ARROW = [(0.6, 0.6), (0.6, 12.6), (3.4, 9.9), (5.4, 14.4), (7.2, 13.6), (5.3, 9.2), (8.9, 9.2)]
-
-
-def _pointer(part):
-    k = 2 * SS
-    img = Image.new('L', (8 * k, 16 * k), 0)
-    dr = ImageDraw.Draw(img)
-    pts = [(x * k, y * k) for x, y in ARROW]
-    if part == 'outline':
-        dr.polygon(pts, fill=255)
-        dr.line(pts + [pts[0]], fill=255, width=int(1.6 * k), joint='curve')
-    else:
-        dr.polygon(pts, fill=255)
-    return _coloured(img.resize((16, 32), Image.BOX), (255, 255, 255))
-
-
 def costumes():
     bases, _ = build_palette()
     masks = {code: glyph_mask(code) for code in GLYPHS}
@@ -309,9 +294,7 @@ def costumes():
                 w, h = 1 << i, 1 << j
                 img = Image.new('RGBA', (w * 2, h * 2), base + (255,))
                 out.append(assets.make_costume(f's{k}rect_{w}x{h}', assets.png_bytes(img), 'png', 0, 0))
-    out.append(assets.make_costume('pointer', assets.png_bytes(_pointer('body')), 'png', 0, 0))
-    out.append(assets.make_costume('pointer_outline', assets.png_bytes(_pointer('outline')), 'png', 0, 0))
-    assert len(out) == layout()['CURSOR_MASK_COSTUME']
+    assert len(out) == len(bases) * SET_SIZE
     return out
 
 
@@ -322,7 +305,7 @@ if __name__ == '__main__':
     for i, (h, ent) in enumerate(zip(palette_hex(), e)):
         if i < 80:
             print(f"{i:3} {names[i]:10} {h} -> {'%02X%02X%02X' % ent['rgb']} set {ent['set']}")
-    print(len(GLYPHS), 'glyphs,', layout()['CURSOR_MASK_COSTUME'], 'costumes')
+    print(len(GLYPHS), 'glyphs,', len(b) * SET_SIZE, 'costumes')
     sheet = Image.new('RGBA', (16 * 32, 32 * 4), (30, 31, 34, 255))
     for k, code in enumerate(GLYPHS):
         sheet.alpha_composite(_coloured(glyph_mask(code), (223, 225, 229)), ((k % 32) * 16, (k // 32) * 32))

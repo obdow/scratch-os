@@ -53,6 +53,20 @@ wm_pointer()      mouse pointer                               (desktop only)
   identity in ScratchOS). Thin borders, accent underlines
   and the scrollbar are extra 1–2 px rect stamps ("decos") carried in the
   cell attribute.
+* **The IDE's stage size** is set by `build.py`. ScratchOS uses 480×360; the
+  IDE uses 960×544, written into the TurboWarp settings comment. The sizes
+  reach the SBS code as the constants `SCR_W`/`SCR_H`/`SCR_COLS`/`SCR_ROWS`,
+  which the window manager and tty use too. The IDE does not ask for the
+  high-quality pen. That pen renders at the stage's displayed size, so
+  resizing the window would rescale (and blur) what had already been drawn.
+  With a fixed-size pen layer, the 2× glyphs need linear filtering to
+  average down cleanly. At exactly 100% size and 90° Scratch samples raster
+  costumes nearest-neighbour, so the IDE's drawing sprite points at 90.001°.
+* **Warp mode matters at boot.** The keyboard sprite requests a redraw every
+  frame, so any loop that runs outside warp mode (a `nowarp` proc) yields
+  once per iteration. The IDE once spent ~22 s at start-up filling its
+  1,320-cell screen buffer that way; its boot now runs in warp mode after a
+  one-frame splash.
 
 Measured in headless Chromium with software GL, a stamp costs about 11 µs and
 a full 60×22 redraw about 29 ms. So everything redraws incrementally:

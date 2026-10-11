@@ -1513,6 +1513,8 @@ class SpriteGen:
             b = mk('looks_hide')
         elif name == 'size':
             b = mk('looks_setsizeto', {'SIZE': ('num', X(0))})
+        elif name == 'point':
+            b = mk('motion_pointindirection', {'DIRECTION': ('num', X(0))})
         elif name == 'front':
             b = mk('looks_gotofrontback', fields={'FRONT_BACK': ['front', None]})
         elif name == 'stamp':
