@@ -127,8 +127,18 @@ ScratchOS itself keeps the 480×360 stage, VGA font and palette.
 - **Graphics preview**: programs that call `gui.window` / `gfx.*` draw into
   a floating preview window with full mouse and keyboard events. Try
   `examples/bounce.wsk`, `clock.wsk` and `cube.wsk`.
-- **Examples and docs**: 13 example programs, a quick-start guide and the
+- **Examples and docs**: 14 example programs, a quick-start guide and the
   full language reference.
+- **Sort library** (`/lib/sort.wsk`, IDE only and not part of the core
+  language): `local sort = require("sort")` gives 12 sorting methods.
+  - bubble, cocktail, gnome, insertion, selection
+  - shell, comb
+  - merge, quick, heap
+  - counting, radix
+
+  Each sorts in place, with an optional comparator or record field. There
+  are also helpers: sorted copies, `is_sorted`, binary `search`, and `count`
+  of comparisons. See `/docs/sort.txt` and `/examples/sorting.wsk`.
 - Dark and light themes (View menu), which also restyle the output panel
   and the 16 program colours, and adjustable output panel sizes.
 - **Export / import**: the IDE file system lives in memory. File > Export

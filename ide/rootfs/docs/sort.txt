@@ -1,0 +1,47 @@
+SORT LIBRARY (lib/sort.wsk)
+
+An add-on library that ships with the Whisker IDE (it is not part of the
+core language).  Load it with require:
+
+  local sort = require("sort")
+
+Every sort works in place on t[1..#t] and returns t.  The optional last
+argument says what "in order" means:
+
+  sort.quick(t)                  ascending (a < b)
+  sort.quick(t, sort.desc)       descending
+  sort.quick(people, "age")      tables of records: by a field
+  sort.quick(t, function(a, b) return #a < #b end)   any comparator
+
+METHODS                                       sort.methods lists them
+
+  bubble     O(n^2)          stable    swaps neighbours until nothing moves
+  cocktail   O(n^2)          stable    bubble sort in both directions
+  gnome      O(n^2)          stable    steps back after every swap
+  insertion  O(n^2)          stable    fast on small or nearly sorted data
+  selection  O(n^2)          unstable  fewest swaps
+  shell      ~O(n^1.3)       unstable  insertion sort over shrinking gaps
+  comb       ~O(n log n)     unstable  bubble sort over shrinking gaps
+  merge      O(n log n)      stable    bottom-up, uses a second table
+  quick      O(n log n) avg  unstable  median-of-three pivots
+  heap       O(n log n)      unstable  in place, no extra memory
+  counting   O(n + range)    stable    integers only
+  radix      O(n * digits)   stable    non-negative integers only
+
+  counting and radix make no comparisons; they accept only nil or
+  sort.desc as the order.  sort.info[name] describes each method.
+
+HELPERS
+
+  sort.sorted(t, method, less)   sorted copy (method defaults to "merge")
+  sort.is_sorted(t, less)        true when t is in order
+  sort.search(t, x, less)        binary search in a sorted table: index or nil
+  sort.count(method, t, less)    comparisons the method needs for a copy of t
+  sort.copy(t)  sort.reverse(t)  sort.shuffle(t)
+  sort.asc  sort.desc            ready-made comparators
+
+See /examples/sorting.wsk, which runs every method and compares them.
+
+Note: Whisker functions cannot see the locals of the file that defines them,
+so the library keeps its state in the global table _sort (the same table
+require returns).  Avoid using that name for something else.

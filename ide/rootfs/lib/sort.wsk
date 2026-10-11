@@ -1,0 +1,440 @@
+-- sort.wsk - sorting algorithms for Whisker (a Whisker IDE library, not core)
+--
+--   local sort = require("sort")
+--   sort.quick(t)                         -- in place, ascending
+--   sort.merge(people, "age")             -- records: sort by a field
+--   sort.heap(t, sort.desc)               -- any comparator
+--   local s = sort.sorted(t, "insertion") -- sorted copy, t unchanged
+--   print(sort.count("bubble", t))        -- how many comparisons it took
+--
+-- Every sort works in place on t[1..#t] and returns t.  `less` is optional:
+--   nil          ascending (a < b)
+--   a string     compare that field of each element (a[key] < b[key])
+--   a function   less(a, b) returns true when a must come before b
+--
+-- Methods (see sort.methods / sort.info):
+--   bubble cocktail gnome insertion selection   simple, O(n^2)
+--   shell comb                                  improved O(n^2) variants
+--   merge quick heap                            O(n log n)
+--   counting radix                              integers only, no comparisons
+--
+-- Whisker functions cannot see the locals of the chunk that defines them, so
+-- the library lives in the global table _sort (the same table require returns).
+
+_sort = {}
+
+_sort.methods = {"bubble", "cocktail", "gnome", "insertion", "selection",
+                 "shell", "comb", "merge", "quick", "heap", "counting", "radix"}
+
+-- one-line description of each method: complexity and stability
+_sort.info = {
+  bubble    = "O(n^2), stable - swaps neighbours until nothing moves",
+  cocktail  = "O(n^2), stable - bubble sort in both directions",
+  gnome     = "O(n^2), stable - steps back after every swap",
+  insertion = "O(n^2), stable - fast on small or nearly sorted data",
+  selection = "O(n^2), unstable - fewest swaps (at most n - 1)",
+  shell     = "~O(n^1.3), unstable - insertion sort over shrinking gaps",
+  comb      = "~O(n log n) typical, unstable - bubble sort over shrinking gaps",
+  merge     = "O(n log n), stable - bottom-up merging, uses a second table",
+  quick     = "O(n log n) average, unstable - median-of-three partitioning",
+  heap      = "O(n log n), unstable - in place, no extra memory",
+  counting  = "O(n + range), stable - integers only",
+  radix     = "O(n * digits), stable - non-negative integers only",
+}
+
+-- comparators ----------------------------------------------------------------
+
+_sort.asc = function(a, b) return a < b end
+_sort.desc = function(a, b) return a > b end
+_sort.key = ""
+_sort.bykey = function(a, b) return a[_sort.key] < b[_sort.key] end
+
+-- turn the `less` argument into a comparator function
+function _sort.prep(less)
+  if less == nil then return _sort.asc end
+  if type(less) == "string" then
+    _sort.key = less
+    return _sort.bykey
+  end
+  return less
+end
+
+-- simple O(n^2) sorts ---------------------------------------------------------
+
+function _sort.bubble(t, less)
+  less = _sort.prep(less)
+  local n = #t
+  local swapped = true
+  while swapped do
+    swapped = false
+    for i = 2, n do
+      if less(t[i], t[i - 1]) then
+        t[i], t[i - 1] = t[i - 1], t[i]
+        swapped = true
+      end
+    end
+    n = n - 1                       -- the largest item is now in place
+  end
+  return t
+end
+
+function _sort.cocktail(t, less)
+  less = _sort.prep(less)
+  local lo, hi = 1, #t
+  while lo < hi do
+    local last = lo
+    for i = lo + 1, hi do
+      if less(t[i], t[i - 1]) then
+        t[i], t[i - 1] = t[i - 1], t[i]
+        last = i
+      end
+    end
+    hi = last - 1
+    last = hi
+    for i = hi, lo + 1, -1 do
+      if less(t[i], t[i - 1]) then
+        t[i], t[i - 1] = t[i - 1], t[i]
+        last = i
+      end
+    end
+    lo = last
+  end
+  return t
+end
+
+function _sort.gnome(t, less)
+  less = _sort.prep(less)
+  local n = #t
+  local i = 2
+  while i <= n do
+    if i > 1 and less(t[i], t[i - 1]) then
+      t[i], t[i - 1] = t[i - 1], t[i]
+      i = i - 1
+    else
+      i = i + 1
+    end
+  end
+  return t
+end
+
+function _sort.insertion(t, less)
+  less = _sort.prep(less)
+  for i = 2, #t do
+    local v = t[i]
+    local j = i - 1
+    while j >= 1 and less(v, t[j]) do
+      t[j + 1] = t[j]
+      j = j - 1
+    end
+    t[j + 1] = v
+  end
+  return t
+end
+
+function _sort.selection(t, less)
+  less = _sort.prep(less)
+  local n = #t
+  for i = 1, n - 1 do
+    local m = i
+    for j = i + 1, n do
+      if less(t[j], t[m]) then m = j end
+    end
+    if m ~= i then t[i], t[m] = t[m], t[i] end
+  end
+  return t
+end
+
+-- gap-based improvements --------------------------------------------------------
+
+_sort.shell_gaps = {701, 301, 132, 57, 23, 10, 4, 1}   -- Ciura's sequence
+
+function _sort.shell(t, less)
+  less = _sort.prep(less)
+  local n = #t
+  for _, gap in ipairs(_sort.shell_gaps) do
+    if gap < n then
+      for i = gap + 1, n do
+        local v = t[i]
+        local j = i - gap
+        while j >= 1 and less(v, t[j]) do
+          t[j + gap] = t[j]
+          j = j - gap
+        end
+        t[j + gap] = v
+      end
+    end
+  end
+  return t
+end
+
+function _sort.comb(t, less)
+  less = _sort.prep(less)
+  local n = #t
+  local gap = n
+  local swapped = true
+  while gap > 1 or swapped do
+    gap = math.floor(gap / 1.3)
+    if gap < 1 then gap = 1 end
+    swapped = false
+    for i = 1, n - gap do
+      if less(t[i + gap], t[i]) then
+        t[i], t[i + gap] = t[i + gap], t[i]
+        swapped = true
+      end
+    end
+  end
+  return t
+end
+
+-- O(n log n) sorts ----------------------------------------------------------------
+
+-- bottom-up merge sort: merges runs of 1, 2, 4, ... between t and a buffer
+function _sort.merge(t, less)
+  less = _sort.prep(less)
+  local n = #t
+  local src, dst = t, {}
+  local width = 1
+  while width < n do
+    local lo = 1
+    while lo <= n do
+      local mid = math.min(lo + width, n + 1)
+      local hi = math.min(lo + 2 * width, n + 1)
+      local i, j = lo, mid
+      for k = lo, hi - 1 do
+        -- take from the left run unless the right one is strictly smaller
+        -- (ties keep their order: the sort is stable)
+        if i < mid and (j >= hi or not less(src[j], src[i])) then
+          dst[k] = src[i]
+          i = i + 1
+        else
+          dst[k] = src[j]
+          j = j + 1
+        end
+      end
+      lo = hi
+    end
+    src, dst = dst, src
+    width = width * 2
+  end
+  if src ~= t then
+    for i = 1, n do t[i] = src[i] end
+  end
+  return t
+end
+
+-- quicksort with median-of-three pivots and an explicit stack (no deep
+-- recursion); small ranges finish with insertion sort
+function _sort.quick(t, less)
+  less = _sort.prep(less)
+  local stack = {1, #t}
+  local sp = 2
+  while sp > 0 do
+    local lo, hi = stack[sp - 1], stack[sp]
+    sp = sp - 2
+    if hi - lo < 8 then
+      for i = lo + 1, hi do
+        local v = t[i]
+        local j = i - 1
+        while j >= lo and less(v, t[j]) do
+          t[j + 1] = t[j]
+          j = j - 1
+        end
+        t[j + 1] = v
+      end
+    else
+      local mid = (lo + hi) // 2
+      if less(t[mid], t[lo]) then t[mid], t[lo] = t[lo], t[mid] end
+      if less(t[hi], t[lo]) then t[hi], t[lo] = t[lo], t[hi] end
+      if less(t[hi], t[mid]) then t[hi], t[mid] = t[mid], t[hi] end
+      local p = t[mid]
+      local i, j = lo, hi
+      while i <= j do
+        while less(t[i], p) do i = i + 1 end
+        while less(p, t[j]) do j = j - 1 end
+        if i <= j then
+          t[i], t[j] = t[j], t[i]
+          i = i + 1
+          j = j - 1
+        end
+      end
+      -- push the larger part first, so the smaller one is done next
+      if j - lo > hi - i then
+        stack[sp + 1], stack[sp + 2], stack[sp + 3], stack[sp + 4] = lo, j, i, hi
+      else
+        stack[sp + 1], stack[sp + 2], stack[sp + 3], stack[sp + 4] = i, hi, lo, j
+      end
+      sp = sp + 4
+    end
+  end
+  return t
+end
+
+-- move t[i] down the max-heap t[1..n]
+function _sort.sift(t, i, n, less)
+  while true do
+    local c = 2 * i
+    if c > n then return end
+    if c < n and less(t[c], t[c + 1]) then c = c + 1 end
+    if not less(t[i], t[c]) then return end
+    t[i], t[c] = t[c], t[i]
+    i = c
+  end
+end
+
+function _sort.heap(t, less)
+  less = _sort.prep(less)
+  local n = #t
+  for i = n // 2, 1, -1 do _sort.sift(t, i, n, less) end
+  for k = n, 2, -1 do
+    t[1], t[k] = t[k], t[1]
+    _sort.sift(t, 1, k - 1, less)
+  end
+  return t
+end
+
+-- integer sorts (no comparisons; `less` may only be nil or sort.desc) ------------
+
+function _sort.check_ints(t, name, nonneg)
+  for i = 1, #t do
+    local v = t[i]
+    if type(v) ~= "number" or v ~= math.floor(v) or (nonneg and v < 0) then
+      if nonneg then error("sort." .. name .. ": needs non-negative integers (item " .. i .. ")") end
+      error("sort." .. name .. ": needs integers (item " .. i .. ")")
+    end
+  end
+end
+
+function _sort.counting(t, less)
+  _sort.check_ints(t, "counting", false)
+  local n = #t
+  if n < 2 then return t end
+  local lo, hi = t[1], t[1]
+  for i = 2, n do
+    if t[i] < lo then lo = t[i] end
+    if t[i] > hi then hi = t[i] end
+  end
+  local count = {}
+  for v = lo, hi do count[v - lo + 1] = 0 end
+  for i = 1, n do
+    local k = t[i] - lo + 1
+    count[k] = count[k] + 1
+  end
+  local k = 1
+  for v = lo, hi do
+    for _ = 1, count[v - lo + 1] do
+      t[k] = v
+      k = k + 1
+    end
+  end
+  if less == _sort.desc then _sort.reverse(t) end
+  return t
+end
+
+-- least-significant-digit radix sort, base 10
+function _sort.radix(t, less)
+  _sort.check_ints(t, "radix", true)
+  local n = #t
+  local hi = 0
+  for i = 1, n do
+    if t[i] > hi then hi = t[i] end
+  end
+  local div = 1
+  while div <= hi do
+    local buckets = {}
+    for d = 1, 10 do buckets[d] = {} end
+    for i = 1, n do
+      local d = (t[i] // div) % 10 + 1
+      local b = buckets[d]
+      b[#b + 1] = t[i]
+    end
+    local k = 1
+    for d = 1, 10 do
+      local b = buckets[d]
+      for i = 1, #b do
+        t[k] = b[i]
+        k = k + 1
+      end
+    end
+    div = div * 10
+  end
+  if less == _sort.desc then _sort.reverse(t) end
+  return t
+end
+
+-- helpers ----------------------------------------------------------------------
+
+function _sort.copy(t)
+  local c = {}
+  for i = 1, #t do c[i] = t[i] end
+  return c
+end
+
+function _sort.reverse(t)
+  local i, j = 1, #t
+  while i < j do
+    t[i], t[j] = t[j], t[i]
+    i = i + 1
+    j = j - 1
+  end
+  return t
+end
+
+function _sort.shuffle(t)
+  for i = #t, 2, -1 do
+    local j = math.random(1, i)
+    t[i], t[j] = t[j], t[i]
+  end
+  return t
+end
+
+-- true when t is in order (no element is less than the one before it)
+function _sort.is_sorted(t, less)
+  less = _sort.prep(less)
+  for i = 2, #t do
+    if less(t[i], t[i - 1]) then return false end
+  end
+  return true
+end
+
+-- sorted copy of t using the named method (default "merge")
+function _sort.sorted(t, method, less)
+  local f = _sort[method or "merge"]
+  if f == nil or _sort.info[method or "merge"] == nil then
+    error("sort: unknown method '" .. tostring(method) .. "'")
+  end
+  return f(_sort.copy(t), less)
+end
+
+-- binary search in a sorted table: index of x, or nil
+function _sort.search(t, x, less)
+  less = _sort.prep(less)
+  local lo, hi = 1, #t
+  while lo <= hi do
+    local mid = (lo + hi) // 2
+    if less(t[mid], x) then lo = mid + 1
+    elseif less(x, t[mid]) then hi = mid - 1
+    else return mid end
+  end
+  return nil
+end
+
+-- comparisons the named method makes to sort a copy of t
+_sort.compares = 0
+_sort.inner = nil
+_sort.counted = function(a, b)
+  _sort.compares = _sort.compares + 1
+  return _sort.inner(a, b)
+end
+
+function _sort.count(method, t, less)
+  _sort.inner = _sort.prep(less)
+  _sort.compares = 0
+  local f = _sort[method]
+  if f == nil or _sort.info[method] == nil then
+    error("sort: unknown method '" .. tostring(method) .. "'")
+  end
+  f(_sort.copy(t), _sort.counted)
+  return _sort.compares
+end
+
+return _sort

@@ -26,4 +26,7 @@ WHISKER IDE - QUICK START
   File > Import does the reverse (right-click the list, "import", then
   choose File > Import again).
 
+  Libraries in /lib load with require: local sort = require("sort") gives
+  a dozen sorting methods (see /docs/sort.txt and /examples/sorting.wsk).
+
   Start with the files in /examples (double-click them in the tree).

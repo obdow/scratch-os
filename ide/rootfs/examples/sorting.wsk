@@ -1,0 +1,48 @@
+-- sorting.wsk - the sort library (lib/sort.wsk): every method, compared
+local sort = require("sort")
+
+-- the first n items of t as text
+local function first(t, n)
+  local out = ""
+  for i = 1, math.min(n, #t) do out = out .. t[i] .. " " end
+  return out .. "..."
+end
+
+-- 40 random numbers
+local data = {}
+for i = 1, 40 do data[i] = math.random(1, 99) end
+print("data:   " .. first(data, 12))
+
+-- run every method on a copy and count its comparisons
+print("")
+print(string.format("%-10s %8s  %s", "method", "compares", "sorted?"))
+for _, name in ipairs(sort.methods) do
+  local n = sort.count(name, data)
+  local ok = sort.is_sorted(sort.sorted(data, name))
+  print(string.format("%-10s %8d  %s", name, n, tostring(ok)))
+end
+
+-- descending order, and records sorted by a field
+local s = sort.sorted(data, "quick", sort.desc)
+print("")
+print("desc:   " .. first(s, 12))
+
+local people = {
+  {name = "Ada", age = 36}, {name = "Linus", age = 28},
+  {name = "Grace", age = 45}, {name = "Alan", age = 28},
+}
+sort.merge(people, "age")            -- stable: Linus stays before Alan
+local line = ""
+for _, p in ipairs(people) do line = line .. p.name .. " " .. p.age .. "  " end
+print("by age: " .. line)
+
+-- any comparator: longest name first
+sort.insertion(people, function(a, b) return #a.name > #b.name end)
+print("longest name first: " .. people[1].name)
+
+-- binary search in sorted data
+local asc = sort.sorted(data, "heap")
+print("search: " .. asc[10] .. " found at index " .. sort.search(asc, asc[10]) ..
+      ", 100 found: " .. tostring(sort.search(asc, 100) ~= nil))
+print("")
+print(sort.info.quick)
