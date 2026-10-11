@@ -964,6 +964,28 @@ class SpriteGen:
             self.set_sub(bid, 'SUBSTACK', rhs_pre)
             self.pre.append(bid)
             return self.var_val(t)
+        # Scratch quirk: any numerically-zero value compares equal to a whitespace-only
+        # string ("0" = "" and 0 = " " are true).  Emit a safe comparison instead.
+        if op in ('==', '!=') and (self.is_ws_lit(a) or self.is_ws_lit(b)):
+            x, lit = (b, a) if self.is_ws_lit(a) else (a, b)
+            xv = self.expr(x)
+            if lit.a[0] == '':
+                lb = self.mk('operator_length', {'STRING': ('str', xv)})
+                eq = self.mk('operator_equals', {'OPERAND1': ('str', ('blk', lb, False)), 'OPERAND2': ('str', ('lit', 0))})
+            else:
+                xv2 = self.expr(x) if xv[0] == 'blk' else xv
+                if xv[0] == 'blk':
+                    # avoid evaluating twice: stash in a temp
+                    t = self.tmp()
+                    self.pre.append(self.set_var_stmt(self.vars[t], xv))
+                    xv = xv2 = self.var_val(t)
+                e1 = self.mk('operator_equals', {'OPERAND1': ('str', xv), 'OPERAND2': ('str', ('lit', lit.a[0]))})
+                z = self.mk('operator_equals', {'OPERAND1': ('str', xv2), 'OPERAND2': ('str', ('lit', 0))})
+                nz = self.mk('operator_not', {'OPERAND': ('bool', ('blk', z, True))})
+                eq = self.mk('operator_and', {'OPERAND1': ('bool', ('blk', e1, True)), 'OPERAND2': ('bool', ('blk', nz, True))})
+            if op == '==':
+                return ('blk', eq, True)
+            return ('blk', self.mk('operator_not', {'OPERAND': ('bool', ('blk', eq, True))}), True)
         av = self.expr(a)
         bv = self.expr(b)
         if op == '+':
@@ -994,6 +1016,10 @@ class SpriteGen:
             g = self.mk('operator_lt', {'OPERAND1': ('str', av), 'OPERAND2': ('str', bv)})
             return ('blk', self.mk('operator_not', {'OPERAND': ('bool', ('blk', g, True))}), True)
         self.err(e, f"bad operator {op}")
+
+    @staticmethod
+    def is_ws_lit(e):
+        return e.kind == 'str' and e.a[0].strip(' \t\n\r') == ''
 
     def list_arg(self, e, node):
         if e.kind != 'name' or not self.lookup_list(e.a[0]):

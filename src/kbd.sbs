@@ -1,0 +1,89 @@
+// ===========================================================================
+// kbd.sbs - keyboard input without "ask" blocks.
+//
+// The Keyboard sprite spawns one clone per physical key.  Each clone polls
+// `key (k) pressed?`, and on a press pushes an event string into the global
+// kb_queue (with auto-repeat).  The kernel drains kb_queue once per frame.
+//
+// Event strings:
+//   "a" "A" "!" " "     a printable character (case resolved via shift/caps)
+//   "^c"                ctrl + key
+//   "enter" "backspace" "left arrow" ...   special keys (length > 1)
+//
+// The parent (non-clone) sprite also acts as the frame pacer: it is visible
+// with a blank costume and touches its position every frame, which requests
+// a redraw so the Scratch sequencer runs each thread once per frame.
+// ===========================================================================
+
+global list kb_queue;
+global kb_caps = 0;          // caps lock state (toggled by the kernel)
+global kb_ready = 0;         // set when all clones are listening
+
+sprite Keyboard {
+    costumes "blank";
+    prop visible = 1;
+    list kb_keys = data("kb_keys");
+    list kb_out = data("kb_out");
+    list kb_kind = data("kb_kind");
+    var my_key = "";
+    var my_out = "";
+    var my_kind = 0;
+    var is_clone = 0;
+
+    proc kb_emit() {
+        if (my_kind == 3) {
+            add(kb_queue, my_out);
+            return;
+        }
+        if (key("control")) {
+            add(kb_queue, "^" .. my_out);
+            return;
+        }
+        if (my_kind == 1) {
+            // letters: uppercase when exactly one of shift / caps lock is active
+            local up = 0;
+            if (key("shift")) { up = 1; }
+            if (kb_caps == 1) { up = 1 - up; }
+            if (up == 1) { add(kb_queue, my_key); } else { add(kb_queue, my_out); }
+            return;
+        }
+        add(kb_queue, my_out);
+    }
+
+    on flag {
+        is_clone = 0;
+        kb_ready = 0;
+        kb_caps = 0;
+        clear(kb_queue);
+        goto(0, 0);
+        show();
+        for i = 1 to len(kb_keys) {
+            my_key = kb_keys[i];
+            my_out = kb_out[i];
+            my_kind = kb_kind[i];
+            clone_self();
+        }
+        kb_ready = 1;
+        // frame pacer
+        forever {
+            set_x(0);
+        }
+    }
+
+    on clone {
+        is_clone = 1;
+        hide();
+        forever {
+            wait_until(key(my_key));
+            kb_emit();
+            local t = days2000() * 86400 + 0.42;
+            while (key(my_key)) {
+                if (days2000() * 86400 > t) {
+                    kb_emit();
+                    t = days2000() * 86400 + 0.035;
+                }
+                wait(0);
+            }
+        }
+    }
+}

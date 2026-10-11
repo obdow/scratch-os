@@ -1,0 +1,583 @@
+// ===========================================================================
+// tty.sbs - text terminals (included inside sprite Kernel)
+//
+// A tty is a character grid (w x h cells, CP437 code + attribute) stored in
+// the shared lists cell_ch / cell_at.  Rows are a ring buffer (tty_top), so
+// scrolling is O(width).  Changes are recorded as dirty cells and drawn once
+// per frame by tty_render(), or the whole tty is redrawn when tty_full = 1.
+//
+// Attribute = fg + 16 * bg (VGA palette indices).
+//
+// Output understands a subset of ANSI escapes:
+//   ESC[...m  SGR colours (30-37, 90-97, 40-47, 100-107, 0, 1, 7, 39, 49)
+//   ESC[2J    clear      ESC[H / ESC[r;cH  cursor position   ESC[K erase line
+//   ESC[nA/B/C/D cursor movement
+//
+// Cooked mode does line editing (insert, backspace, delete, arrows,
+// home/end, history with up/down) and queues completed lines in tin_*.
+// Raw mode hands every key event to the foreground process instead.
+// ===========================================================================
+
+const MAX_TTY = 8;
+const TTY_CELLS = 1320;
+const ATTR_DEFAULT = 7;
+
+list cell_ch;
+list cell_at;
+
+list tty_used;
+list tty_w;
+list tty_h;
+list tty_base;
+list tty_top;
+list tty_cx;
+list tty_cy;
+list tty_attr;
+list tty_ox;        // screen pixel origin
+list tty_oy;
+list tty_vis;       // 1 if currently displayed
+list tty_full;      // needs a full redraw
+list tty_mode;      // 0 cooked, 1 raw
+list tty_echo;
+list tty_line;      // line being edited (cooked mode)
+list tty_lpos;      // cursor position within the line (0-based)
+list tty_px;        // screen position where the edited line starts
+list tty_py;
+list tty_fgpid;     // foreground process id
+list tty_win;       // window id (0 = full-screen console)
+list tty_esc;       // escape parser state
+list tty_escbuf;
+list tty_curvis;    // cursor enabled
+list tty_hpos;      // history browsing position
+list tty_eof;       // pending EOF (^D-like) flag
+
+list dirty_t;
+list dirty_p;
+
+list tin_tty;       // completed input lines
+list tin_line;
+
+list hist;          // command history shared by all ttys
+
+// ANSI colour order -> VGA palette index
+list ansi_map = [0, 4, 2, 6, 1, 5, 3, 7];
+
+// cursor state
+var cur_t = 0;          // tty that owns the text cursor (focused)
+var cur_drawn = 0;
+var cur_dt = 0;
+var cur_dx = 0;
+var cur_dy = 0;
+var last_key_time = 0;
+
+proc tty_init() {
+    clear(cell_ch);
+    clear(cell_at);
+    repeat (MAX_TTY * TTY_CELLS) {
+        add(cell_ch, 32);
+        add(cell_at, ATTR_DEFAULT);
+    }
+    clear(tty_used); clear(tty_w); clear(tty_h); clear(tty_base); clear(tty_top);
+    clear(tty_cx); clear(tty_cy); clear(tty_attr); clear(tty_ox); clear(tty_oy);
+    clear(tty_vis); clear(tty_full); clear(tty_mode); clear(tty_echo); clear(tty_line);
+    clear(tty_lpos); clear(tty_px); clear(tty_py); clear(tty_fgpid); clear(tty_win);
+    clear(tty_esc); clear(tty_escbuf); clear(tty_curvis); clear(tty_hpos); clear(tty_eof);
+    for i = 1 to MAX_TTY {
+        add(tty_used, 0); add(tty_w, 0); add(tty_h, 0); add(tty_base, (i - 1) * TTY_CELLS);
+        add(tty_top, 0); add(tty_cx, 0); add(tty_cy, 0); add(tty_attr, ATTR_DEFAULT);
+        add(tty_ox, 0); add(tty_oy, 0); add(tty_vis, 0); add(tty_full, 0); add(tty_mode, 0);
+        add(tty_echo, 1); add(tty_line, ""); add(tty_lpos, 0); add(tty_px, 0); add(tty_py, 0);
+        add(tty_fgpid, 0); add(tty_win, 0); add(tty_esc, 0); add(tty_escbuf, ""); add(tty_curvis, 1);
+        add(tty_hpos, 0); add(tty_eof, 0);
+    }
+    clear(dirty_t); clear(dirty_p);
+    clear(tin_tty); clear(tin_line);
+    cur_t = 0;
+    cur_drawn = 0;
+}
+
+proc tty_alloc(w, h, ox, oy, win) {
+    for t = 1 to MAX_TTY {
+        if (tty_used[t] == 0) {
+            tty_used[t] = 1;
+            tty_w[t] = w;
+            tty_h[t] = h;
+            tty_ox[t] = ox;
+            tty_oy[t] = oy;
+            tty_win[t] = win;
+            tty_vis[t] = 0;
+            tty_mode[t] = 0;
+            tty_echo[t] = 1;
+            tty_line[t] = "";
+            tty_lpos[t] = 0;
+            tty_fgpid[t] = 0;
+            tty_esc[t] = 0;
+            tty_curvis[t] = 1;
+            tty_eof[t] = 0;
+            tty_attr[t] = ATTR_DEFAULT;
+            tty_clear(t);
+            return t;
+        }
+    }
+    return 0;
+}
+
+proc tty_free(t) {
+    tty_used[t] = 0;
+    tty_vis[t] = 0;
+    if (cur_t == t) { cur_t = 0; cur_drawn = 0; }
+    // drop queued input for this tty
+    local i = 1;
+    while (i <= len(tin_tty)) {
+        if (tin_tty[i] == t) { del(tin_tty, i); del(tin_line, i); } else { i += 1; }
+    }
+}
+
+proc tty_clear(t) {
+    local b = tty_base[t];
+    local a = tty_attr[t];
+    for i = 1 to tty_w[t] * tty_h[t] {
+        cell_ch[b + i] = 32;
+        cell_at[b + i] = a;
+    }
+    tty_top[t] = 0;
+    tty_cx[t] = 0;
+    tty_cy[t] = 0;
+    tty_px[t] = 0;
+    tty_py[t] = 0;
+    tty_full[t] = 1;
+}
+
+// physical list index of logical cell
+proc tty_idx(t, row, col) {
+    return tty_base[t] + ((row + tty_top[t]) % tty_h[t]) * tty_w[t] + col + 1;
+}
+
+proc tty_mark(t, row, col) {
+    if (tty_full[t] == 0) {
+        if (len(dirty_t) > 900) {
+            tty_full[t] = 1;
+        } else {
+            add(dirty_t, t);
+            add(dirty_p, row * tty_w[t] + col);
+        }
+    }
+}
+
+proc tty_scroll(t) {
+    local h = tty_h[t];
+    local w = tty_w[t];
+    tty_top[t] = (tty_top[t] + 1) % h;
+    // clear new bottom row
+    local b = tty_base[t] + ((h - 1 + tty_top[t]) % h) * w;
+    local a = tty_attr[t];
+    for i = 1 to w {
+        cell_ch[b + i] = 32;
+        cell_at[b + i] = a;
+    }
+    tty_py[t] = tty_py[t] - 1;
+    tty_full[t] = 1;
+}
+
+proc tty_newline(t) {
+    tty_cx[t] = 0;
+    if (tty_cy[t] >= tty_h[t] - 1) {
+        tty_scroll(t);
+    } else {
+        tty_cy[t] = tty_cy[t] + 1;
+    }
+}
+
+// put one CP437 code with control handling
+proc tty_putc(t, code) {
+    if (code == 10) { tty_newline(t); return; }
+    if (code == 13) { tty_cx[t] = 0; return; }
+    if (code == 8) {
+        if (tty_cx[t] > 0) { tty_cx[t] = tty_cx[t] - 1; }
+        return;
+    }
+    if (code == 9) {
+        local nx = floor(tty_cx[t] / 8) * 8 + 8;
+        if (nx > tty_w[t] - 1) { nx = tty_w[t] - 1; }
+        tty_cx[t] = nx;
+        return;
+    }
+    if (code == 7) { return; }
+    if (tty_cx[t] >= tty_w[t]) { tty_newline(t); }
+    local row = tty_cy[t];
+    local col = tty_cx[t];
+    local i = tty_base[t] + ((row + tty_top[t]) % tty_h[t]) * tty_w[t] + col + 1;
+    cell_ch[i] = code;
+    cell_at[i] = tty_attr[t];
+    tty_mark(t, row, col);
+    tty_cx[t] = col + 1;
+}
+
+proc tty_sgr(t, n) {
+    local a = tty_attr[t];
+    local fg = a % 16;
+    local bg = floor(a / 16);
+    if (n == 0) { fg = 7; bg = 0; }
+    else if (n == 1) { fg = fg % 8 + 8; }
+    else if (n == 7) { local tmp = fg; fg = bg; bg = tmp; }
+    else if (n >= 30 && n <= 37) { fg = ansi_map[n - 29]; }
+    else if (n >= 90 && n <= 97) { fg = ansi_map[n - 89] + 8; }
+    else if (n >= 40 && n <= 47) { bg = ansi_map[n - 39]; }
+    else if (n >= 100 && n <= 107) { bg = ansi_map[n - 99] + 8; }
+    else if (n == 39) { fg = 7; }
+    else if (n == 49) { bg = 0; }
+    tty_attr[t] = fg + bg * 16;
+}
+
+proc tty_csi(t, params, fin) {
+    // split params by ';'
+    local p1 = "";
+    local p2 = "";
+    local which = 1;
+    local nparams = 0;
+    if (fin == "m") {
+        if (params == "") { tty_sgr(t, 0); return; }
+        local cur = "";
+        for i = 1 to len(params) {
+            if (params[i] == ";") {
+                tty_sgr(t, cur);
+                cur = "";
+            } else {
+                cur = cur .. params[i];
+            }
+        }
+        if (cur != "") { tty_sgr(t, cur); }
+        return;
+    }
+    for i = 1 to len(params) {
+        if (params[i] == ";") { which = 2; }
+        else if (which == 1) { p1 = p1 .. params[i]; }
+        else { p2 = p2 .. params[i]; }
+    }
+    if (fin == "J") {
+        if (p1 == 2 || p1 == "") { tty_clear(t); }
+        return;
+    }
+    if (fin == "H" || fin == "f") {
+        local r = 1;
+        local c = 1;
+        if (p1 != "") { r = p1; }
+        if (p2 != "") { c = p2; }
+        tty_goto(t, c - 1, r - 1);
+        return;
+    }
+    if (fin == "K") {
+        local row = tty_cy[t];
+        for c = tty_cx[t] to tty_w[t] - 1 {
+            local i = tty_idx(t, row, c);
+            cell_ch[i] = 32;
+            cell_at[i] = tty_attr[t];
+            tty_mark(t, row, c);
+        }
+        return;
+    }
+    local n = 1;
+    if (p1 != "") { n = p1; }
+    if (fin == "A") { tty_goto(t, tty_cx[t], tty_cy[t] - n); }
+    else if (fin == "B") { tty_goto(t, tty_cx[t], tty_cy[t] + n); }
+    else if (fin == "C") { tty_goto(t, tty_cx[t] + n, tty_cy[t]); }
+    else if (fin == "D") { tty_goto(t, tty_cx[t] - n, tty_cy[t]); }
+}
+
+proc tty_goto(t, x, y) {
+    local nx = x;
+    local ny = y;
+    if (nx < 0) { nx = 0; }
+    if (ny < 0) { ny = 0; }
+    if (nx > tty_w[t] - 1) { nx = tty_w[t] - 1; }
+    if (ny > tty_h[t] - 1) { ny = tty_h[t] - 1; }
+    tty_cx[t] = nx;
+    tty_cy[t] = ny;
+}
+
+// write a string (handles escapes)
+proc tty_write(t, s) {
+    local n = len(s);
+    local i = 1;
+    while (i <= n) {
+        local ch = s[i];
+        local st = tty_esc[t];
+        if (st == 0) {
+            if (ch == "\e") {
+                tty_esc[t] = 1;
+            } else {
+                tty_putc(t, ord(ch));
+            }
+        } else if (st == 1) {
+            if (ch == "[") {
+                tty_esc[t] = 2;
+                tty_escbuf[t] = "";
+            } else {
+                tty_esc[t] = 0;
+            }
+        } else {
+            if (contains("0123456789;", ch) && ch != " ") {
+                tty_escbuf[t] = tty_escbuf[t] .. ch;
+            } else {
+                tty_esc[t] = 0;
+                tty_csi(t, tty_escbuf[t], ch);
+            }
+        }
+        i += 1;
+    }
+}
+
+proc tty_print(t, s) {
+    tty_write(t, s .. "\n");
+}
+
+// --- line editing -----------------------------------------------------------
+
+// move the terminal cursor to position k of the line being edited
+proc tty_line_cursor(t, k) {
+    local w = tty_w[t];
+    local p = tty_px[t] + k;
+    tty_cx[t] = p % w;
+    tty_cy[t] = tty_py[t] + floor(p / w);
+    if (tty_cy[t] > tty_h[t] - 1) { tty_cy[t] = tty_h[t] - 1; }
+}
+
+// redraw the edited line from position k, erasing `extra` trailing cells
+proc tty_line_redraw(t, k, extra) {
+    local line = tty_line[t];
+    tty_line_cursor(t, k);
+    local n = len(line);
+    local i = k + 1;
+    while (i <= n) {
+        // scrolling while echoing shifts tty_py, handled by tty_scroll
+        tty_putc(t, ord(line[i]));
+        i += 1;
+    }
+    repeat (extra) { tty_putc(t, 32); }
+    // if we ended exactly at the right margin, wrap now so the cursor is visible
+    if (tty_cx[t] >= tty_w[t]) { tty_newline(t); }
+    tty_line_cursor(t, tty_lpos[t]);
+}
+
+proc tty_line_begin(t) {
+    tty_line[t] = "";
+    tty_lpos[t] = 0;
+    if (tty_cx[t] >= tty_w[t]) { tty_newline(t); }
+    tty_px[t] = tty_cx[t];
+    tty_py[t] = tty_cy[t];
+    tty_hpos[t] = len(hist) + 1;
+}
+
+proc tty_line_set(t, s) {
+    local old = len(tty_line[t]);
+    tty_line[t] = s;
+    tty_lpos[t] = len(s);
+    local extra = old - len(s);
+    if (extra < 0) { extra = 0; }
+    tty_line_redraw(t, 0, extra);
+}
+
+// a key event for a cooked-mode tty
+proc tty_key(t, ev) {
+    local line = tty_line[t];
+    local pos = tty_lpos[t];
+    if (len(ev) == 1) {
+        tty_line[t] = substr(line, 1, pos) .. ev .. substr(line, pos + 1, len(line));
+        tty_lpos[t] = pos + 1;
+        if (tty_echo[t] == 1) { tty_line_redraw(t, pos, 0); }
+        return;
+    }
+    if (ev == "backspace") {
+        if (pos > 0) {
+            tty_line[t] = substr(line, 1, pos - 1) .. substr(line, pos + 1, len(line));
+            tty_lpos[t] = pos - 1;
+            if (tty_echo[t] == 1) { tty_line_redraw(t, pos - 1, 1); }
+        }
+        return;
+    }
+    if (ev == "delete") {
+        if (pos < len(line)) {
+            tty_line[t] = substr(line, 1, pos) .. substr(line, pos + 2, len(line));
+            if (tty_echo[t] == 1) { tty_line_redraw(t, pos, 1); }
+        }
+        return;
+    }
+    if (ev == "left arrow") {
+        if (pos > 0) { tty_lpos[t] = pos - 1; tty_line_cursor(t, pos - 1); }
+        return;
+    }
+    if (ev == "right arrow") {
+        if (pos < len(line)) { tty_lpos[t] = pos + 1; tty_line_cursor(t, pos + 1); }
+        return;
+    }
+    if (ev == "home") {
+        tty_lpos[t] = 0;
+        tty_line_cursor(t, 0);
+        return;
+    }
+    if (ev == "end") {
+        tty_lpos[t] = len(line);
+        tty_line_cursor(t, len(line));
+        return;
+    }
+    if (ev == "up arrow") {
+        if (tty_echo[t] == 1 && tty_hpos[t] > 1) {
+            tty_hpos[t] = tty_hpos[t] - 1;
+            tty_line_set(t, hist[tty_hpos[t]]);
+        }
+        return;
+    }
+    if (ev == "down arrow") {
+        if (tty_echo[t] == 1 && tty_hpos[t] <= len(hist)) {
+            tty_hpos[t] = tty_hpos[t] + 1;
+            if (tty_hpos[t] > len(hist)) { tty_line_set(t, ""); } else { tty_line_set(t, hist[tty_hpos[t]]); }
+        }
+        return;
+    }
+    if (ev == "enter") {
+        tty_line_cursor(t, len(line));
+        tty_newline(t);
+        add(tin_tty, t);
+        add(tin_line, line);
+        if (tty_echo[t] == 1 && line != "") {
+            if (len(hist) == 0 || streq(hist[len(hist)], line) == 0) {
+                add(hist, line);
+                if (len(hist) > 100) { del(hist, 1); }
+            }
+        }
+        tty_line_begin(t);
+        return;
+    }
+}
+
+// pop a completed line for tty t; returns 1 and sets tty_got, or 0
+var tty_got = "";
+proc tty_getline(t) {
+    local i = index(tin_tty, t);
+    if (i == 0) { return 0; }
+    tty_got = tin_line[i];
+    del(tin_tty, i);
+    del(tin_line, i);
+    return 1;
+}
+
+// --- rendering ----------------------------------------------------------------
+
+// is cell (row, col) of tty t visible on screen?
+proc tty_cell_visible(t, row, col) {
+    if (tty_vis[t] == 0) { return 0; }
+    local wid = tty_win[t];
+    if (wid == 0) { return 1; }
+    return wm_owner_at(floor(tty_ox[t] / 8) + col, floor(tty_oy[t] / 16) + row) == wid;
+}
+
+proc tty_render_cell(t, row, col) {
+    if (tty_cell_visible(t, row, col) == 0) { return; }
+    local i = tty_base[t] + ((row + tty_top[t]) % tty_h[t]) * tty_w[t] + col + 1;
+    local a = cell_at[i];
+    local x = tty_ox[t] + col * 8;
+    local y = tty_oy[t] + row * 16;
+    local fg = a % 16;
+    local bg = floor(a / 16);
+    gfx_fill(x, y, 8, 16, bg);
+    local code = cell_ch[i];
+    if (code != 32 && code != 0 && fg != bg) {
+        gfx_glyph(x, y, code, fg);
+    }
+    if (cur_drawn == 1 && cur_dt == t && cur_dx == col && cur_dy == row) { cur_drawn = 0; }
+}
+
+proc tty_render_full(t) {
+    local w = tty_w[t];
+    local h = tty_h[t];
+    local ox = tty_ox[t];
+    local oy = tty_oy[t];
+    local whole = 0;
+    if (tty_win[t] == 0 && tty_vis[t] == 1) { whole = 1; }
+    for row = 0 to h - 1 {
+        local rb = tty_base[t] + ((row + tty_top[t]) % h) * w;
+        local y = oy + row * 16;
+        // background runs
+        local col = 0;
+        while (col < w) {
+            if (whole == 0 && tty_cell_visible(t, row, col) == 0) {
+                col += 1;
+            } else {
+                local bg = floor(cell_at[rb + col + 1] / 16);
+                local start = col;
+                col += 1;
+                while (col < w && floor(cell_at[rb + col + 1] / 16) == bg && (whole == 1 || tty_cell_visible(t, row, col) == 1)) {
+                    col += 1;
+                }
+                gfx_fill(ox + start * 8, y, (col - start) * 8, 16, bg);
+            }
+        }
+        // glyphs
+        for c = 0 to w - 1 {
+            local code = cell_ch[rb + c + 1];
+            if (code != 32 && code != 0) {
+                local a = cell_at[rb + c + 1];
+                if (a % 16 != floor(a / 16)) {
+                    if (whole == 1 || tty_cell_visible(t, row, c) == 1) {
+                        gfx_glyph(ox + c * 8, y, code, a % 16);
+                    }
+                }
+            }
+        }
+    }
+    if (cur_dt == t) { cur_drawn = 0; }
+}
+
+proc tty_render() {
+    // full redraws first
+    for t = 1 to MAX_TTY {
+        if (tty_full[t] == 1) {
+            if (tty_used[t] == 1 && tty_vis[t] == 1) { tty_render_full(t); }
+            tty_full[t] = 0;
+        }
+    }
+    local n = len(dirty_t);
+    for k = 1 to n {
+        local t = dirty_t[k];
+        if (tty_used[t] == 1) {
+            local w = tty_w[t];
+            local p = dirty_p[k];
+            tty_render_cell(t, floor(p / w), p % w);
+        }
+    }
+    clear(dirty_t);
+    clear(dirty_p);
+}
+
+// draw / erase the blinking text cursor
+proc tty_cursor_update() {
+    local want = 0;
+    local t = cur_t;
+    local now = days2000() * 86400;
+    if (t > 0 && tty_used[t] == 1 && tty_vis[t] == 1 && tty_curvis[t] == 1) {
+        if (now - last_key_time < 0.5 || floor(now / 0.27) % 2 == 0) { want = 1; }
+    }
+    local cx = 0;
+    local cy = 0;
+    if (want == 1) {
+        cx = tty_cx[t];
+        cy = tty_cy[t];
+        if (cx >= tty_w[t]) { cx = tty_w[t] - 1; }
+        if (tty_cell_visible(t, cy, cx) == 0) { want = 0; }
+    }
+    if (cur_drawn == 1) {
+        if (want == 1 && cur_dt == t && cur_dx == cx && cur_dy == cy) { return; }
+        // erase old cursor
+        if (tty_used[cur_dt] == 1) { tty_render_cell(cur_dt, cur_dy, cur_dx); }
+        cur_drawn = 0;
+    }
+    if (want == 1) {
+        local i = tty_idx(t, cy, cx);
+        local fg = cell_at[i] % 16;
+        gfx_fill(tty_ox[t] + cx * 8, tty_oy[t] + cy * 16 + 13, 8, 2, fg);
+        cur_drawn = 1;
+        cur_dt = t;
+        cur_dx = cx;
+        cur_dy = cy;
+    }
+}

@@ -22,6 +22,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(ROOT, 'tools'))
 
 import assets  # noqa: E402
+import osdata  # noqa: E402
 import rootfs  # noqa: E402
 import sbc  # noqa: E402
 
@@ -38,6 +39,7 @@ TW_CONFIG = {
 
 def build(main, out):
     data = rootfs.build_data(os.path.join(ROOT, 'rootfs'))
+    data.update(osdata.build_data())
     prog = sbc.Program(data)
     # Constants made available to SBS source
     prog.consts.update({
