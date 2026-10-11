@@ -58,6 +58,7 @@ def build(main, out, rootfs_dir=None, ide=False):
             'RECT_R_BASE': assets.RECT_R_BASE,
             'CURSOR_COSTUME': assets.CURSOR_COSTUME,
             'CURSOR_MASK_COSTUME': assets.CURSOR_MASK_COSTUME,
+            'ORD_SENTINEL': assets.GLYPH_BASE + ord('?'),
         })
     prog.consts.update(data.get('_consts', {}))
     prog.consts.update(data['_native_consts'])

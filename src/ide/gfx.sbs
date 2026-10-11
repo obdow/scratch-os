@@ -19,6 +19,7 @@ list pal_rb = data("ide_pal_rb");     // costume number of the 1x1 rect in the e
 list pal_hue = data("ide_pal_hue");
 list pal_bri = data("ide_pal_bri");
 list pal_rgb = data("ide_pal_rgb");   // RGB integer (pen lines)
+list gmap = data("ide_gmap");         // code+1 -> glyph slot in a set ('?' if not included)
 
 var gfx_col = -1;        // colour currently applied via effects
 var gfx_gbase = 1;       // costume number of glyph 0 in the current base set
@@ -68,11 +69,11 @@ proc gfx_ansi_theme(n) {
     gfx_pen_col = -1;
 }
 
-// Stamp glyph `code` (0..255) with its top-left at screen pixel (x, y).
+// Stamp glyph `code` (0..255; codes without a glyph show '?') with its top-left at screen pixel (x, y).
 proc gfx_glyph(x, y, code, c) {
     gfx_color(c);
     goto(x - 240, 180 - y);
-    costume(gfx_gbase + code);
+    costume(gfx_gbase + gmap[code + 1]);
     stamp();
     gfx_stamps += 1;
 }

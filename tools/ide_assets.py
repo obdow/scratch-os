@@ -21,12 +21,13 @@ The palette's chromas are clustered into a handful of levels (log-scale
 k-means); each colour is nudged to its level's chroma, which keeps the hue
 and the darkest channel.  One base set = 256 glyphs + 81 power-of-two rects.
 
-Glyphs are rendered from JetBrains Mono at 4x and box-filtered to the
-costume's 2x resolution (16x32 pixels for an 8x16 cell), so they are
-anti-aliased and stay crisp with TurboWarp's high-quality pen.  Box drawing,
-block and shade characters and a few UI symbols are drawn procedurally so
-they meet exactly at cell edges; characters JetBrains Mono lacks fall back
-to the VGA bitmap.
+Only the characters the IDE actually shows get a glyph (GLYPHS: printable
+ASCII, the UI symbols and the few non-ASCII characters in the bundled
+files); any other code is drawn as '?'.  Glyphs are rendered from
+JetBrains Mono at 4x and box-filtered to the costume's 2x resolution
+(16x32 pixels for an 8x16 cell), so they are anti-aliased and stay crisp
+with TurboWarp's high-quality pen.  The UI symbols (triangles, dot, stop
+square, close cross, separator line) are drawn procedurally.
 
 Palette indices (pal_* lists, 1-based in Scratch):
   0..15    active ANSI colours (copied from 80.. or 96.. on theme change)
@@ -47,9 +48,23 @@ import assets
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 JBM_PATH = os.path.join(ROOT, 'assets', 'font', 'JetBrainsMono-Regular.ttf')
 
+# CP437 codes that get a glyph costume
+GLYPHS = sorted(set(range(32, 127)) | {
+    7,     # dot: modified tab, tree files, run status
+    16,    # right triangle: Run button, collapsed folder, "run" lines
+    30,    # up triangle: output panel button
+    31,    # down triangle: output panel button, expanded folder
+    130,   # e acute (used in the language reference)
+    158,   # close cross (drawn in the peseta slot)
+    175,   # >> : truncated tree names
+    196,   # horizontal line: menu separators
+    254,   # stop square: Stop button, "stopped" / "exit code" lines
+})
+QMARK = GLYPHS.index(63)
+
 GREY_MAX = 8          # chroma at or below this is drawn as a neutral grey
 LEVELS = 8            # number of chromatic base sets
-SET_SIZE = 256 + 81   # glyphs + rects per base set
+SET_SIZE = len(GLYPHS) + 81   # glyphs + rects per base set
 
 UI_NAMES = [
     'EDBG', 'PANEL', 'BORDER', 'TEXT', 'DIM', 'EDFG', 'GUT', 'GUTCUR',
@@ -150,6 +165,7 @@ def layout():
         'CURSOR_COSTUME': 1 + n * SET_SIZE,
         'CURSOR_MASK_COSTUME': 2 + n * SET_SIZE,
         'IDE_SETS': n,
+        'ORD_SENTINEL': 1 + QMARK,
     }
 
 
@@ -159,12 +175,16 @@ def build_data():
     gb, rb, hue, bri, rgb = [], [], [], [], []
     for e in entries:
         gb.append(1 + e['set'] * SET_SIZE)
-        rb.append(257 + e['set'] * SET_SIZE)
+        rb.append(1 + len(GLYPHS) + e['set'] * SET_SIZE)
         hue.append(e['hue'])
         bri.append(e['bri'])
         r, g, b = e['rgb']
         rgb.append(r * 65536 + g * 256 + b)
-    return {'ide_pal_gb': gb, 'ide_pal_rb': rb, 'ide_pal_hue': hue, 'ide_pal_bri': bri, 'ide_pal_rgb': rgb}
+    # code -> glyph slot in a set (unsupported codes show '?'), and
+    # costume number -> code for ord() (costume lookup by name, set 0)
+    gmap = [GLYPHS.index(c) if c in GLYPHS else QMARK for c in range(256)]
+    return {'ide_pal_gb': gb, 'ide_pal_rb': rb, 'ide_pal_hue': hue, 'ide_pal_bri': bri, 'ide_pal_rgb': rgb,
+            'ide_gmap': gmap, 'glyph_code': list(GLYPHS)}
 
 
 def ui_consts():
@@ -180,112 +200,18 @@ SS = 4                 # drawing scale: 4 canvas px per stage px (2x the costume
 W4, H4 = 8 * SS, 16 * SS
 CX4, CY4 = W4 // 2, H4 // 2
 
-BOX = {  # code: (up, down, left, right), 1 = single, 2 = double
-    0xB3: (1, 1, 0, 0), 0xB4: (1, 1, 1, 0), 0xB5: (1, 1, 2, 0), 0xB6: (2, 2, 1, 0),
-    0xB7: (0, 2, 1, 0), 0xB8: (0, 1, 2, 0), 0xB9: (2, 2, 2, 0), 0xBA: (2, 2, 0, 0),
-    0xBB: (0, 2, 2, 0), 0xBC: (2, 0, 2, 0), 0xBD: (2, 0, 1, 0), 0xBE: (1, 0, 2, 0),
-    0xBF: (0, 1, 1, 0), 0xC0: (1, 0, 0, 1), 0xC1: (1, 0, 1, 1), 0xC2: (0, 1, 1, 1),
-    0xC3: (1, 1, 0, 1), 0xC4: (0, 0, 1, 1), 0xC5: (1, 1, 1, 1), 0xC6: (1, 1, 0, 2),
-    0xC7: (2, 2, 0, 1), 0xC8: (2, 0, 0, 2), 0xC9: (0, 2, 0, 2), 0xCA: (2, 0, 2, 2),
-    0xCB: (0, 2, 2, 2), 0xCC: (2, 2, 0, 2), 0xCD: (0, 0, 2, 2), 0xCE: (2, 2, 2, 2),
-    0xCF: (1, 0, 2, 2), 0xD0: (2, 0, 1, 1), 0xD1: (0, 1, 2, 2), 0xD2: (0, 2, 1, 1),
-    0xD3: (2, 0, 0, 1), 0xD4: (1, 0, 0, 2), 0xD5: (0, 1, 0, 2), 0xD6: (0, 2, 0, 1),
-    0xD7: (2, 2, 1, 1), 0xD8: (1, 1, 2, 2), 0xD9: (1, 0, 1, 0), 0xDA: (0, 1, 0, 1),
-}
-ROUNDED = {0xDA: 'tl', 0xBF: 'tr', 0xC0: 'bl', 0xD9: 'br'}
-
-
-def _box_mask(code):
-    up, down, left, right = BOX[code]
-    lw = SS                     # line width: 1 stage pixel
-    d = 3 * SS // 2 + SS // 2   # double-line offset from the centre (2 px)
-    img = Image.new('L', (W4, H4), 0)
-    dr = ImageDraw.Draw(img)
-
-    def hline(y, x0, x1):
-        x0, x1 = sorted((x0, x1))
-        dr.rectangle([x0, y - lw // 2, x1 - 1, y + lw // 2 - 1], fill=255)
-
-    def vline(x, y0, y1):
-        y0, y1 = sorted((y0, y1))
-        dr.rectangle([x - lw // 2, y0, x + lw // 2 - 1, y1 - 1], fill=255)
-
-    if code in ROUNDED:
-        # rounded single corner
-        r = 3 * SS
-        corner = ROUNDED[code]
-        sx = 1 if corner in ('tl', 'bl') else -1    # direction of the horizontal arm
-        sy = 1 if corner in ('tl', 'tr') else -1    # direction of the vertical arm
-        ex = W4 if sx > 0 else 0
-        ey = H4 if sy > 0 else 0
-        hline(CY4, CX4 + sx * r, ex)
-        vline(CX4, CY4 + sy * r, ey)
-        # quarter circle centred at (CX4 + sx*r, CY4 + sy*r)
-        ccx, ccy = CX4 + sx * r, CY4 + sy * r
-        box = [ccx - r - lw // 2, ccy - r - lw // 2, ccx + r + lw // 2 - 1, ccy + r + lw // 2 - 1]
-        start = {'tl': 180, 'tr': 270, 'br': 0, 'bl': 90}[corner]
-        dr.arc(box, start, start + 90, fill=255, width=lw)
-        return img
-
-    st = {'u': up, 'd': down, 'l': left, 'r': right}
-
-    def ext_single(perp):
-        return d + lw // 2 if max(st[p] for p in perp) == 2 else lw // 2
-
-    def ext_double(side, opp):
-        # how far past the centre the line on `side` of a double arm runs
-        if st[side] == 2:
-            return -d
-        if st[side] == 1:
-            return 0
-        return d
-
-    for arm, sty in st.items():
-        if sty == 0:
-            continue
-        if arm in 'ud':
-            edge = 0 if arm == 'u' else H4
-            sgn = 1 if arm == 'u' else -1        # direction from the edge toward the centre
-            if sty == 1:
-                vline(CX4, edge, CY4 + sgn * ext_single('lr'))
-            else:
-                for side, off in (('l', -d), ('r', d)):
-                    e = ext_double(side, None)
-                    vline(CX4 + off, edge, CY4 + sgn * e + (sgn * lw // 2))
-        else:
-            edge = 0 if arm == 'l' else W4
-            sgn = 1 if arm == 'l' else -1
-            if sty == 1:
-                hline(CY4, edge, CX4 + sgn * ext_single('ud'))
-            else:
-                for side, off in (('u', -d), ('d', d)):
-                    e = ext_double(side, None)
-                    hline(CY4 + off, edge, CX4 + sgn * e + (sgn * lw // 2))
-    return img
-
-
 def _shape_mask(code):
-    """Blocks, shades and UI symbols drawn procedurally (None if not one)."""
+    """UI symbols drawn procedurally (None if `code` is not one)."""
     img = Image.new('L', (W4, H4), 0)
     dr = ImageDraw.Draw(img)
-    if code == 0xDB:
-        dr.rectangle([0, 0, W4, H4], fill=255)
-    elif code == 0xDC:
-        dr.rectangle([0, H4 // 2, W4, H4], fill=255)
-    elif code == 0xDF:
-        dr.rectangle([0, 0, W4, H4 // 2 - 1], fill=255)
-    elif code == 0xDD:
-        dr.rectangle([0, 0, W4 // 2 - 1, H4], fill=255)
-    elif code == 0xDE:
-        dr.rectangle([W4 // 2, 0, W4, H4], fill=255)
-    elif code in (0xB0, 0xB1, 0xB2):
-        dr.rectangle([0, 0, W4, H4], fill={0xB0: 64, 0xB1: 128, 0xB2: 192}[code])
-    elif code in (16, 17, 30, 31):
-        # small solid triangles: right, left, up, down
+    if code == 196:
+        # separator line, 1 stage pixel, edge to edge
+        dr.rectangle([0, CY4 - SS // 2, W4 - 1, CY4 + SS // 2 - 1], fill=255)
+    elif code in (16, 30, 31):
+        # small solid triangles: right, up, down
         s = 3 * SS
         cx, cy = CX4, CY4 + SS // 2
         pts = {16: [(cx - s * 0.6, cy - s), (cx - s * 0.6, cy + s), (cx + s * 0.9, cy)],
-               17: [(cx + s * 0.6, cy - s), (cx + s * 0.6, cy + s), (cx - s * 0.9, cy)],
                30: [(cx - s, cy + s * 0.6), (cx + s, cy + s * 0.6), (cx, cy - s * 0.9)],
                31: [(cx - s, cy - s * 0.6), (cx + s, cy - s * 0.6), (cx, cy + s * 0.9)]}[code]
         dr.polygon(pts, fill=255)
@@ -334,28 +260,16 @@ def _font_mask(code):
     return img
 
 
-def _vga_mask(font, code):
-    img = Image.new('L', (8, 16), 0)
-    px = img.load()
-    for row in range(16):
-        bits = font[code * 16 + row]
-        for col in range(8):
-            if bits & (0x80 >> col):
-                px[col, row] = 255
-    return img.resize((16, 32), Image.NEAREST)
 
-
-def glyph_mask(code, vga):
+def glyph_mask(code):
     """16x32 alpha mask of glyph `code`."""
-    if code in (0, 32, 255):
+    if code == 32:
         return Image.new('L', (16, 32), 0)
     m = _shape_mask(code)
-    if m is None and code in BOX:
-        m = _box_mask(code)
     if m is None:
         m = _font_mask(code)
     if m is None:
-        return _vga_mask(vga, code)
+        raise ValueError(f'no glyph for CP437 code {code} in JetBrains Mono')
     return m.resize((16, 32), Image.BOX)
 
 
@@ -384,11 +298,10 @@ def _pointer(part):
 
 def costumes():
     bases, _ = build_palette()
-    vga = assets.load_font()
-    masks = [glyph_mask(code, vga) for code in range(256)]
+    masks = {code: glyph_mask(code) for code in GLYPHS}
     out = []
     for k, base in enumerate(bases):
-        for code in range(256):
+        for code in GLYPHS:
             name = assets.glyph_name(code) if k == 0 else f's{k}g{code}'
             out.append(assets.make_costume(name, assets.png_bytes(_coloured(masks[code], base)), 'png', 0, 0))
         for i in range(9):
@@ -409,8 +322,8 @@ if __name__ == '__main__':
     for i, (h, ent) in enumerate(zip(palette_hex(), e)):
         if i < 80:
             print(f"{i:3} {names[i]:10} {h} -> {'%02X%02X%02X' % ent['rgb']} set {ent['set']}")
-    sheet = Image.new('RGBA', (16 * 32, 32 * 8), (30, 31, 34, 255))
-    vga = assets.load_font()
-    for code in range(256):
-        sheet.alpha_composite(_coloured(glyph_mask(code, vga), (223, 225, 229)), ((code % 32) * 16, (code // 32) * 32))
+    print(len(GLYPHS), 'glyphs,', layout()['CURSOR_MASK_COSTUME'], 'costumes')
+    sheet = Image.new('RGBA', (16 * 32, 32 * 4), (30, 31, 34, 255))
+    for k, code in enumerate(GLYPHS):
+        sheet.alpha_composite(_coloured(glyph_mask(code), (223, 225, 229)), ((k % 32) * 16, (k // 32) * 32))
     sheet.save(os.environ.get('SHEET', '/tmp/ide_glyphs.png'))

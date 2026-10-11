@@ -11,15 +11,17 @@ list cp437 = data("cp437");          // code+1 -> character
 list up_map = data("upper");         // code+1 -> uppercase code
 list lo_map = data("lower");         // code+1 -> lowercase code
 list char_class = data("char_class");
+list glyph_code = data("glyph_code");  // glyph costume number -> code
 
-// CP437 code of a single character (63 '?' if it has no CP437 glyph).
+// CP437 code of a single character (63 '?' if it has no glyph costume).
+// ORD_SENTINEL is the costume of '?'; glyph_code maps costume -> code.
 // The costume lookup runs first: comparisons of "0" with whitespace are
 // unreliable in Scratch, so whitespace is only tested when the lookup fails.
 proc ord(ch) {
-    costume(64);
+    costume(ORD_SENTINEL);
     costume(ch);
     local c = costume_num();
-    if (c != 64) { return c - 1; }
+    if (c != ORD_SENTINEL) { return glyph_code[c]; }
     if (len(ch) == 0) { return 0; }
     if (ch == " ") { return 32; }
     if (ch == "\n") { return 10; }
@@ -42,10 +44,10 @@ proc streq(a, b) {
     local i = 1;
     while (i <= n) {
         if (a[i] != b[i]) { return 0; }
-        costume(64);
+        costume(ORD_SENTINEL);
         costume(a[i]);
         local ca = costume_num();
-        costume(64);
+        costume(ORD_SENTINEL);
         costume(b[i]);
         if (costume_num() != ca) { return 0; }
         i += 1;

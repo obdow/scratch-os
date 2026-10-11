@@ -71,4 +71,5 @@ def build_data():
     return {
         'kb_keys': keys, 'kb_out': outs, 'kb_kind': kinds,
         'cp437': chars, 'upper': upper, 'lower': lower, 'char_class': cls,
+        'glyph_code': list(range(256)),     # ScratchOS: glyph costume c+1 is code c
     }

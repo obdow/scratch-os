@@ -43,10 +43,14 @@ wm_pointer()      mouse pointer                               (desktop only)
   three channels. So one base set of chroma C reaches every colour with
   chroma C exactly. The IDE's 112 palette entries (16 terminal colours for
   each theme, 32 UI colours for each theme) are clustered into 8 chroma
-  levels plus grey, giving 9 base sets of 256 JetBrains Mono glyphs and 81
-  rects. Each palette entry stores its set's costume numbers, hue and
-  brightness. Box-drawing, block and shade characters are drawn
-  procedurally so they meet at cell edges. Thin borders, accent underlines
+  levels plus grey, giving 9 base sets of glyphs and 81 rects each.
+  Each palette entry stores its set's costume numbers, hue and brightness.
+  The IDE ships only the 104 characters it actually shows: printable ASCII,
+  its UI symbols (drawn procedurally) and the non-ASCII characters in its
+  bundled files. A code-to-slot list (`gmap`) maps every other CP437 code to
+  `?`. Because glyph costumes are no longer numbered by code, the shared
+  `ord()` maps costume numbers back to codes through `glyph_code` (the
+  identity in ScratchOS). Thin borders, accent underlines
   and the scrollbar are extra 1–2 px rect stamps ("decos") carried in the
   cell attribute.
 

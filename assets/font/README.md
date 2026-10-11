@@ -16,4 +16,6 @@ International license (CC BY-SA 4.0).
 JetBrains Mono Regular, Copyright 2020 The JetBrains Mono Project Authors
 (<https://github.com/JetBrains/JetBrainsMono>), licensed under the SIL Open
 Font License 1.1 (`JetBrainsMono-OFL.txt`).  Used only by the Whisker IDE:
-`tools/ide_assets.py` renders it into anti-aliased 8x16-cell glyph costumes.
+`tools/ide_assets.py` renders the characters the IDE uses into
+anti-aliased 8x16-cell glyph costumes.  The VGA font above is used only by
+ScratchOS.
