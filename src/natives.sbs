@@ -1,0 +1,765 @@
+// ===========================================================================
+// natives.sbs - Whisker's built-in functions / system calls
+// (included inside sprite Kernel)
+//
+// native_call(id, a0, argc, w, dest, retpc):
+//   arguments are STK/STT[a0 .. a0+argc-1]; results are collected with
+//   nat_ret*() and placed at `dest` (exactly w of them); execution then
+//   continues at retpc.  A native that must wait (input, sleep, permission
+//   prompt) calls nat_block(): the process sleeps and re-executes the same
+//   instruction later, so blocking natives must not have side effects
+//   before they block.
+// ===========================================================================
+
+var nat_a0 = 0;
+var nat_argc = 0;
+var nat_blk = 0;
+var nat_reason = 0;
+var nat_tailcall = 0;
+
+proc nat_t(i) {
+    if (i > nat_argc) { return TNIL; }
+    return STT[nat_a0 + i - 1];
+}
+
+proc nat_v(i) {
+    if (i > nat_argc) { return ""; }
+    return STK[nat_a0 + i - 1];
+}
+
+// argument as string (numbers converted); raises for other types
+proc nat_str(i, fname) {
+    local t = nat_t(i);
+    if (t == TSTR) { return STK[nat_a0 + i - 1]; }
+    if (t == TNUM) { return fmt_number(STK[nat_a0 + i - 1]); }
+    vm_raise("bad argument #" .. i .. " to '" .. fname .. "' (string expected, got " .. vm_typename(t) .. ")");
+    return "";
+}
+
+proc nat_num(i, fname) {
+    local t = nat_t(i);
+    if (t == TNUM) { return STK[nat_a0 + i - 1]; }
+    if (t == TSTR) {
+        vm_ok = 1;
+        local n = vm_tonum(STK[nat_a0 + i - 1], TSTR);
+        if (vm_ok == 1) { return n; }
+    }
+    vm_raise("bad argument #" .. i .. " to '" .. fname .. "' (number expected, got " .. vm_typename(t) .. ")");
+    return 0;
+}
+
+// optional number with default
+proc nat_optnum(i, def, fname) {
+    if (nat_t(i) == TNIL) { return def; }
+    return nat_num(i, fname);
+}
+
+proc nat_table(i, fname) {
+    if (nat_t(i) == TTAB) { return STK[nat_a0 + i - 1]; }
+    vm_raise("bad argument #" .. i .. " to '" .. fname .. "' (table expected, got " .. vm_typename(nat_t(i)) .. ")");
+    return 0;
+}
+
+proc nat_ret(v, t) { add(nr_v, v); add(nr_t, t); }
+proc nat_rets(v) { add(nr_v, v); add(nr_t, TSTR); }
+proc nat_retn(v) { add(nr_v, v); add(nr_t, TNUM); }
+proc nat_retb(v) {
+    if (v == 1) { add(nr_v, 1); } else { add(nr_v, 0); }
+    add(nr_t, TBOOL);
+}
+proc nat_rett(h) { add(nr_v, h); add(nr_t, TTAB); }
+proc nat_retnil() { add(nr_v, ""); add(nr_t, TNIL); }
+
+proc nat_block(reason) {
+    nat_blk = 1;
+    nat_reason = reason;
+}
+
+proc nat_out(s) {
+    fd_write(p_out_k[vm_slot], p_out_i[vm_slot], s);
+}
+
+// resolve a path argument relative to the process's cwd; 0 if missing
+proc nat_path(i, fname) {
+    local p = nat_str(i, fname);
+    if (vm_raised == 1) { return 0; }
+    return fs_lookup(p, p_cwd[vm_slot]);
+}
+
+// capability check for the running process.  Returns 1 granted, 0 denied
+// (error raised) or -1 (blocked waiting for the user).
+proc nat_cap(cap) {
+    local r = caps_check(vm_slot, cap);
+    if (r == 0) { vm_raise("permission denied (capability '" .. cap .. "' was refused)"); }
+    if (r == -1) { nat_block(BLK_PROMPT); }
+    return r;
+}
+
+// may the process modify inode `ino` (or create inside directory `ino`)?
+proc nat_fs_cap(ino) {
+    if (fs_protected(ino) == 0) { return 1; }
+    return nat_cap("files");
+}
+
+proc native_call(id, a0, argc, w, dest, retpc) {
+    nat_a0 = a0;
+    nat_argc = argc;
+    nat_blk = 0;
+    nat_tailcall = 0;
+    vm_raised = 0;
+    clear(nr_v);
+    clear(nr_t);
+    if (id < N_FS_READ) {
+        nat_core(id, w, dest, retpc);
+    } else {
+        nat_sys(id);
+    }
+    if (vm_exited == 1) { return; }
+    if (nat_blk == 1) {
+        if (vm_sync > 0) {
+            nat_blk = 0;
+            vm_raise("cannot wait inside a callback");
+            return;
+        }
+        vm_blocked = 1;
+        proc_block(vm_slot, nat_reason);
+        return;
+    }
+    if (vm_raised == 1 || nat_tailcall == 1) { return; }
+    vm_place_results(dest, w);
+    vm_pc = retpc;
+}
+
+// --- base, string, math, table, io, os --------------------------------------------
+
+proc nat_core(id, w, dest, retpc) {
+    switch (id) {
+        case N_PRINT: {
+            local out = "";
+            for i = 1 to nat_argc {
+                if (i > 1) { out = out .. "\t"; }
+                out = out .. vm_tostr(nat_v(i), nat_t(i));
+            }
+            nat_out(out .. "\n");
+        }
+        case N_IO_WRITE: {
+            local out2 = "";
+            for i = 1 to nat_argc { out2 = out2 .. vm_tostr(nat_v(i), nat_t(i)); }
+            nat_out(out2);
+        }
+        case N_IO_ERROR: {
+            local out3 = "";
+            for i = 1 to nat_argc { out3 = out3 .. vm_tostr(nat_v(i), nat_t(i)); }
+            fd_write(p_err_k[vm_slot], p_err_i[vm_slot], out3);
+        }
+        case N_TOSTRING: { nat_rets(vm_tostr(nat_v(1), nat_t(1))); }
+        case N_TONUMBER: {
+            local t = nat_t(1);
+            if (t == TNUM) { nat_retn(nat_v(1)); }
+            else if (t == TSTR) {
+                local s = str_trim(nat_v(1));
+                if (nat_argc >= 2) {
+                    // base conversion
+                    local base = nat_num(2, "tonumber");
+                    local val = 0;
+                    local ok = 1;
+                    if (len(s) == 0) { ok = 0; }
+                    for i = 1 to len(s) {
+                        local d = str_find("0123456789abcdefghijklmnopqrstuvwxyz", str_lower(s[i]), 1) - 1;
+                        if (d < 0 || d >= base) { ok = 0; }
+                        val = val * base + d;
+                    }
+                    if (ok == 1) { nat_retn(val); } else { nat_retnil(); }
+                } else if (len(s) > 0 && is_number(s) == 1) {
+                    nat_retn(s * 1);
+                } else if (len(s) > 2 && (substr(s, 1, 2) == "0x")) {
+                    nat_retn(s * 1);
+                } else {
+                    nat_retnil();
+                }
+            } else { nat_retnil(); }
+        }
+        case N_TYPE: {
+            if (nat_argc == 0) { vm_raise("bad argument #1 to 'type' (value expected)"); }
+            else { nat_rets(vm_typename(nat_t(1))); }
+        }
+        case N_ERROR: {
+            vm_raise(vm_tostr(nat_v(1), nat_t(1)));
+        }
+        case N_ASSERT: {
+            if (vm_truthy(nat_v(1), nat_t(1)) == 0) {
+                local msg = "assertion failed!";
+                if (nat_argc >= 2) { msg = vm_tostr(nat_v(2), nat_t(2)); }
+                vm_raise(msg);
+            } else {
+                nat_ret(nat_v(1), nat_t(1));
+            }
+        }
+        case N_PCALL: {
+            if (nat_t(1) != TFUN) {
+                vm_raise("bad argument #1 to 'pcall' (Whisker function expected)");
+            } else {
+                // call protected; results (true, ...) go to dest
+                vm_call(nat_a0, nat_argc - 1, w, retpc, 1, dest);
+                nat_tailcall = 1;
+            }
+        }
+        case N_SELECT: {
+            local sel = nat_v(1);
+            if (sel == "#") { nat_retn(nat_argc - 1); }
+            else {
+                local k = nat_num(1, "select");
+                if (k >= 1 && k + 1 <= nat_argc) { nat_ret(nat_v(k + 1), nat_t(k + 1)); } else { nat_retnil(); }
+            }
+        }
+        case N_RAWEQUAL: { nat_retb(vm_equal(nat_v(1), nat_t(1), nat_v(2), nat_t(2))); }
+        case N_UNPACK, N_TABLE_UNPACK: {
+            local h = nat_table(1, "unpack");
+            if (vm_raised == 0) {
+                for i = 1 to tb_an[h] { nat_ret(HV[tb_ab[h] + i], HT[tb_ab[h] + i]); }
+            }
+        }
+        case N_SLEEP, N_OS_SLEEP: {
+            local secs = nat_optnum(1, 0, "sleep");
+            if (vm_raised == 0) { nat_sleep(secs); }
+        }
+        case N_EXIT, N_OS_EXIT: {
+            local code = nat_optnum(1, 0, "exit");
+            if (nat_t(1) == TBOOL) { code = 1 - nat_v(1); }
+            vm_running = 0;
+            vm_exited = 1;
+            proc_exit(vm_slot, code);
+        }
+        // ---- string ----
+        case N_STRING_LEN: { nat_retn(len(nat_str(1, "len"))); }
+        case N_STRING_SUB: {
+            local s2 = nat_str(1, "sub");
+            local i0 = nat_optnum(2, 1, "sub");
+            local j0 = nat_optnum(3, -1, "sub");
+            nat_rets(substr(s2, i0, j0));
+        }
+        case N_STRING_UPPER: { nat_rets(str_upper(nat_str(1, "upper"))); }
+        case N_STRING_LOWER: { nat_rets(str_lower(nat_str(1, "lower"))); }
+        case N_STRING_FIND: {
+            local s3 = nat_str(1, "find");
+            local pat = nat_str(2, "find");
+            local init = nat_optnum(3, 1, "find");
+            if (init < 0) { init = len(s3) + init + 1; }
+            if (init < 1) { init = 1; }
+            local pos = str_find(s3, pat, init);
+            if (pos > 0) { nat_retn(pos); nat_retn(pos + len(pat) - 1); } else { nat_retnil(); }
+        }
+        case N_STRING_CONTAINS: {
+            nat_retb(str_find(nat_str(1, "contains"), nat_str(2, "contains"), 1) > 0);
+        }
+        case N_STRING_REP: {
+            local s4 = nat_str(1, "rep");
+            local n = nat_num(2, "rep");
+            local sep = "";
+            if (nat_argc >= 3) { sep = nat_str(3, "rep"); }
+            local out4 = "";
+            for i = 1 to n {
+                if (i > 1) { out4 = out4 .. sep; }
+                out4 = out4 .. s4;
+            }
+            nat_rets(out4);
+        }
+        case N_STRING_BYTE: {
+            local s5 = nat_str(1, "byte");
+            local bi = nat_optnum(2, 1, "byte");
+            if (bi < 0) { bi = len(s5) + bi + 1; }
+            if (bi >= 1 && bi <= len(s5)) { nat_retn(ord(s5[bi])); } else { nat_retnil(); }
+        }
+        case N_STRING_CHAR: {
+            local out5 = "";
+            for i = 1 to nat_argc { out5 = out5 .. chr(nat_num(i, "char") % 256); }
+            nat_rets(out5);
+        }
+        case N_STRING_FORMAT: { nat_rets(str_format()); }
+        case N_STRING_SPLIT: {
+            local s6 = nat_str(1, "split");
+            local sep2 = " ";
+            if (nat_argc >= 2) { sep2 = nat_str(2, "split"); }
+            local h2 = table_new(p_pid[vm_slot]);
+            str_split_into(h2, s6, sep2);
+            nat_rett(h2);
+        }
+        case N_STRING_TRIM: { nat_rets(str_trim(nat_str(1, "trim"))); }
+        case N_STRING_REVERSE: {
+            local s7 = nat_str(1, "reverse");
+            local out7 = "";
+            for i = 1 to len(s7) { out7 = s7[i] .. out7; }
+            nat_rets(out7);
+        }
+        case N_STRING_STARTSWITH: {
+            local s8 = nat_str(1, "startswith");
+            local p8 = nat_str(2, "startswith");
+            nat_retb(streq(substr(s8, 1, len(p8)), p8));
+        }
+        case N_STRING_ENDSWITH: {
+            local s9 = nat_str(1, "endswith");
+            local p9 = nat_str(2, "endswith");
+            if (len(p9) > len(s9)) { nat_retb(0); }
+            else { nat_retb(streq(substr(s9, len(s9) - len(p9) + 1, len(s9)), p9)); }
+        }
+        case N_STRING_REPLACE: {
+            local s10 = nat_str(1, "replace");
+            local from = nat_str(2, "replace");
+            local to = nat_str(3, "replace");
+            local out10 = "";
+            local p10 = 1;
+            local count = 0;
+            if (len(from) == 0) { nat_rets(s10); }
+            else {
+                forever {
+                    local f = str_find(s10, from, p10);
+                    if (f == 0) { break; }
+                    out10 = out10 .. substr(s10, p10, f - 1) .. to;
+                    p10 = f + len(from);
+                    count += 1;
+                }
+                nat_rets(out10 .. substr(s10, p10, len(s10)));
+                nat_retn(count);
+            }
+        }
+        case N_STRING_LINES: {
+            local h3 = table_new(p_pid[vm_slot]);
+            str_split_into(h3, nat_str(1, "lines"), "\n");
+            nat_rett(h3);
+        }
+        case N_STRING_PAD: {
+            local s11 = nat_str(1, "pad");
+            local wd = nat_num(2, "pad");
+            if (wd < 0) { nat_rets(pad_left(s11, 0 - wd)); } else { nat_rets(pad_right(s11, wd)); }
+        }
+        // ---- math ----
+        case N_MATH_FLOOR: { nat_retn(floor(nat_num(1, "floor"))); }
+        case N_MATH_CEIL: { nat_retn(ceil(nat_num(1, "ceil"))); }
+        case N_MATH_ABS: { nat_retn(abs(nat_num(1, "abs"))); }
+        case N_MATH_SQRT: { nat_retn(sqrt(nat_num(1, "sqrt"))); }
+        case N_MATH_SIN: { nat_retn(sin(nat_num(1, "sin") * 57.29577951308232)); }
+        case N_MATH_COS: { nat_retn(cos(nat_num(1, "cos") * 57.29577951308232)); }
+        case N_MATH_TAN: { nat_retn(tan(nat_num(1, "tan") * 57.29577951308232)); }
+        case N_MATH_ASIN: { nat_retn(asin(nat_num(1, "asin")) / 57.29577951308232); }
+        case N_MATH_ACOS: { nat_retn(acos(nat_num(1, "acos")) / 57.29577951308232); }
+        case N_MATH_ATAN: {
+            if (nat_argc >= 2) { nat_retn(atan2(nat_num(1, "atan"), nat_num(2, "atan"))); }
+            else { nat_retn(atan(nat_num(1, "atan")) / 57.29577951308232); }
+        }
+        case N_MATH_ATAN2: { nat_retn(atan2(nat_num(1, "atan2"), nat_num(2, "atan2"))); }
+        case N_MATH_EXP: { nat_retn(exp(nat_num(1, "exp"))); }
+        case N_MATH_LOG: {
+            local x = nat_num(1, "log");
+            if (nat_argc >= 2) { nat_retn(ln(x) / ln(nat_num(2, "log"))); } else { nat_retn(ln(x)); }
+        }
+        case N_MATH_POW: { nat_retn(vm_pow(nat_num(1, "pow"), nat_num(2, "pow"))); }
+        case N_MATH_RANDOM: {
+            if (nat_argc == 0) { nat_retn(random(0, 999999) / 1000000); }
+            else if (nat_argc == 1) { nat_retn(random(1, floor(nat_num(1, "random")))); }
+            else { nat_retn(random(floor(nat_num(1, "random")), floor(nat_num(2, "random")))); }
+        }
+        case N_MATH_MAX, N_MATH_MIN: {
+            local best = nat_num(1, "max");
+            for i = 2 to nat_argc {
+                local v = nat_num(i, "max");
+                if ((id == N_MATH_MAX && v > best) || (id == N_MATH_MIN && v < best)) { best = v; }
+            }
+            nat_retn(best);
+        }
+        case N_MATH_FMOD: {
+            local a = nat_num(1, "fmod");
+            local b = nat_num(2, "fmod");
+            local q = a / b;
+            if (q < 0) { q = ceil(q); } else { q = floor(q); }
+            nat_retn(a - q * b);
+        }
+        case N_MATH_ROUND: { nat_retn(round(nat_num(1, "round"))); }
+        case N_MATH_TOINTEGER: {
+            local ti = nat_num(1, "tointeger");
+            if (ti == floor(ti)) { nat_retn(ti); } else { nat_retnil(); }
+        }
+        // ---- table ----
+        case N_TABLE_INSERT: {
+            local h4 = nat_table(1, "insert");
+            if (vm_raised == 0) {
+                if (nat_argc >= 3) { table_insert(h4, nat_num(2, "insert"), nat_v(3), nat_t(3)); }
+                else { table_append(h4, nat_v(2), nat_t(2)); }
+            }
+        }
+        case N_TABLE_REMOVE: {
+            local h5 = nat_table(1, "remove");
+            if (vm_raised == 0) {
+                local pos = nat_optnum(2, tb_an[h5], "remove");
+                table_remove(h5, pos);
+                nat_ret(hv_r, ht_r);
+            }
+        }
+        case N_TABLE_CONCAT: {
+            local h6 = nat_table(1, "concat");
+            local sep3 = "";
+            if (nat_argc >= 2) { sep3 = nat_str(2, "concat"); }
+            if (vm_raised == 0) {
+                local out6 = "";
+                local b6 = tb_ab[h6];
+                for i = 1 to tb_an[h6] {
+                    if (i > 1) { out6 = out6 .. sep3; }
+                    local et = HT[b6 + i];
+                    if (et == TNUM) { out6 = out6 .. fmt_number(HV[b6 + i]); }
+                    else if (et == TSTR) { out6 = out6 .. HV[b6 + i]; }
+                    else { vm_raise("invalid value (at index " .. i .. ") in table for 'concat'"); }
+                }
+                nat_rets(out6);
+            }
+        }
+        case N_TABLE_SORT: {
+            local h7 = nat_table(1, "sort");
+            if (vm_raised == 0) { table_sort(h7); }
+        }
+        case N_TABLE_KEYS: {
+            local h8 = nat_table(1, "keys");
+            if (vm_raised == 0) {
+                local r8 = table_new(p_pid[vm_slot]);
+                for i = 1 to tb_an[h8] {
+                    if (HT[tb_ab[h8] + i] != TNIL) { table_append(r8, i, TNUM); }
+                }
+                for i = 1 to tb_hn[h8] {
+                    local kp = tb_hb[h8] + i * 2 - 1;
+                    table_append(r8, HV[kp], HT[kp]);
+                }
+                nat_rett(r8);
+            }
+        }
+        case N_TABLE_COUNT: {
+            local h9 = nat_table(1, "count");
+            if (vm_raised == 0) {
+                local c9 = tb_hn[h9];
+                for i = 1 to tb_an[h9] { if (HT[tb_ab[h9] + i] != TNIL) { c9 += 1; } }
+                nat_retn(c9);
+            }
+        }
+        case N_TABLE_COPY: {
+            local h10 = nat_table(1, "copy");
+            if (vm_raised == 0) {
+                local r10 = table_new(p_pid[vm_slot]);
+                for i = 1 to tb_an[h10] { table_append(r10, HV[tb_ab[h10] + i], HT[tb_ab[h10] + i]); }
+                for i = 1 to tb_hn[h10] {
+                    local kp2 = tb_hb[h10] + i * 2 - 1;
+                    table_set(r10, HV[kp2], HT[kp2], HV[kp2 + 1], HT[kp2 + 1]);
+                }
+                nat_rett(r10);
+            }
+        }
+        case N_TABLE_FIND: {
+            local h11 = nat_table(1, "find");
+            if (vm_raised == 0) {
+                local found = 0;
+                for i = 1 to tb_an[h11] {
+                    if (found == 0 && vm_equal(HV[tb_ab[h11] + i], HT[tb_ab[h11] + i], nat_v(2), nat_t(2)) == 1) { found = i; }
+                }
+                if (found > 0) { nat_retn(found); } else { nat_retnil(); }
+            }
+        }
+        case N_TABLE_REVERSE: {
+            local h12 = nat_table(1, "reverse");
+            if (vm_raised == 0) {
+                local b12 = tb_ab[h12];
+                local lo = 1;
+                local hi = tb_an[h12];
+                while (lo < hi) {
+                    local tv = HV[b12 + lo]; local tt = HT[b12 + lo];
+                    HV[b12 + lo] = HV[b12 + hi]; HT[b12 + lo] = HT[b12 + hi];
+                    HV[b12 + hi] = tv; HT[b12 + hi] = tt;
+                    lo += 1; hi -= 1;
+                }
+            }
+        }
+        // ---- io ----
+        case N_IO_READ: {
+            local r = fd_readline(p_in_k[vm_slot], p_in_i[vm_slot], vm_slot);
+            if (r == 0) { nat_block(BLK_IO); }
+            else if (r == 1) { nat_rets(fd_got); }
+            else { nat_retnil(); }
+        }
+        case N_IO_READALL, N_IO_LINES: {
+            // read until EOF; lines() returns a table of lines
+            nat_readall(id);
+        }
+        // ---- os ----
+        case N_OS_TIME: { nat_retn(floor(days2000() * 86400 + 946684800)); }
+        case N_OS_CLOCK: { nat_retn(now_secs() - p_start[vm_slot]); }
+        case N_OS_MILLIS: { nat_retn(floor(days2000() * 86400000)); }
+        case N_OS_DATE, N_SYS_DATE: { nat_rets(date_string()); }
+        case N_OS_GETENV: {
+            local k = nat_str(1, "getenv");
+            local ei = index(env_k, k);
+            if (ei > 0) { nat_rets(env_v[ei]); } else { nat_retnil(); }
+        }
+        case N_OS_SETENV: { env_set(nat_str(1, "setenv"), vm_tostr(nat_v(2), nat_t(2))); }
+        case N_OS_PID, N_PROC_PID: { nat_retn(p_pid[vm_slot]); }
+        case N_OS_ARGS: {
+            table_get(p_glob[vm_slot], 1, TNUM);
+            nat_ret(hv_r, ht_r);
+        }
+        case N_OS_UPTIME, N_SYS_UPTIME: { nat_retn(now_secs() - uptime0); }
+        default: { vm_raise("native " .. id .. " not implemented"); }
+    }
+}
+
+proc nat_sleep(secs) {
+    // first call: set the wake time; when woken, the instruction is retried
+    // and finds the wake time in the past
+    if (p_wake[vm_slot] > 0 && now_secs() >= p_wake[vm_slot]) {
+        p_wake[vm_slot] = 0;
+        return;
+    }
+    if (p_wake[vm_slot] == 0) {
+        if (secs <= 0) { return; }
+        p_wake[vm_slot] = now_secs() + secs;
+    }
+    nat_block(BLK_SLEEP);
+}
+
+// read lines until EOF; accumulate in a hidden per-process table between retries
+list rd_pid;
+list rd_tab;
+proc nat_readall(id) {
+    local pid = p_pid[vm_slot];
+    local ri = index(rd_pid, pid);
+    local h = 0;
+    if (ri == 0) {
+        h = table_new(pid);
+        add(rd_pid, pid);
+        add(rd_tab, h);
+        ri = len(rd_pid);
+    } else {
+        h = rd_tab[ri];
+    }
+    tb_pin[h] = 1;
+    forever {
+        local r = fd_readline(p_in_k[vm_slot], p_in_i[vm_slot], vm_slot);
+        if (r == 0) { nat_block(BLK_IO); return; }
+        if (r == -1) { break; }
+        table_append(h, fd_got, TSTR);
+    }
+    del(rd_pid, ri);
+    del(rd_tab, ri);
+    tb_pin[h] = 0;
+    if (id == N_IO_LINES) {
+        nat_rett(h);
+        return;
+    }
+    local out = "";
+    for i = 1 to tb_an[h] {
+        out = out .. HV[tb_ab[h] + i] .. "\n";
+    }
+    nat_rets(out);
+}
+
+// split s by separator into table h (empty separator: characters)
+proc str_split_into(h, s, sep) {
+    local n = len(s);
+    if (len(sep) == 0) {
+        for i = 1 to n { table_append(h, s[i], TSTR); }
+        return;
+    }
+    local p = 1;
+    local m = len(sep);
+    if (sep == " ") {
+        // whitespace split: skip runs of blanks
+        local cur = "";
+        local inw = 0;
+        for i = 1 to n {
+            local c = s[i];
+            if (contains(" \t\n\r", c) && len(c) == 1 && (c == " " || c == "\t" || c == "\n" || c == "\r")) {
+                if (inw == 1) { table_append(h, cur, TSTR); cur = ""; inw = 0; }
+            } else {
+                cur = cur .. c;
+                inw = 1;
+            }
+        }
+        if (inw == 1) { table_append(h, cur, TSTR); }
+        return;
+    }
+    forever {
+        local f = str_find(s, sep, p);
+        if (f == 0) { break; }
+        table_append(h, substr(s, p, f - 1), TSTR);
+        p = f + m;
+    }
+    table_append(h, substr(s, p, n), TSTR);
+}
+
+proc date_string() {
+    return now("year") .. "-" .. pad_left_char(now("month"), 2, "0") .. "-" .. pad_left_char(now("date"), 2, "0")
+        .. " " .. pad_left_char(now("hour"), 2, "0") .. ":" .. pad_left_char(now("minute"), 2, "0") .. ":"
+        .. pad_left_char(now("second"), 2, "0");
+}
+
+// string.format with %d %i %s %f %x %X %c %q %% (flags - 0, width, precision)
+proc str_format() {
+    local fmt = nat_str(1, "format");
+    local out = "";
+    local argi = 2;
+    local i = 1;
+    local n = len(fmt);
+    while (i <= n) {
+        local c = fmt[i];
+        if (c != "%") {
+            out = out .. c;
+            i += 1;
+        } else {
+            i += 1;
+            local left = 0;
+            local zero = 0;
+            while (i <= n && (fmt[i] == "-" || fmt[i] == "0" && len(fmt[i]) == 1)) {
+                if (fmt[i] == "-") { left = 1; } else { zero = 1; }
+                i += 1;
+            }
+            local width = "";
+            while (i <= n && char_class[ord(fmt[i]) + 1] == 2) { width = width .. fmt[i]; i += 1; }
+            local prec = -1;
+            if (i <= n && fmt[i] == ".") {
+                i += 1;
+                local ps = "";
+                while (i <= n && char_class[ord(fmt[i]) + 1] == 2) { ps = ps .. fmt[i]; i += 1; }
+                prec = ps * 1;
+            }
+            local conv = fmt[i];
+            i += 1;
+            local piece = "";
+            if (conv == "%") {
+                piece = "%";
+            } else {
+                local v = nat_v(argi);
+                local vt = nat_t(argi);
+                argi += 1;
+                if (conv == "d" || conv == "i") {
+                    vm_ok = 1;
+                    local nv = vm_tonum(v, vt);
+                    if (vm_ok == 0) { vm_raise("bad argument #" .. (argi - 1) .. " to 'format' (number expected)"); return ""; }
+                    if (nv < 0) { piece = "-" .. floor(0 - nv); } else { piece = "" .. floor(nv); }
+                } else if (conv == "f") {
+                    vm_ok = 1;
+                    local fv = vm_tonum(v, vt);
+                    if (vm_ok == 0) { vm_raise("bad argument #" .. (argi - 1) .. " to 'format' (number expected)"); return ""; }
+                    if (prec < 0) { prec = 6; }
+                    piece = fmt_fixed(fv, prec);
+                } else if (conv == "x" || conv == "X") {
+                    local hv = floor(vm_tonum(v, vt));
+                    local hs = "";
+                    if (hv == 0) { hs = "0"; }
+                    while (hv > 0) {
+                        hs = letter("0123456789abcdef", hv % 16 + 1) .. hs;
+                        hv = floor(hv / 16);
+                    }
+                    if (streq(conv, "X") == 1) { hs = str_upper(hs); }
+                    piece = hs;
+                } else if (conv == "c") {
+                    piece = chr(vm_tonum(v, vt));
+                } else if (conv == "q") {
+                    piece = "\"" .. vm_tostr(v, vt) .. "\"";
+                } else {
+                    piece = vm_tostr(v, vt);
+                    if (prec >= 0) { piece = substr(piece, 1, prec); }
+                }
+            }
+            if (len(width) > 0) {
+                while (len(piece) < width) {
+                    if (left == 1) { piece = piece .. " "; }
+                    else if (zero == 1) {
+                        if (piece[1] == "-") { piece = "-0" .. substr(piece, 2, len(piece)); } else { piece = "0" .. piece; }
+                    }
+                    else { piece = " " .. piece; }
+                }
+            }
+            out = out .. piece;
+        }
+    }
+    return out;
+}
+
+proc fmt_fixed(v, prec) {
+    local neg = 0;
+    local x = v;
+    if (x < 0) { neg = 1; x = 0 - x; }
+    local scale = pow10(prec);
+    local r = round(x * scale);
+    local ip = floor(r / scale);
+    local fp = r - ip * scale;
+    local out = "" .. ip;
+    if (prec > 0) {
+        local fs = "" .. fp;
+        while (len(fs) < prec) { fs = "0" .. fs; }
+        out = out .. "." .. fs;
+    }
+    if (neg == 1 && r != 0) { out = "-" .. out; }
+    return out;
+}
+
+// --- sorting ----------------------------------------------------------------------
+
+list srt_v;
+list srt_t;
+list mrg_v;
+list mrg_t;
+var srt_cmp = 0;      // 0 = default ordering, else comparator stack position
+
+// a < b ?
+proc sort_less(av, at, bv, bt) {
+    if (srt_cmp > 0) {
+        // call comparator(a, b) synchronously
+        local base = vm_sp;
+        STK[base + 1] = STK[srt_cmp]; STT[base + 1] = STT[srt_cmp];
+        STK[base + 2] = av; STT[base + 2] = at;
+        STK[base + 3] = bv; STT[base + 3] = bt;
+        vm_sp = base + 3;
+        vm_call_sync(base + 1, 2);
+        local r = vm_truthy(STK[base + 1], STT[base + 1]);
+        vm_sp = base;
+        return r;
+    }
+    if (at == TNUM && bt == TNUM) { return av < bv; }
+    if (at == TSTR && bt == TSTR) { return str_cmp(av, bv) < 0; }
+    vm_raise("attempt to compare " .. vm_typename(at) .. " with " .. vm_typename(bt));
+    return 0;
+}
+
+proc table_sort(h) {
+    srt_cmp = 0;
+    if (nat_argc >= 2 && nat_t(2) != TNIL) { srt_cmp = nat_a0 + 1; }
+    clear(srt_v); clear(srt_t);
+    local b = tb_ab[h];
+    local n = tb_an[h];
+    for i = 1 to n { add(srt_v, HV[b + i]); add(srt_t, HT[b + i]); }
+    // bottom-up merge sort
+    local width = 1;
+    while (width < n && vm_running == 1 && vm_raised == 0) {
+        clear(mrg_v); clear(mrg_t);
+        local lo = 1;
+        while (lo <= n) {
+            local mid = lo + width;
+            local hi = lo + width * 2;
+            if (mid > n + 1) { mid = n + 1; }
+            if (hi > n + 1) { hi = n + 1; }
+            local i = lo;
+            local j = mid;
+            while (i < mid || j < hi) {
+                if (j >= hi || (i < mid && sort_less(srt_v[j], srt_t[j], srt_v[i], srt_t[i]) == 0)) {
+                    add(mrg_v, srt_v[i]); add(mrg_t, srt_t[i]);
+                    i += 1;
+                } else {
+                    add(mrg_v, srt_v[j]); add(mrg_t, srt_t[j]);
+                    j += 1;
+                }
+                if (vm_raised == 1 || vm_running == 0) { return; }
+            }
+            lo = hi;
+        }
+        clear(srt_v); clear(srt_t);
+        for k = 1 to len(mrg_v) { add(srt_v, mrg_v[k]); add(srt_t, mrg_t[k]); }
+        width = width * 2;
+    }
+    if (vm_raised == 1 || vm_running == 0) { return; }
+    b = tb_ab[h];
+    for i = 1 to n { HV[b + i] = srt_v[i]; HT[b + i] = srt_t[i]; }
+}

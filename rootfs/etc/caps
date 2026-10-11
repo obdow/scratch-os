@@ -1,0 +1,8 @@
+# /etc/caps - capabilities granted to programs without asking
+#
+#   <program path or prefix*>  <capability> ...
+#
+# capabilities: files (modify system files), proc (control other processes),
+#               gui (open windows), system (shutdown/reboot)
+# Programs not listed here are asked at run time: (y)es (n)o (a)lways.
+/bin/*  files proc gui system

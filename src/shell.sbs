@@ -465,11 +465,17 @@ proc sh_resolve(s, name) {
             dir = dir .. c;
         }
     }
+    // convenience: Whisker programs in the current directory run without ./
+    if (len(name) > 4 && substr(name, len(name) - 3, len(name)) == ".wsk") {
+        local here = fs_child(p_cwd[s], name);
+        if (here > 0 && fs_type[here] == FT_FILE) { return here; }
+    }
     return 0;
 }
 
 // start an external command; returns pid or 0
-proc sh_exec(s, name, in_k, in_i, out_k, out_i, err_k, err_i, pgid) {
+proc sh_exec(s, cmdname, in_k, in_i, out_k, out_i, err_k, err_i, pgid) {
+    local name = cmdname;
     local ino = 0;
     local is_script = 0;
     if (name == "sh") {
@@ -478,6 +484,13 @@ proc sh_exec(s, name, in_k, in_i, out_k, out_i, err_k, err_i, pgid) {
         if (ino == 0 || fs_type[ino] == FT_DIR) { sh_errmsg(s, "sh: " .. sh_argv[2] .. ": " .. fs_err); return 0; }
         is_script = 1;
     } else {
+        if (name == "run") {
+            // run FILE args...: execute a program file by path
+            if (len(sh_argv) < 2) { sh_errmsg(s, "usage: run program.wsk [args]"); return 0; }
+            del(sh_argv, 1);
+            name = sh_argv[1];
+            if (!(contains(name, "/"))) { name = "./" .. name; }
+        }
         ino = sh_resolve(s, name);
         if (ino == 0) {
             sh_errmsg(s, name .. ": command not found");

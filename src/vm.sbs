@@ -1,0 +1,983 @@
+// ===========================================================================
+// vm.sbs - the Whisker bytecode virtual machine (included in sprite Kernel)
+//
+// Memory:
+//   CODE        compiled code segments (one per program, cached by inode+mtime)
+//   STK / STT   value stacks (value / tag); each process owns STACK_SIZE cells
+//   CSK         call stacks; frames of 5 cells [ret pc, old fp, dest, W, flags]
+//
+// A frame's locals live at STK[fp + slot].  CALL n W calls the function
+// below n arguments and leaves W results where the function value was.
+// Main-chunk locals are reachable from functions with GETM/SETM.
+// pcall frames carry flags = 1 so errors unwind to them.
+// ===========================================================================
+
+const STACK_SIZE = 3000;
+const CS_SIZE = 1000;
+const CODE_LIMIT = 150000;
+
+list CODE;
+list STK;
+list STT;
+list CSK;
+
+list seg_key;        // "<inode>:<mtime>"
+list seg_start;      // first CODE index
+list seg_len;
+list seg_refs;       // running processes using it
+list seg_nglob;
+list seg_caps;       // capabilities declared with --@caps
+list seg_path;
+
+list nr_v;           // native results
+list nr_t;
+
+// registers of the running process
+var vm_slot = 0;
+var vm_pc = 0;
+var vm_sp = 0;
+var vm_fp = 0;
+var vm_csp = 0;
+var vm_csbase = 0;
+var vm_cbase = 0;
+var vm_sbase = 0;
+var vm_glob = 0;
+var vm_line = 0;
+var vm_running = 0;
+var vm_exited = 0;
+var vm_blocked = 0;
+var vm_total = 0;    // instructions executed since boot
+
+proc vm_init() {
+    clear(CODE);
+    clear(seg_key); clear(seg_start); clear(seg_len); clear(seg_refs); clear(seg_nglob);
+    clear(seg_caps); clear(seg_path);
+    clear(STK); clear(STT); clear(CSK);
+    repeat (MAX_PROC * STACK_SIZE) { add(STK, ""); add(STT, 0); }
+    repeat (MAX_PROC * CS_SIZE) { add(CSK, 0); }
+    heap_init();
+    clear(p_capq);
+    repeat (MAX_PROC) { add(p_capq, ""); }
+    vm_slot = 0;
+    vm_total = 0;
+}
+
+// --- code segments --------------------------------------------------------------
+
+// find room for n code cells; returns segment index
+proc seg_alloc(n) {
+    // reuse a free segment that is large enough
+    for i = 1 to len(seg_key) {
+        if (seg_refs[i] <= 0 && seg_len[i] >= n && seg_key[i] == "\x01free") {
+            return i;
+        }
+    }
+    if (len(CODE) + n > CODE_LIMIT) {
+        // evict every unused cached program
+        for i = 1 to len(seg_key) {
+            if (seg_refs[i] <= 0) { seg_key[i] = "\x01free"; }
+        }
+        for i = 1 to len(seg_key) {
+            if (seg_len[i] >= n && seg_key[i] == "\x01free") { return i; }
+        }
+        if (len(CODE) + n > CODE_LIMIT) { return 0; }
+    }
+    local start = len(CODE) + 1;
+    repeat (n) { add(CODE, 0); }
+    add(seg_key, "\x01free");
+    add(seg_start, start);
+    add(seg_len, n);
+    add(seg_refs, 0);
+    add(seg_nglob, 0);
+    add(seg_caps, "");
+    add(seg_path, "");
+    return len(seg_key);
+}
+
+var vm_err = "";
+
+// compile (or fetch from cache) the program in inode; returns segment or 0
+proc vm_load(ino) {
+    local key = ino .. ":" .. fs_mtime[ino];
+    local i = index(seg_key, key);
+    if (i > 0) { return i; }
+    if (wcompile(fs_data[ino]) == 0) {
+        vm_err = c_errmsg;
+        return 0;
+    }
+    local sg = seg_alloc(len(cb));
+    if (sg == 0) { vm_err = "out of code memory"; return 0; }
+    local b = seg_start[sg] - 1;
+    for k = 1 to len(cb) {
+        CODE[b + k] = cb[k];
+    }
+    seg_key[sg] = key;
+    seg_nglob[sg] = len(gl_names);
+    seg_caps[sg] = c_caps;
+    seg_path[sg] = fs_path(ino);
+    return sg;
+}
+
+// create a process running program `ino`; argv taken from sh_argv
+proc vm_spawn(parent, ino) {
+    local sg = vm_load(ino);
+    if (sg == 0) {
+        sh_errmsg(parent, fs_path(ino) .. ": " .. vm_err);
+        return 0;
+    }
+    local s = proc_alloc(fs_name[ino], PK_VM, parent);
+    if (s == 0) {
+        sh_errmsg(parent, "cannot fork: process table full");
+        return 0;
+    }
+    p_seg[s] = sg;
+    seg_refs[sg] = seg_refs[sg] + 1;
+    p_path[s] = fs_path(ino);
+    p_cbase[s] = seg_start[sg] - 1;
+    p_sbase[s] = (s - 1) * STACK_SIZE;
+    p_csp[s] = (s - 1) * CS_SIZE;
+    p_line[s] = 0;
+    // main frame
+    local cbase = p_cbase[s];
+    local nl = CODE[cbase + 2];
+    local sp = p_sbase[s];
+    p_fp[s] = sp + 1;
+    for k = 1 to nl {
+        STK[sp + k] = "";
+        STT[sp + k] = TNIL;
+    }
+    p_sp[s] = sp + nl;
+    p_pc[s] = cbase + 3;
+    // globals table, slot 1 = arg
+    local g = table_new(p_pid[s]);
+    local ng = seg_nglob[sg];
+    table_grow_arr(g, ng);
+    local ab = tb_ab[g];
+    for k = 1 to ng {
+        HV[ab + k] = "";
+        HT[ab + k] = TNIL;
+    }
+    tb_an[g] = ng;
+    p_glob[s] = g;
+    local at = table_new(p_pid[s]);
+    table_set(at, 0, TNUM, p_path[s], TSTR);
+    for k = 2 to len(sh_argv) {
+        table_append(at, sh_argv[k], TSTR);
+    }
+    HV[ab + 1] = at;
+    HT[ab + 1] = TTAB;
+    // capabilities: policy grants + declared requests
+    p_caps[s] = caps_for_path(p_path[s]);
+    p_capq[s] = seg_caps[sg];
+    return s;
+}
+
+list p_capq;     // declared capabilities still to be requested (per slot)
+
+proc vm_release(s) {
+    local sg = p_seg[s];
+    if (sg > 0) { seg_refs[sg] = seg_refs[sg] - 1; }
+    p_seg[s] = 0;
+    table_free_owner(p_pid[s]);
+    p_glob[s] = 0;
+}
+
+// --- helpers --------------------------------------------------------------------
+
+proc vm_typename(t) {
+    if (t == TNIL) { return "nil"; }
+    if (t == TNUM) { return "number"; }
+    if (t == TSTR) { return "string"; }
+    if (t == TBOOL) { return "boolean"; }
+    if (t == TTAB) { return "table"; }
+    return "function";
+}
+
+proc fmt_number(v) {
+    if (v == floor(v) && v < 1e15 && v > -1e15) { return floor(v) .. ""; }
+    if (v != v) { return "nan"; }
+    if (v > 1e308) { return "inf"; }
+    if (v < -1e308) { return "-inf"; }
+    // 14 significant digits like Lua's %.14g
+    local a = abs(v);
+    local e = floor(log10(a));
+    local scale = pow10(13 - e);
+    local r = round(v * scale) / scale;
+    return r .. "";
+}
+
+proc vm_tostr(v, t) {
+    if (t == TSTR) { return v; }
+    if (t == TNUM) { return fmt_number(v); }
+    if (t == TNIL) { return "nil"; }
+    if (t == TBOOL) {
+        if (v == 1) { return "true"; }
+        return "false";
+    }
+    if (t == TTAB) { return "table: 0x" .. pad_left_char(v, 6, "0"); }
+    if (t == TFUN) { return "function: 0x" .. pad_left_char(v, 6, "0"); }
+    return "builtin: " .. nat_names[v];
+}
+
+proc pad_left_char(s, w, ch) {
+    local out = "" .. s;
+    while (len(out) < w) { out = ch .. out; }
+    return out;
+}
+
+proc vm_truthy(v, t) {
+    if (t == TNIL) { return 0; }
+    if (t == TBOOL && v == 0) { return 0; }
+    return 1;
+}
+
+// case-sensitive lexicographic comparison by CP437 codes: -1, 0, 1
+proc str_cmp(a, b) {
+    local na = len(a);
+    local nb = len(b);
+    local n = na;
+    if (nb < n) { n = nb; }
+    for i = 1 to n {
+        local ca = ord(a[i]);
+        local cb2 = ord(b[i]);
+        if (ca < cb2) { return -1; }
+        if (ca > cb2) { return 1; }
+    }
+    if (na < nb) { return -1; }
+    if (na > nb) { return 1; }
+    return 0;
+}
+
+proc vm_equal(a, at, b, bt) {
+    if (at != bt) { return 0; }
+    if (at == TSTR) { return streq(a, b); }
+    if (at == TNIL) { return 1; }
+    if (a == b) { return 1; }
+    return 0;
+}
+
+// convert to number for arithmetic; sets vm_ok = 0 on failure
+var vm_ok = 1;
+proc vm_tonum(v, t) {
+    if (t == TNUM) { return v; }
+    if (t == TSTR) {
+        local s = str_trim(v);
+        if (len(s) > 0 && is_number(s) == 1) { return s * 1; }
+    }
+    vm_ok = 0;
+    return 0;
+}
+
+proc vm_pow(a, b) {
+    if (b == floor(b) && abs(b) <= 64) {
+        local r = 1;
+        local base = a;
+        local e = abs(b);
+        while (e > 0) {
+            if (e % 2 == 1) { r = r * base; }
+            base = base * base;
+            e = floor(e / 2);
+        }
+        if (b < 0) { return 1 / r; }
+        return r;
+    }
+    if (a > 0) { return exp(b * ln(a)); }
+    if (a == 0) { return 0; }
+    return 0 / 0;
+}
+
+// --- errors -------------------------------------------------------------------
+
+// raise a runtime error in the running process (unwinds to pcall)
+var vm_raised = 0;
+proc vm_raise(msg) {
+    vm_raised = 1;
+    local full = msg;
+    if (vm_line > 0) { full = p_name[vm_slot] .. ":" .. vm_line .. ": " .. msg; }
+    local c = vm_csp;
+    while (c > vm_csbase) {
+        if (CSK[c] == 1) {
+            // protected frame found
+            local retpc = CSK[c - 4];
+            local oldfp = CSK[c - 3];
+            local dest = CSK[c - 2];
+            local w = CSK[c - 1];
+            vm_csp = c - 5;
+            vm_fp = oldfp;
+            vm_pc = retpc;
+            clear(nr_v); clear(nr_t);
+            add(nr_v, 0); add(nr_t, TBOOL);
+            add(nr_v, full); add(nr_t, TSTR);
+            vm_place_results(dest, w);
+            return;
+        }
+        c -= 5;
+    }
+    fd_write(p_err_k[vm_slot], p_err_i[vm_slot], "\e[91m" .. full .. "\e[0m\n");
+    vm_running = 0;
+    vm_exited = 1;
+    proc_exit(vm_slot, 1);
+}
+
+// copy nr_v/nr_t into the stack at dest, adjusted to w values
+proc vm_place_results(dest, w) {
+    local cnt = len(nr_v);
+    for i = 1 to w {
+        if (i <= cnt) {
+            STK[dest + i - 1] = nr_v[i];
+            STT[dest + i - 1] = nr_t[i];
+        } else {
+            STK[dest + i - 1] = "";
+            STT[dest + i - 1] = TNIL;
+        }
+    }
+    vm_sp = dest + w - 1;
+}
+
+// --- calls --------------------------------------------------------------------
+
+// call function value at fnpos with n args; results to fnpos (w of them)
+// retpc: where to continue after return; flags: 1 = pcall frame
+proc vm_call(fnpos, n, w, retpc, flags, dest) {
+    local ft = STT[fnpos];
+    local fv = STK[fnpos];
+    if (ft == TFUN) {
+        if (vm_csp + 5 > vm_csbase + CS_SIZE || vm_sp > vm_sbase + STACK_SIZE - 200) {
+            vm_raise("stack overflow");
+            return;
+        }
+        local np = CODE[fv];
+        local nl = CODE[fv + 1];
+        local argc = n;
+        while (argc < np) {
+            vm_sp += 1;
+            STK[vm_sp] = "";
+            STT[vm_sp] = TNIL;
+            argc += 1;
+        }
+        if (argc > np) { vm_sp = vm_sp - (argc - np); }
+        CSK[vm_csp + 1] = retpc;
+        CSK[vm_csp + 2] = vm_fp;
+        CSK[vm_csp + 3] = dest;
+        CSK[vm_csp + 4] = w;
+        CSK[vm_csp + 5] = flags;
+        vm_csp += 5;
+        vm_fp = fnpos + 1;
+        local extra = nl - np;
+        repeat (extra) {
+            vm_sp += 1;
+            STK[vm_sp] = "";
+            STT[vm_sp] = TNIL;
+        }
+        vm_pc = fv + 2;
+        return;
+    }
+    if (ft == TNAT) {
+        native_call(fv, fnpos + 1, n, w, dest, retpc);
+        return;
+    }
+    vm_raise("attempt to call a " .. vm_typename(ft) .. " value");
+}
+
+// return n values from the top of the stack
+proc vm_return(n) {
+    if (vm_csp <= vm_csbase) {
+        // returning from the main chunk ends the program
+        local code = 0;
+        if (n > 0 && STT[vm_sp - n + 1] == TNUM) { code = STK[vm_sp - n + 1]; }
+        vm_running = 0;
+        vm_exited = 1;
+        proc_exit(vm_slot, code);
+        return;
+    }
+    local c = vm_csp;
+    local retpc = CSK[c - 4];
+    local oldfp = CSK[c - 3];
+    local dest = CSK[c - 2];
+    local w = CSK[c - 1];
+    local flags = CSK[c];
+    vm_csp = c - 5;
+    local src = vm_sp - n + 1;
+    clear(nr_v);
+    clear(nr_t);
+    if (flags == 1) { add(nr_v, 1); add(nr_t, TBOOL); }
+    for i = 0 to n - 1 {
+        add(nr_v, STK[src + i]);
+        add(nr_t, STT[src + i]);
+    }
+    vm_place_results(dest, w);
+    vm_fp = oldfp;
+    vm_pc = retpc;
+}
+
+// --- index helpers --------------------------------------------------------------
+
+// push t[k] (t at stack position tpos replaced by the result)
+proc vm_index(tpos, k, kt) {
+    local tt = STT[tpos];
+    if (tt == TTAB) {
+        table_get(STK[tpos], k, kt);
+        STK[tpos] = hv_r;
+        STT[tpos] = ht_r;
+        return;
+    }
+    if (tt == TSTR) {
+        // string methods: s:upper() etc.
+        local ni = index(nat_names, "string." .. k);
+        if (ni > 0 && kt == TSTR) {
+            STK[tpos] = ni;
+            STT[tpos] = TNAT;
+        } else {
+            STK[tpos] = "";
+            STT[tpos] = TNIL;
+        }
+        return;
+    }
+    vm_raise("attempt to index a " .. vm_typename(tt) .. " value");
+}
+
+proc vm_setindex(t, tt, k, kt, v, vt) {
+    if (tt != TTAB) {
+        vm_raise("attempt to index a " .. vm_typename(tt) .. " value");
+        return;
+    }
+    if (kt == TNIL) { vm_raise("table index is nil"); return; }
+    table_set(t, k, kt, v, vt);
+}
+
+// --- arithmetic slow path (non-number operands) ------------------------------------
+
+proc vm_arith(op) {
+    local a = STK[vm_sp - 1];
+    local at = STT[vm_sp - 1];
+    local b = STK[vm_sp];
+    local bt = STT[vm_sp];
+    vm_ok = 1;
+    local x = vm_tonum(a, at);
+    local y = vm_tonum(b, bt);
+    if (vm_ok == 0) {
+        local bad = at;
+        if (vm_tonum(a, at) == 0 && vm_ok == 0 && at != TNUM) { bad = at; } else { bad = bt; }
+        vm_raise("attempt to perform arithmetic on a " .. vm_typename(bad) .. " value");
+        return;
+    }
+    vm_sp -= 1;
+    local r = 0;
+    if (op == OP_ADD) { r = x + y; }
+    else if (op == OP_SUB) { r = x - y; }
+    else if (op == OP_MUL) { r = x * y; }
+    else if (op == OP_DIV) { r = x / y; }
+    else if (op == OP_MOD) { r = x % y; }
+    else if (op == OP_IDIV) { r = floor(x / y); }
+    else if (op == OP_POW) { r = vm_pow(x, y); }
+    STK[vm_sp] = r;
+    STT[vm_sp] = TNUM;
+}
+
+proc vm_compare(op) {
+    local a = STK[vm_sp - 1];
+    local at = STT[vm_sp - 1];
+    local b = STK[vm_sp];
+    local bt = STT[vm_sp];
+    local c = 0;
+    if (at == TNUM && bt == TNUM) {
+        if (a < b) { c = -1; } else if (a > b) { c = 1; }
+    } else if (at == TSTR && bt == TSTR) {
+        c = str_cmp(a, b);
+    } else {
+        vm_raise("attempt to compare " .. vm_typename(at) .. " with " .. vm_typename(bt));
+        return;
+    }
+    local r = 0;
+    if (op == OP_LT) { r = c < 0; }
+    else if (op == OP_LE) { r = c <= 0; }
+    else if (op == OP_GT) { r = c > 0; }
+    else { r = c >= 0; }
+    vm_sp -= 1;
+    if (r == 1) { STK[vm_sp] = 1; } else { STK[vm_sp] = 0; }
+    STT[vm_sp] = TBOOL;
+}
+
+proc vm_concat() {
+    local a = STK[vm_sp - 1];
+    local at = STT[vm_sp - 1];
+    local b = STK[vm_sp];
+    local bt = STT[vm_sp];
+    if ((at != TSTR && at != TNUM) || (bt != TSTR && bt != TNUM)) {
+        local bad = at;
+        if (at == TSTR || at == TNUM) { bad = bt; }
+        vm_raise("attempt to concatenate a " .. vm_typename(bad) .. " value");
+        return;
+    }
+    vm_sp -= 1;
+    local sa = a;
+    local sb = b;
+    if (at == TNUM) { sa = fmt_number(a); }
+    if (bt == TNUM) { sb = fmt_number(b); }
+    STK[vm_sp] = sa .. sb;
+    STT[vm_sp] = TSTR;
+}
+
+// --- the interpreter loop -----------------------------------------------------------
+
+proc vm_run(s, quantum) {
+    // pending capability requests declared by the program
+    if (len(p_capq[s]) > 0) {
+        if (caps_preflight(s) == 0) { return; }
+    }
+    vm_slot = s;
+    vm_pc = p_pc[s];
+    vm_sp = p_sp[s];
+    vm_fp = p_fp[s];
+    vm_csp = p_csp[s];
+    vm_csbase = (s - 1) * CS_SIZE;
+    vm_cbase = p_cbase[s];
+    vm_sbase = p_sbase[s];
+    vm_glob = p_glob[s];
+    vm_line = p_line[s];
+    if (len(HV) > HEAP_GC_AT) {
+        p_sp[s] = vm_sp;
+        gc_collect();
+    }
+    vm_running = 1;
+    vm_exited = 0;
+    vm_blocked = 0;
+    vm_sync = 0;
+    local done = vm_exec(quantum, -1);
+    vm_total += done;
+    if (vm_exited == 0) {
+        p_cpu[s] = p_cpu[s] + done;
+        p_pc[s] = vm_pc;
+        p_sp[s] = vm_sp;
+        p_fp[s] = vm_fp;
+        p_csp[s] = vm_csp;
+        p_line[s] = vm_line;
+    }
+    vm_slot = 0;
+}
+
+var vm_sync = 0;     // > 0 while running a callback synchronously
+
+// call the function at fnpos with n args and run it to completion;
+// the result is left at STK[fnpos]
+proc vm_call_sync(fnpos, n) {
+    local save_pc = vm_pc;
+    local level = vm_csp;
+    if (STT[fnpos] != TFUN) {
+        vm_raise("callback must be a Whisker function");
+        return;
+    }
+    vm_call(fnpos, n, 1, vm_pc, 0, fnpos);
+    vm_sync += 1;
+    vm_exec(5000000, level);
+    vm_sync -= 1;
+    if (vm_running == 1) { vm_pc = save_pc; }
+}
+
+// execute up to `quantum` instructions; stop early when the call stack
+// drops to `stop_level` (synchronous callbacks).  Returns instructions run.
+proc vm_exec(quantum, stop_level) recursive {
+    local left = quantum;
+    while (vm_running == 1 && left > 0 && vm_csp > stop_level) {
+        left -= 1;
+        local op = CODE[vm_pc];
+        switch (op) {
+            case OP_GETL: {
+                vm_sp += 1;
+                local i = vm_fp + CODE[vm_pc + 1];
+                STK[vm_sp] = STK[i];
+                STT[vm_sp] = STT[i];
+                vm_pc += 2;
+            }
+            case OP_SETL: {
+                local i2 = vm_fp + CODE[vm_pc + 1];
+                STK[i2] = STK[vm_sp];
+                STT[i2] = STT[vm_sp];
+                vm_sp -= 1;
+                vm_pc += 2;
+            }
+            case OP_PUSHN: {
+                vm_sp += 1;
+                STK[vm_sp] = CODE[vm_pc + 1];
+                STT[vm_sp] = TNUM;
+                vm_pc += 2;
+            }
+            case OP_PUSHS: {
+                vm_sp += 1;
+                STK[vm_sp] = CODE[vm_pc + 1];
+                STT[vm_sp] = TSTR;
+                vm_pc += 2;
+            }
+            case OP_GETG: {
+                vm_sp += 1;
+                local gi = tb_ab[vm_glob] + CODE[vm_pc + 1];
+                STK[vm_sp] = HV[gi];
+                STT[vm_sp] = HT[gi];
+                vm_pc += 2;
+            }
+            case OP_SETG: {
+                local gi2 = tb_ab[vm_glob] + CODE[vm_pc + 1];
+                HV[gi2] = STK[vm_sp];
+                HT[gi2] = STT[vm_sp];
+                vm_sp -= 1;
+                vm_pc += 2;
+            }
+            case OP_GETM: {
+                vm_sp += 1;
+                local mi = vm_sbase + 1 + CODE[vm_pc + 1];
+                STK[vm_sp] = STK[mi];
+                STT[vm_sp] = STT[mi];
+                vm_pc += 2;
+            }
+            case OP_SETM: {
+                local mi2 = vm_sbase + 1 + CODE[vm_pc + 1];
+                STK[mi2] = STK[vm_sp];
+                STT[mi2] = STT[vm_sp];
+                vm_sp -= 1;
+                vm_pc += 2;
+            }
+            case OP_PUSHNIL: {
+                vm_sp += 1;
+                STK[vm_sp] = "";
+                STT[vm_sp] = TNIL;
+                vm_pc += 1;
+            }
+            case OP_PUSHTRUE: {
+                vm_sp += 1;
+                STK[vm_sp] = 1;
+                STT[vm_sp] = TBOOL;
+                vm_pc += 1;
+            }
+            case OP_PUSHFALSE: {
+                vm_sp += 1;
+                STK[vm_sp] = 0;
+                STT[vm_sp] = TBOOL;
+                vm_pc += 1;
+            }
+            case OP_POP: {
+                vm_sp -= 1;
+                vm_pc += 1;
+            }
+            case OP_DUP: {
+                vm_sp += 1;
+                STK[vm_sp] = STK[vm_sp - 1];
+                STT[vm_sp] = STT[vm_sp - 1];
+                vm_pc += 1;
+            }
+            case OP_ADD: {
+                if (STT[vm_sp] == TNUM && STT[vm_sp - 1] == TNUM) {
+                    vm_sp -= 1;
+                    STK[vm_sp] = STK[vm_sp] + STK[vm_sp + 1];
+                } else { vm_arith(OP_ADD); }
+                vm_pc += 1;
+            }
+            case OP_SUB: {
+                if (STT[vm_sp] == TNUM && STT[vm_sp - 1] == TNUM) {
+                    vm_sp -= 1;
+                    STK[vm_sp] = STK[vm_sp] - STK[vm_sp + 1];
+                } else { vm_arith(OP_SUB); }
+                vm_pc += 1;
+            }
+            case OP_MUL: {
+                if (STT[vm_sp] == TNUM && STT[vm_sp - 1] == TNUM) {
+                    vm_sp -= 1;
+                    STK[vm_sp] = STK[vm_sp] * STK[vm_sp + 1];
+                } else { vm_arith(OP_MUL); }
+                vm_pc += 1;
+            }
+            case OP_DIV: {
+                if (STT[vm_sp] == TNUM && STT[vm_sp - 1] == TNUM) {
+                    vm_sp -= 1;
+                    STK[vm_sp] = STK[vm_sp] / STK[vm_sp + 1];
+                } else { vm_arith(OP_DIV); }
+                vm_pc += 1;
+            }
+            case OP_MOD: {
+                if (STT[vm_sp] == TNUM && STT[vm_sp - 1] == TNUM) {
+                    vm_sp -= 1;
+                    STK[vm_sp] = STK[vm_sp] % STK[vm_sp + 1];
+                } else { vm_arith(OP_MOD); }
+                vm_pc += 1;
+            }
+            case OP_IDIV, OP_POW: {
+                vm_arith(op);
+                vm_pc += 1;
+            }
+            case OP_CONCAT: {
+                if (STT[vm_sp] == TSTR && STT[vm_sp - 1] == TSTR) {
+                    vm_sp -= 1;
+                    STK[vm_sp] = STK[vm_sp] .. STK[vm_sp + 1];
+                } else { vm_concat(); }
+                vm_pc += 1;
+            }
+            case OP_NEG: {
+                if (STT[vm_sp] == TNUM) {
+                    STK[vm_sp] = 0 - STK[vm_sp];
+                } else {
+                    vm_ok = 1;
+                    local nv = vm_tonum(STK[vm_sp], STT[vm_sp]);
+                    if (vm_ok == 0) { vm_raise("attempt to perform arithmetic on a " .. vm_typename(STT[vm_sp]) .. " value"); }
+                    else { STK[vm_sp] = 0 - nv; STT[vm_sp] = TNUM; }
+                }
+                vm_pc += 1;
+            }
+            case OP_NOT: {
+                if (vm_truthy(STK[vm_sp], STT[vm_sp]) == 1) { STK[vm_sp] = 0; } else { STK[vm_sp] = 1; }
+                STT[vm_sp] = TBOOL;
+                vm_pc += 1;
+            }
+            case OP_LEN: {
+                local lt = STT[vm_sp];
+                if (lt == TSTR) {
+                    STK[vm_sp] = len(STK[vm_sp]);
+                    STT[vm_sp] = TNUM;
+                } else if (lt == TTAB) {
+                    STK[vm_sp] = tb_an[STK[vm_sp]];
+                    STT[vm_sp] = TNUM;
+                } else {
+                    vm_raise("attempt to get length of a " .. vm_typename(lt) .. " value");
+                }
+                vm_pc += 1;
+            }
+            case OP_EQ, OP_NE: {
+                local eq = 0;
+                local ta = STT[vm_sp - 1];
+                if (ta == TNUM && STT[vm_sp] == TNUM) {
+                    if (STK[vm_sp - 1] == STK[vm_sp]) { eq = 1; }
+                } else {
+                    eq = vm_equal(STK[vm_sp - 1], ta, STK[vm_sp], STT[vm_sp]);
+                }
+                if (op == OP_NE) { eq = 1 - eq; }
+                vm_sp -= 1;
+                STK[vm_sp] = eq;
+                STT[vm_sp] = TBOOL;
+                vm_pc += 1;
+            }
+            case OP_LT: {
+                if (STT[vm_sp] == TNUM && STT[vm_sp - 1] == TNUM) {
+                    vm_sp -= 1;
+                    if (STK[vm_sp] < STK[vm_sp + 1]) { STK[vm_sp] = 1; } else { STK[vm_sp] = 0; }
+                    STT[vm_sp] = TBOOL;
+                } else { vm_compare(OP_LT); }
+                vm_pc += 1;
+            }
+            case OP_LE: {
+                if (STT[vm_sp] == TNUM && STT[vm_sp - 1] == TNUM) {
+                    vm_sp -= 1;
+                    if (STK[vm_sp] > STK[vm_sp + 1]) { STK[vm_sp] = 0; } else { STK[vm_sp] = 1; }
+                    STT[vm_sp] = TBOOL;
+                } else { vm_compare(OP_LE); }
+                vm_pc += 1;
+            }
+            case OP_GT: {
+                if (STT[vm_sp] == TNUM && STT[vm_sp - 1] == TNUM) {
+                    vm_sp -= 1;
+                    if (STK[vm_sp] > STK[vm_sp + 1]) { STK[vm_sp] = 1; } else { STK[vm_sp] = 0; }
+                    STT[vm_sp] = TBOOL;
+                } else { vm_compare(OP_GT); }
+                vm_pc += 1;
+            }
+            case OP_GE: {
+                if (STT[vm_sp] == TNUM && STT[vm_sp - 1] == TNUM) {
+                    vm_sp -= 1;
+                    if (STK[vm_sp] < STK[vm_sp + 1]) { STK[vm_sp] = 0; } else { STK[vm_sp] = 1; }
+                    STT[vm_sp] = TBOOL;
+                } else { vm_compare(OP_GE); }
+                vm_pc += 1;
+            }
+            case OP_JMP: {
+                vm_pc = vm_cbase + CODE[vm_pc + 1];
+            }
+            case OP_JF: {
+                local jt = STT[vm_sp];
+                if (jt == TNIL || (jt == TBOOL && STK[vm_sp] == 0)) {
+                    vm_pc = vm_cbase + CODE[vm_pc + 1];
+                } else {
+                    vm_pc += 2;
+                }
+                vm_sp -= 1;
+            }
+            case OP_JT: {
+                if (vm_truthy(STK[vm_sp], STT[vm_sp]) == 1) {
+                    vm_pc = vm_cbase + CODE[vm_pc + 1];
+                } else {
+                    vm_pc += 2;
+                }
+                vm_sp -= 1;
+            }
+            case OP_JFK: {
+                if (vm_truthy(STK[vm_sp], STT[vm_sp]) == 0) {
+                    vm_pc = vm_cbase + CODE[vm_pc + 1];
+                } else {
+                    vm_sp -= 1;
+                    vm_pc += 2;
+                }
+            }
+            case OP_JTK: {
+                if (vm_truthy(STK[vm_sp], STT[vm_sp]) == 1) {
+                    vm_pc = vm_cbase + CODE[vm_pc + 1];
+                } else {
+                    vm_sp -= 1;
+                    vm_pc += 2;
+                }
+            }
+            case OP_NEWTABLE: {
+                vm_sp += 1;
+                STK[vm_sp] = table_new(p_pid[vm_slot]);
+                STT[vm_sp] = TTAB;
+                vm_pc += 1;
+            }
+            case OP_GETINDEX: {
+                vm_sp -= 1;
+                vm_index(vm_sp, STK[vm_sp + 1], STT[vm_sp + 1]);
+                vm_pc += 1;
+            }
+            case OP_GETFIELD: {
+                vm_index(vm_sp, CODE[vm_pc + 1], TSTR);
+                vm_pc += 2;
+            }
+            case OP_SETINDEX: {
+                vm_setindex(STK[vm_sp - 2], STT[vm_sp - 2], STK[vm_sp - 1], STT[vm_sp - 1], STK[vm_sp], STT[vm_sp]);
+                vm_sp -= 3;
+                vm_pc += 1;
+            }
+            case OP_SETFIELD: {
+                vm_setindex(STK[vm_sp - 1], STT[vm_sp - 1], CODE[vm_pc + 1], TSTR, STK[vm_sp], STT[vm_sp]);
+                vm_sp -= 2;
+                vm_pc += 2;
+            }
+            case OP_SETFIELDK: {
+                vm_setindex(STK[vm_sp - 2], STT[vm_sp - 2], STK[vm_sp - 1], STT[vm_sp - 1], STK[vm_sp], STT[vm_sp]);
+                vm_sp -= 2;
+                vm_pc += 1;
+            }
+            case OP_APPEND: {
+                if (STT[vm_sp] != TNIL) { table_append(STK[vm_sp - 1], STK[vm_sp], STT[vm_sp]); }
+                vm_sp -= 1;
+                vm_pc += 1;
+            }
+            case OP_SELF: {
+                // [obj, key] -> [fn, obj]
+                local key = STK[vm_sp];
+                local obj = STK[vm_sp - 1];
+                local objt = STT[vm_sp - 1];
+                STK[vm_sp] = obj;
+                STT[vm_sp] = objt;
+                vm_index(vm_sp - 1, key, TSTR);
+                vm_pc += 1;
+            }
+            case OP_CALL: {
+                local n = CODE[vm_pc + 1];
+                vm_call(vm_sp - n, n, CODE[vm_pc + 2], vm_pc + 3, 0, vm_sp - n);
+                if (vm_blocked == 1) { vm_running = 0; }
+            }
+            case OP_CALLN: {
+                local n2 = CODE[vm_pc + 2];
+                native_call(CODE[vm_pc + 1], vm_sp - n2 + 1, n2, CODE[vm_pc + 3], vm_sp - n2 + 1, vm_pc + 4);
+                if (vm_blocked == 1) { vm_running = 0; }
+            }
+            case OP_RET: {
+                vm_return(CODE[vm_pc + 1]);
+            }
+            case OP_RETNIL: {
+                vm_return(0);
+            }
+            case OP_FUNC: {
+                vm_sp += 1;
+                STK[vm_sp] = vm_cbase + CODE[vm_pc + 1];
+                STT[vm_sp] = TFUN;
+                vm_pc += 2;
+            }
+            case OP_PUSHNAT: {
+                vm_sp += 1;
+                STK[vm_sp] = CODE[vm_pc + 1];
+                STT[vm_sp] = TNAT;
+                vm_pc += 2;
+            }
+            case OP_FORCHK: {
+                local fs = vm_fp + CODE[vm_pc + 1];
+                if (STT[fs] != TNUM || STT[fs + 1] != TNUM || STT[fs + 2] != TNUM) {
+                    vm_raise("'for' values must be numbers");
+                } else {
+                    local fi = STK[fs];
+                    if ((STK[fs + 2] > 0 && fi > STK[fs + 1]) || (STK[fs + 2] <= 0 && fi < STK[fs + 1])) {
+                        vm_pc = vm_cbase + CODE[vm_pc + 2];
+                    } else {
+                        vm_pc += 3;
+                    }
+                }
+            }
+            case OP_FORINC: {
+                local fs2 = vm_fp + CODE[vm_pc + 1];
+                STK[fs2] = STK[fs2] + STK[fs2 + 2];
+                vm_pc += 2;
+            }
+            case OP_ITERP, OP_ITERI: {
+                vm_iter(op);
+            }
+            case OP_LINE: {
+                vm_line = CODE[vm_pc + 1];
+                vm_pc += 2;
+            }
+            case OP_HALT: {
+                vm_running = 0;
+                vm_exited = 1;
+                proc_exit(vm_slot, 0);
+            }
+            default: {
+                vm_raise("illegal instruction " .. op .. " at " .. (vm_pc - vm_cbase));
+            }
+        }
+    }
+    return quantum - left;
+}
+
+proc vm_iter(op) {
+    local ts = vm_fp + CODE[vm_pc + 1];
+    if (STT[ts] != TTAB) {
+        vm_raise("bad argument to 'for' (table expected, got " .. vm_typename(STT[ts]) .. ")");
+        return;
+    }
+    local h = STK[ts];
+    local idx = STK[ts + 1];
+    if (op == OP_ITERI) {
+        idx += 1;
+        table_get(h, idx, TNUM);
+        if (ht_r == TNIL) {
+            vm_pc = vm_cbase + CODE[vm_pc + 2];
+            return;
+        }
+        STK[ts + 1] = idx;
+        STK[ts + 2] = idx; STT[ts + 2] = TNUM;
+        STK[ts + 3] = hv_r; STT[ts + 3] = ht_r;
+        vm_pc += 3;
+        return;
+    }
+    local an = tb_an[h];
+    local total = an + tb_hn[h];
+    forever {
+        idx += 1;
+        if (idx > total) {
+            STK[ts + 1] = idx;
+            vm_pc = vm_cbase + CODE[vm_pc + 2];
+            return;
+        }
+        if (idx <= an) {
+            local p = tb_ab[h] + idx;
+            if (HT[p] != TNIL) {
+                STK[ts + 1] = idx;
+                STK[ts + 2] = idx; STT[ts + 2] = TNUM;
+                STK[ts + 3] = HV[p]; STT[ts + 3] = HT[p];
+                vm_pc += 3;
+                return;
+            }
+        } else {
+            local q = tb_hb[h] + (idx - an) * 2;
+            STK[ts + 1] = idx;
+            STK[ts + 2] = HV[q - 1]; STT[ts + 2] = HT[q - 1];
+            STK[ts + 3] = HV[q]; STT[ts + 3] = HT[q];
+            vm_pc += 3;
+            return;
+        }
+    }
+}

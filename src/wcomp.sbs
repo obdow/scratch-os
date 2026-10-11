@@ -1,0 +1,1202 @@
+// ===========================================================================
+// wcomp.sbs - the Whisker compiler (included inside sprite Kernel)
+//
+// Whisker is a Lua-like language.  This file turns source text into
+// bytecode for the VM in vm.sbs:
+//   1. wlex()      source -> tokens (tk_t / tk_v / tk_l)
+//   2. parser      recursive descent, single pass, emits into list cb
+//
+// Code addresses inside cb are 1-based segment offsets; the VM adds the
+// segment base at run time, so compiled code is position independent.
+// A function starts with a 2-item header [nparams, nlocals].
+//
+// Differences from Lua (documented in /usr/share/whisker.txt):
+//   * no closures over enclosing locals (use globals), no metatables
+//   * generic for supports pairs(t) / ipairs(t) only
+//   * `continue` statement; string keys of tables are case-insensitive
+// ===========================================================================
+
+// opcodes
+const OP_PUSHNIL = 1;
+const OP_PUSHTRUE = 2;
+const OP_PUSHFALSE = 3;
+const OP_PUSHN = 4;
+const OP_PUSHS = 5;
+const OP_GETL = 6;
+const OP_SETL = 7;
+const OP_GETG = 8;
+const OP_SETG = 9;
+const OP_POP = 10;
+const OP_ADD = 11;
+const OP_SUB = 12;
+const OP_MUL = 13;
+const OP_DIV = 14;
+const OP_MOD = 15;
+const OP_POW = 16;
+const OP_IDIV = 17;
+const OP_CONCAT = 18;
+const OP_NEG = 19;
+const OP_NOT = 20;
+const OP_LEN = 21;
+const OP_EQ = 22;
+const OP_NE = 23;
+const OP_LT = 24;
+const OP_LE = 25;
+const OP_GT = 26;
+const OP_GE = 27;
+const OP_JMP = 28;
+const OP_JF = 29;
+const OP_JT = 30;
+const OP_JFK = 31;
+const OP_JTK = 32;
+const OP_NEWTABLE = 33;
+const OP_GETINDEX = 34;
+const OP_SETINDEX = 35;
+const OP_APPEND = 36;
+const OP_SETFIELDK = 37;
+const OP_CALL = 38;
+const OP_CALLN = 39;
+const OP_RET = 40;
+const OP_RETNIL = 41;
+const OP_FUNC = 42;
+const OP_PUSHNAT = 43;
+const OP_SELF = 44;
+const OP_FORCHK = 45;
+const OP_FORINC = 46;
+const OP_ITERP = 47;
+const OP_ITERI = 48;
+const OP_LINE = 49;
+const OP_DUP = 50;
+const OP_GETFIELD = 51;
+const OP_SETFIELD = 52;
+const OP_HALT = 53;
+const OP_GETM = 54;
+const OP_SETM = 55;
+
+// token types
+const TK_EOF = 0;
+const TK_NAME = 1;
+const TK_NUM = 2;
+const TK_STR = 3;
+const TK_OP = 4;
+
+// expression descriptor kinds
+const EK_NONE = 0;
+const EK_LOCAL = 1;
+const EK_GLOBAL = 2;
+const EK_INDEX = 3;
+const EK_FIELD = 4;
+const EK_CALL = 5;
+const EK_NATIVE = 6;
+const EK_MODULE = 7;
+const EK_MLOCAL = 8;
+
+list tk_t;
+list tk_v;
+list tk_l;
+
+list cb;                 // code buffer
+list lc_name;            // active local names
+list lc_slot;            // their frame slots
+list gl_names;           // global names of this program
+list brk_pos;            // pending break jumps: operand position
+list brk_loop;           // ... and the loop id they belong to
+list cnt_pos;
+list cnt_loop;
+
+list wkeywords = ["and", "break", "do", "else", "elseif", "end", "false", "for", "function", "if", "in",
+                  "local", "nil", "not", "or", "repeat", "return", "then", "true", "until", "while", "continue"];
+list nat_names = data("nat_names");
+list nat_mods = ["string", "math", "table", "os", "io", "fs", "proc", "term", "gui", "gfx", "sys", "utf8"];
+
+var c_i = 1;             // current token index
+var c_fail = 0;
+var c_errmsg = "";
+var c_fnbase = 0;
+var c_nlocals = 0;
+var c_maxlocals = 0;
+var c_loop = 0;          // current loop id (0 = not in loop)
+var c_loopn = 0;
+var c_line = 0;
+var c_depth = 0;         // function nesting depth (0 = main chunk)
+var c_main_top = 0;      // number of main-chunk locals visible to nested functions
+var c_caps = "";         // capabilities declared with --@caps
+// expression descriptor
+var e_kind = 0;
+var e_slot = 0;
+var e_key = "";
+var e_wpos = 0;          // position of the W operand of the last call
+
+// --- lexer ------------------------------------------------------------------
+
+proc wlex_add(t, v, line) {
+    add(tk_t, t);
+    add(tk_v, v);
+    add(tk_l, line);
+}
+
+proc wlex_error(msg, line) {
+    if (c_fail == 0) {
+        c_fail = 1;
+        c_errmsg = "line " .. line .. ": " .. msg;
+    }
+}
+
+// read a long bracket [[ ... ]] starting at i (pointing at first '['); returns end index
+var lex_str = "";
+proc wlex_long(src, i, line) {
+    local n = len(src);
+    local j = i + 2;
+    local out = "";
+    // skip a newline directly after [[
+    if (j <= n && src[j] == "\n") { j += 1; }
+    while (j <= n) {
+        if (src[j] == "]" && j < n && src[j + 1] == "]") {
+            lex_str = out;
+            return j + 1;
+        }
+        out = out .. src[j];
+        j += 1;
+    }
+    wlex_error("unfinished long string", line);
+    lex_str = out;
+    return n;
+}
+
+proc wlex(src) {
+    clear(tk_t);
+    clear(tk_v);
+    clear(tk_l);
+    c_caps = "";
+    local n = len(src);
+    local i = 1;
+    local line = 1;
+    while (i <= n && c_fail == 0) {
+        local c = src[i];
+        local cls = char_class[ord(c) + 1];
+        if (cls == 4) {
+            line += 1;
+            i += 1;
+        } else if (cls == 3) {
+            i += 1;
+        } else if (cls == 1) {
+            local w = c;
+            i += 1;
+            while (i <= n) {
+                local k = char_class[ord(src[i]) + 1];
+                if (k != 1 && k != 2) { break; }
+                w = w .. src[i];
+                i += 1;
+            }
+            local kw = index(wkeywords, w);
+            if (kw > 0 && streq(wkeywords[kw], w) == 1) {
+                wlex_add(TK_OP, wkeywords[kw], line);
+            } else {
+                wlex_add(TK_NAME, w, line);
+            }
+        } else if (cls == 2 || (c == "." && i < n && char_class[ord(src[i + 1]) + 1] == 2)) {
+            local num = "";
+            if (c == "0" && i < n && (src[i + 1] == "x" || src[i + 1] == "X")) {
+                i += 2;
+                local hv = 0;
+                while (i <= n && contains("0123456789abcdef", src[i]) && len(src[i]) == 1 && src[i] != " ") {
+                    hv = hv * 16 + str_find("0123456789abcdef", str_lower(src[i]), 1) - 1;
+                    i += 1;
+                }
+                wlex_add(TK_NUM, hv, line);
+            } else {
+                while (i <= n && (char_class[ord(src[i]) + 1] == 2 || src[i] == ".")) {
+                    num = num .. src[i];
+                    i += 1;
+                }
+                if (i <= n && (src[i] == "e" || src[i] == "E")) {
+                    num = num .. "e";
+                    i += 1;
+                    if (i <= n && (src[i] == "-" || src[i] == "+")) { num = num .. src[i]; i += 1; }
+                    while (i <= n && char_class[ord(src[i]) + 1] == 2) { num = num .. src[i]; i += 1; }
+                }
+                wlex_add(TK_NUM, num * 1, line);
+            }
+        } else if (cls == 5) {
+            // quoted string
+            local q = c;
+            local out = "";
+            i += 1;
+            local done = 0;
+            while (i <= n && done == 0) {
+                local d = src[i];
+                if (d == q) {
+                    done = 1;
+                    i += 1;
+                } else if (d == "\n") {
+                    wlex_error("unfinished string", line);
+                    done = 1;
+                } else if (d == "\\") {
+                    local e = src[i + 1];
+                    i += 2;
+                    if (e == "n") { out = out .. "\n"; }
+                    else if (e == "t") { out = out .. "\t"; }
+                    else if (e == "r") { out = out .. "\r"; }
+                    else if (e == "e") { out = out .. "\e"; }
+                    else if (e == "\\") { out = out .. "\\"; }
+                    else if (e == "\"") { out = out .. "\""; }
+                    else if (e == "'") { out = out .. "'"; }
+                    else if (e == "0") { out = out .. ""; }
+                    else if (e == "x") {
+                        local hx = str_lower(substr(src, i, i + 1));
+                        local code = (str_find("0123456789abcdef", hx[1], 1) - 1) * 16 + str_find("0123456789abcdef", hx[2], 1) - 1;
+                        out = out .. chr(code);
+                        i += 2;
+                    } else if (char_class[ord(e) + 1] == 2) {
+                        local dec = e;
+                        while (len(dec) < 3 && char_class[ord(src[i]) + 1] == 2) { dec = dec .. src[i]; i += 1; }
+                        out = out .. chr(dec % 256);
+                    } else if (e == "\n") {
+                        out = out .. "\n";
+                        line += 1;
+                    } else {
+                        out = out .. e;
+                    }
+                } else {
+                    out = out .. d;
+                    i += 1;
+                }
+            }
+            wlex_add(TK_STR, out, line);
+        } else if (c == "-" && i < n && src[i + 1] == "-") {
+            // comment
+            if (i + 3 <= n && src[i + 2] == "[" && src[i + 3] == "[") {
+                local startl = line;
+                i = wlex_long(src, i + 2, line);
+                for k = 1 to len(lex_str) { if (lex_str[k] == "\n") { line += 1; } }
+                i += 1;
+            } else {
+                local cstart = i;
+                while (i <= n && src[i] != "\n") { i += 1; }
+                // capability declaration: --@caps a b c
+                local ctext = substr(src, cstart, i - 1);
+                if (substr(ctext, 1, 7) == "--@caps") {
+                    c_caps = c_caps .. " " .. substr(ctext, 8, len(ctext)) .. " ";
+                }
+            }
+        } else if (c == "[" && i < n && (src[i + 1] == "[")) {
+            local l0 = line;
+            i = wlex_long(src, i, line);
+            for k = 1 to len(lex_str) { if (lex_str[k] == "\n") { line += 1; } }
+            wlex_add(TK_STR, lex_str, l0);
+            i += 1;
+        } else {
+            local two = c .. src[i + 1];
+            if (i < n && (two == "==" || two == "~=" || two == "<=" || two == ">=" || two == ".." || two == "//" || two == "!=")) {
+                if (two == "!=") { two = "~="; }
+                if (two == ".." && i + 1 < n && src[i + 2] == ".") {
+                    wlex_add(TK_OP, "...", line);
+                    i += 3;
+                } else {
+                    wlex_add(TK_OP, two, line);
+                    i += 2;
+                }
+            } else if (contains("+-*/%^#<>=(){}[];:,.", c) && c != " ") {
+                wlex_add(TK_OP, c, line);
+                i += 1;
+            } else {
+                wlex_error("unexpected character '" .. c .. "'", line);
+            }
+        }
+    }
+    wlex_add(TK_EOF, "<eof>", line);
+}
+
+// --- parser helpers -------------------------------------------------------------
+
+proc emit(x) {
+    add(cb, x);
+    return len(cb);
+}
+
+proc emit2(op, a) {
+    add(cb, op);
+    add(cb, a);
+    return len(cb);
+}
+
+proc c_error(msg) {
+    if (c_fail == 0) {
+        c_fail = 1;
+        local tok = tk_v[c_i];
+        if (tk_t[c_i] == TK_EOF) { tok = "<eof>"; }
+        c_errmsg = "line " .. tk_l[c_i] .. ": " .. msg .. " near '" .. tok .. "'";
+    }
+    c_i = len(tk_t);
+}
+
+proc tk_is(v) {
+    return tk_t[c_i] == TK_OP && tk_v[c_i] == v;
+}
+
+proc c_check(v) {
+    if (tk_t[c_i] == TK_OP && tk_v[c_i] == v) {
+        c_i += 1;
+        return;
+    }
+    c_error("'" .. v .. "' expected");
+}
+
+proc c_name() {
+    if (tk_t[c_i] != TK_NAME) {
+        c_error("name expected");
+        return "?";
+    }
+    c_i += 1;
+    return tk_v[c_i - 1];
+}
+
+proc c_block_follow() {
+    if (tk_t[c_i] == TK_EOF) { return 1; }
+    if (tk_t[c_i] != TK_OP) { return 0; }
+    local v = tk_v[c_i];
+    return v == "end" || v == "else" || v == "elseif" || v == "until";
+}
+
+// local variable lookup (current function only); returns slot or -1
+proc c_find_local(name) {
+    local i = len(lc_name);
+    while (i > c_fnbase) {
+        if (lc_name[i] == name && streq(lc_name[i], name) == 1) { return lc_slot[i]; }
+        i -= 1;
+    }
+    return -1;
+}
+
+// is the name a local of an enclosing function?  Returns the main-chunk
+// slot (>= 0) when it is a main-chunk local (accessible through GETM/SETM),
+// -2 if it is a local of an intermediate function (unsupported), else -1.
+proc c_outer_local(name) {
+    local i = c_fnbase;
+    while (i > 0) {
+        if (lc_name[i] == name && streq(lc_name[i], name) == 1) {
+            if (i <= c_main_top) { return lc_slot[i]; }
+            return -2;
+        }
+        i -= 1;
+    }
+    return -1;
+}
+
+// case-sensitive search of the program's globals; 0 if absent
+proc c_find_global(name) {
+    for k = 1 to len(gl_names) {
+        if (gl_names[k] == name) {
+            if (streq(gl_names[k], name) == 1) { return k; }
+        }
+    }
+    return 0;
+}
+
+proc c_global_slot(name) {
+    local i = c_find_global(name);
+    if (i > 0) { return i; }
+    add(gl_names, name);
+    return len(gl_names);
+}
+
+// leave a block scope: forget its locals (slots are reused except in the
+// main chunk, whose locals may be referenced by functions)
+proc c_scope_exit(save_n, save_nl) {
+    while (len(lc_name) > save_n) {
+        del(lc_name, len(lc_name));
+        del(lc_slot, len(lc_slot));
+    }
+    if (c_depth > 0) { c_nlocals = save_nl; }
+}
+
+proc c_new_local(name) {
+    add(lc_name, name);
+    add(lc_slot, c_nlocals);
+    c_nlocals += 1;
+    if (c_nlocals > c_maxlocals) { c_maxlocals = c_nlocals; }
+    return c_nlocals - 1;
+}
+
+proc c_line_mark() {
+    local l = tk_l[c_i];
+    if (l != c_line) {
+        c_line = l;
+        emit2(OP_LINE, l);
+    }
+}
+
+// emit code that pushes the value described by the descriptor
+proc c_discharge() {
+    local k = e_kind;
+    if (k == EK_NONE || k == EK_CALL) { e_kind = EK_NONE; return; }
+    e_kind = EK_NONE;
+    if (k == EK_LOCAL) { emit2(OP_GETL, e_slot); return; }
+    if (k == EK_GLOBAL) { emit2(OP_GETG, e_slot); return; }
+    if (k == EK_MLOCAL) { emit2(OP_GETM, e_slot); return; }
+    if (k == EK_INDEX) { emit(OP_GETINDEX); return; }
+    if (k == EK_FIELD) { emit2(OP_GETFIELD, e_key); return; }
+    if (k == EK_NATIVE) { emit2(OP_PUSHNAT, e_slot); return; }
+    if (k == EK_MODULE) { c_error("module '" .. e_key .. "' used as a value"); return; }
+}
+
+// --- expressions ------------------------------------------------------------------
+
+proc c_singlevar(name) {
+    local slot = c_find_local(name);
+    if (slot >= 0) {
+        e_kind = EK_LOCAL;
+        e_slot = slot;
+        return;
+    }
+    local ol = c_outer_local(name);
+    if (ol >= 0) {
+        e_kind = EK_MLOCAL;
+        e_slot = ol;
+        return;
+    }
+    if (ol == -2) {
+        c_error("cannot use local '" .. name .. "' of an enclosing function (no closures: use a top-level local or global)");
+        return;
+    }
+    // globals declared by the program shadow built-ins
+    local gi = c_find_global(name);
+    if (gi > 0) {
+        e_kind = EK_GLOBAL;
+        e_slot = gi;
+        return;
+    }
+    local mi = index(nat_mods, name);
+    if (mi > 0 && streq(nat_mods[mi], name) == 1) {
+        e_kind = EK_MODULE;
+        e_key = name;
+        return;
+    }
+    local ni = index(nat_names, name);
+    if (ni > 0 && streq(nat_names[ni], name) == 1) {
+        e_kind = EK_NATIVE;
+        e_slot = ni;
+        return;
+    }
+    e_kind = EK_GLOBAL;
+    e_slot = c_global_slot(name);
+}
+
+proc c_primaryexp() recursive {
+    if (tk_t[c_i] == TK_NAME) {
+        local name = tk_v[c_i];
+        c_i += 1;
+        c_singlevar(name);
+        return;
+    }
+    if (tk_is("(")) {
+        c_i += 1;
+        c_expr();
+        c_check(")");
+        e_kind = EK_NONE;
+        return;
+    }
+    c_error("unexpected symbol");
+}
+
+// parse call arguments; returns the number of arguments pushed
+proc c_callargs() recursive {
+    local n = 0;
+    if (tk_t[c_i] == TK_STR) {
+        emit2(OP_PUSHS, tk_v[c_i]);
+        c_i += 1;
+        return 1;
+    }
+    if (tk_is("{")) {
+        c_table();
+        return 1;
+    }
+    c_check("(");
+    if (!tk_is(")")) {
+        c_expr();
+        n = 1;
+        while (tk_is(",")) {
+            c_i += 1;
+            c_expr();
+            n += 1;
+        }
+    }
+    c_check(")");
+    return n;
+}
+
+proc c_suffixedexp() recursive {
+    c_primaryexp();
+    forever {
+        if (c_fail == 1) { return; }
+        if (tk_is(".")) {
+            c_i += 1;
+            local fname = c_name();
+            if (e_kind == EK_MODULE) {
+                local mod = e_key;
+                local full = mod .. "." .. fname;
+                if (full == "math.pi") { e_kind = EK_NONE; emit2(OP_PUSHN, 3.141592653589793); continue; }
+                if (full == "math.huge") { e_kind = EK_NONE; emit2(OP_PUSHN, 1e308 * 10); continue; }
+                if (full == "math.maxinteger") { e_kind = EK_NONE; emit2(OP_PUSHN, 9007199254740991); continue; }
+                local ni = index(nat_names, full);
+                if (ni == 0) { c_error("unknown function '" .. full .. "'"); return; }
+                e_kind = EK_NATIVE;
+                e_slot = ni;
+                continue;
+            }
+            c_discharge();
+            e_kind = EK_FIELD;
+            e_key = fname;
+        } else if (tk_is("[")) {
+            c_discharge();
+            c_i += 1;
+            c_expr();
+            c_check("]");
+            e_kind = EK_INDEX;
+        } else if (tk_is(":")) {
+            c_discharge();
+            c_i += 1;
+            local mname = c_name();
+            emit2(OP_PUSHS, mname);
+            emit(OP_SELF);
+            local na = c_callargs();
+            emit2(OP_CALL, na + 1);
+            e_wpos = emit(1);
+            e_kind = EK_CALL;
+        } else if (tk_is("(") || tk_is("{") || tk_t[c_i] == TK_STR) {
+            if (e_kind == EK_NATIVE) {
+                local nid = e_slot;
+                e_kind = EK_NONE;
+                local na2 = c_callargs();
+                emit(OP_CALLN);
+                emit(nid);
+                emit(na2);
+                e_wpos = emit(1);
+                e_kind = EK_CALL;
+            } else {
+                c_discharge();
+                local na3 = c_callargs();
+                emit2(OP_CALL, na3);
+                e_wpos = emit(1);
+                e_kind = EK_CALL;
+            }
+        } else {
+            return;
+        }
+    }
+}
+
+proc c_table() recursive {
+    c_check("{");
+    emit(OP_NEWTABLE);
+    while (!tk_is("}") && c_fail == 0) {
+        if (tk_t[c_i] == TK_NAME && tk_t[c_i + 1] == TK_OP && tk_v[c_i + 1] == "=") {
+            emit2(OP_PUSHS, tk_v[c_i]);
+            c_i += 2;
+            c_expr();
+            emit(OP_SETFIELDK);
+        } else if (tk_is("[")) {
+            c_i += 1;
+            c_expr();
+            c_check("]");
+            c_check("=");
+            c_expr();
+            emit(OP_SETFIELDK);
+        } else {
+            c_expr();
+            emit(OP_APPEND);
+        }
+        if (tk_is(",") || tk_is(";")) {
+            c_i += 1;
+        } else if (!tk_is("}")) {
+            c_error("'}' expected");
+        }
+    }
+    c_check("}");
+}
+
+proc c_simpleexp() recursive {
+    local t = tk_t[c_i];
+    if (t == TK_NUM) {
+        emit2(OP_PUSHN, tk_v[c_i]);
+        c_i += 1;
+        e_kind = EK_NONE;
+        return;
+    }
+    if (t == TK_STR) {
+        emit2(OP_PUSHS, tk_v[c_i]);
+        c_i += 1;
+        e_kind = EK_NONE;
+        return;
+    }
+    if (tk_is("nil")) { emit(OP_PUSHNIL); c_i += 1; e_kind = EK_NONE; return; }
+    if (tk_is("true")) { emit(OP_PUSHTRUE); c_i += 1; e_kind = EK_NONE; return; }
+    if (tk_is("false")) { emit(OP_PUSHFALSE); c_i += 1; e_kind = EK_NONE; return; }
+    if (tk_is("{")) { c_table(); e_kind = EK_NONE; return; }
+    if (tk_is("function")) {
+        c_i += 1;
+        c_funcbody(0);
+        e_kind = EK_NONE;
+        return;
+    }
+    c_suffixedexp();
+}
+
+// binary operator priorities (left, right); 0 = not a binary operator
+var bop_left = 0;
+var bop_right = 0;
+var bop_code = 0;
+proc c_binop() {
+    bop_left = 0;
+    if (tk_t[c_i] != TK_OP) { return; }
+    local v = tk_v[c_i];
+    if (v == "or") { bop_left = 1; bop_right = 1; bop_code = 0; return; }
+    if (v == "and") { bop_left = 2; bop_right = 2; bop_code = 0; return; }
+    if (v == "==") { bop_left = 3; bop_right = 3; bop_code = OP_EQ; return; }
+    if (v == "~=") { bop_left = 3; bop_right = 3; bop_code = OP_NE; return; }
+    if (v == "<") { bop_left = 3; bop_right = 3; bop_code = OP_LT; return; }
+    if (v == "<=") { bop_left = 3; bop_right = 3; bop_code = OP_LE; return; }
+    if (v == ">") { bop_left = 3; bop_right = 3; bop_code = OP_GT; return; }
+    if (v == ">=") { bop_left = 3; bop_right = 3; bop_code = OP_GE; return; }
+    if (v == "..") { bop_left = 9; bop_right = 8; bop_code = OP_CONCAT; return; }
+    if (v == "+") { bop_left = 10; bop_right = 10; bop_code = OP_ADD; return; }
+    if (v == "-") { bop_left = 10; bop_right = 10; bop_code = OP_SUB; return; }
+    if (v == "*") { bop_left = 11; bop_right = 11; bop_code = OP_MUL; return; }
+    if (v == "/") { bop_left = 11; bop_right = 11; bop_code = OP_DIV; return; }
+    if (v == "//") { bop_left = 11; bop_right = 11; bop_code = OP_IDIV; return; }
+    if (v == "%") { bop_left = 11; bop_right = 11; bop_code = OP_MOD; return; }
+    if (v == "^") { bop_left = 14; bop_right = 13; bop_code = OP_POW; return; }
+}
+
+proc c_subexpr(limit) recursive {
+    if (tk_is("not") || tk_is("-") || tk_is("#")) {
+        local u = tk_v[c_i];
+        c_i += 1;
+        c_subexpr(12);
+        c_discharge();
+        if (u == "not") { emit(OP_NOT); }
+        else if (u == "-") { emit(OP_NEG); }
+        else { emit(OP_LEN); }
+    } else {
+        c_simpleexp();
+    }
+    c_binop();
+    while (bop_left > limit && c_fail == 0) {
+        local op = tk_v[c_i];
+        local code = bop_code;
+        local right = bop_right;
+        c_discharge();
+        c_i += 1;
+        if (op == "and" || op == "or") {
+            local j = 0;
+            if (op == "and") { j = emit2(OP_JFK, 0); } else { j = emit2(OP_JTK, 0); }
+            c_subexpr(right);
+            c_discharge();
+            cb[j] = len(cb) + 1;
+        } else {
+            c_subexpr(right);
+            c_discharge();
+            emit(code);
+        }
+        c_binop();
+    }
+}
+
+proc c_expr() recursive {
+    c_subexpr(0);
+    c_discharge();
+}
+
+// --- functions -------------------------------------------------------------------
+
+proc c_funcbody(is_method) recursive {
+    local save_base = c_fnbase;
+    local save_nl = c_nlocals;
+    local save_max = c_maxlocals;
+    local save_loop = c_loop;
+    local save_line = c_line;
+    local save_top = c_main_top;
+    if (c_depth == 0) { c_main_top = len(lc_name); }
+    c_depth += 1;
+    local jmp = emit2(OP_JMP, 0);
+    local start = emit(0);
+    emit(0);
+    c_fnbase = len(lc_name);
+    c_nlocals = 0;
+    c_maxlocals = 0;
+    c_loop = 0;
+    local np = 0;
+    if (is_method == 1) { c_new_local("self"); np = 1; }
+    c_check("(");
+    while (!tk_is(")") && c_fail == 0) {
+        if (tk_is("...")) { c_i += 1; c_new_local("arg"); np += 1; }
+        else { c_new_local(c_name()); np += 1; }
+        if (tk_is(",")) { c_i += 1; }
+    }
+    c_check(")");
+    cb[start] = np;
+    c_block();
+    c_check("end");
+    emit(OP_RETNIL);
+    cb[start + 1] = c_maxlocals;
+    // drop this function's locals
+    while (len(lc_name) > c_fnbase) {
+        del(lc_name, len(lc_name));
+        del(lc_slot, len(lc_slot));
+    }
+    c_fnbase = save_base;
+    c_nlocals = save_nl;
+    c_maxlocals = save_max;
+    c_loop = save_loop;
+    c_line = save_line;
+    c_depth -= 1;
+    c_main_top = save_top;
+    cb[jmp] = len(cb) + 1;
+    emit2(OP_FUNC, start);
+}
+
+// --- statements --------------------------------------------------------------------
+
+proc c_block() recursive {
+    local save_n = len(lc_name);
+    local save_nl = c_nlocals;
+    local done = 0;
+    while (done == 0 && c_block_follow() == 0 && c_fail == 0) {
+        if (tk_is("return")) {
+            c_retstat();
+            done = 1;
+        } else {
+            c_statement();
+        }
+    }
+    c_scope_exit(save_n, save_nl);
+}
+
+proc c_retstat() recursive {
+    c_line_mark();
+    c_i += 1;
+    local n = 0;
+    if (c_block_follow() == 0 && !tk_is(";")) {
+        c_expr();
+        n = 1;
+        while (tk_is(",")) {
+            c_i += 1;
+            c_expr();
+            n += 1;
+        }
+    }
+    if (tk_is(";")) { c_i += 1; }
+    if (n == 0) { emit(OP_RETNIL); } else { emit2(OP_RET, n); }
+    if (c_block_follow() == 0) { c_error("'end' expected after return"); }
+}
+
+// assign the value on top of the stack to the descriptor saved in (k, slot, key)
+proc c_store(k, slot, key) {
+    if (k == EK_LOCAL) { emit2(OP_SETL, slot); return; }
+    if (k == EK_GLOBAL) { emit2(OP_SETG, slot); return; }
+    if (k == EK_MLOCAL) { emit2(OP_SETM, slot); return; }
+    if (k == EK_INDEX) { emit(OP_SETINDEX); return; }
+    if (k == EK_FIELD) { emit2(OP_SETFIELD, key); return; }
+    c_error("cannot assign to this expression");
+}
+
+proc c_loop_begin() {
+    c_loopn += 1;
+    c_loop = c_loopn;
+    return c_loop;
+}
+
+// patch break / continue jumps of loop id
+proc c_patch_jumps(loopid, brk_target, cnt_target) {
+    local i = 1;
+    while (i <= len(brk_pos)) {
+        if (brk_loop[i] == loopid) {
+            cb[brk_pos[i]] = brk_target;
+            del(brk_pos, i);
+            del(brk_loop, i);
+        } else {
+            i += 1;
+        }
+    }
+    i = 1;
+    while (i <= len(cnt_pos)) {
+        if (cnt_loop[i] == loopid) {
+            cb[cnt_pos[i]] = cnt_target;
+            del(cnt_pos, i);
+            del(cnt_loop, i);
+        } else {
+            i += 1;
+        }
+    }
+}
+
+proc c_statement() recursive {
+    c_line_mark();
+    if (tk_is(";")) { c_i += 1; return; }
+    if (tk_is("if")) {
+        c_i += 1;
+        local exits = "";
+        c_expr();
+        c_check("then");
+        local jf = emit2(OP_JF, 0);
+        c_block();
+        // collect exit jumps in a local list encoded as a string of positions
+        while (tk_is("elseif") && c_fail == 0) {
+            local je = emit2(OP_JMP, 0);
+            exits = exits .. je .. ",";
+            cb[jf] = len(cb) + 1;
+            c_i += 1;
+            c_expr();
+            c_check("then");
+            jf = emit2(OP_JF, 0);
+            c_block();
+        }
+        if (tk_is("else")) {
+            local je2 = emit2(OP_JMP, 0);
+            exits = exits .. je2 .. ",";
+            cb[jf] = len(cb) + 1;
+            c_i += 1;
+            c_block();
+        } else {
+            cb[jf] = len(cb) + 1;
+        }
+        c_check("end");
+        // patch exits
+        local num = "";
+        for k = 1 to len(exits) {
+            if (exits[k] == ",") {
+                cb[num] = len(cb) + 1;
+                num = "";
+            } else {
+                num = num .. exits[k];
+            }
+        }
+        return;
+    }
+    if (tk_is("while")) {
+        c_i += 1;
+        local top = len(cb) + 1;
+        c_expr();
+        c_check("do");
+        local jf2 = emit2(OP_JF, 0);
+        local save_loop = c_loop;
+        local id = c_loop_begin();
+        c_block();
+        c_check("end");
+        emit2(OP_JMP, top);
+        cb[jf2] = len(cb) + 1;
+        c_patch_jumps(id, len(cb) + 1, top);
+        c_loop = save_loop;
+        return;
+    }
+    if (tk_is("repeat")) {
+        c_i += 1;
+        local top2 = len(cb) + 1;
+        local save_loop2 = c_loop;
+        local id2 = c_loop_begin();
+        // the until condition can see the block's locals
+        local save_n = len(lc_name);
+        local save_nl = c_nlocals;
+        while (c_block_follow() == 0 && c_fail == 0) {
+            if (tk_is("return")) { c_retstat(); } else { c_statement(); }
+        }
+        c_check("until");
+        local cont = len(cb) + 1;
+        c_expr();
+        emit2(OP_JF, top2);
+        c_scope_exit(save_n, save_nl);
+        c_patch_jumps(id2, len(cb) + 1, cont);
+        c_loop = save_loop2;
+        return;
+    }
+    if (tk_is("for")) {
+        c_forstat();
+        return;
+    }
+    if (tk_is("do")) {
+        c_i += 1;
+        c_block();
+        c_check("end");
+        return;
+    }
+    if (tk_is("function")) {
+        c_i += 1;
+        // funcname: NAME {'.' NAME} [':' NAME]
+        local n1 = c_name();
+        c_singlevar(n1);
+        if (e_kind == EK_NATIVE || e_kind == EK_MODULE) {
+            // redefining a built-in name: make it a program global
+            e_kind = EK_GLOBAL;
+            e_slot = c_global_slot(n1);
+        }
+        local is_method = 0;
+        while (tk_is(".") || tk_is(":")) {
+            if (tk_is(":")) { is_method = 1; }
+            c_i += 1;
+            local fld = c_name();
+            c_discharge();
+            e_kind = EK_FIELD;
+            e_key = fld;
+            if (is_method == 1) { break; }
+        }
+        local k = e_kind;
+        local slot = e_slot;
+        local key = e_key;
+        c_funcbody(is_method);
+        c_store(k, slot, key);
+        return;
+    }
+    if (tk_is("local")) {
+        c_i += 1;
+        if (tk_is("function")) {
+            c_i += 1;
+            local fname = c_name();
+            local lslot = c_new_local(fname);
+            c_funcbody(0);
+            emit2(OP_SETL, lslot);
+            return;
+        }
+        // local a, b, c = exprs  (names kept in a local string: nested
+        // function bodies may reuse the scratch lists)
+        local nm_enc = c_name() .. "\x01";
+        local names = 1;
+        while (tk_is(",")) {
+            c_i += 1;
+            nm_enc = nm_enc .. c_name() .. "\x01";
+            names += 1;
+        }
+        if (tk_is("=")) {
+            c_i += 1;
+            c_explist_into(names);
+        } else {
+            repeat (names) { emit(OP_PUSHNIL); }
+        }
+        // declare after evaluating (so `local x = x` sees the outer x)
+        local cur = "";
+        for k2 = 1 to len(nm_enc) {
+            if (nm_enc[k2] == "\x01") {
+                c_new_local(cur);
+                cur = "";
+            } else {
+                cur = cur .. nm_enc[k2];
+            }
+        }
+        local base = c_nlocals - names;
+        local k3 = names;
+        while (k3 >= 1) {
+            emit2(OP_SETL, base + k3 - 1);
+            k3 -= 1;
+        }
+        return;
+    }
+    if (tk_is("return")) {
+        c_retstat();
+        return;
+    }
+    if (tk_is("break")) {
+        c_i += 1;
+        if (c_loop == 0) { c_error("break outside a loop"); return; }
+        local jb = emit2(OP_JMP, 0);
+        add(brk_pos, jb);
+        add(brk_loop, c_loop);
+        return;
+    }
+    if (tk_is("continue")) {
+        c_i += 1;
+        if (c_loop == 0) { c_error("continue outside a loop"); return; }
+        local jc = emit2(OP_JMP, 0);
+        add(cnt_pos, jc);
+        add(cnt_loop, c_loop);
+        return;
+    }
+    c_exprstat();
+}
+
+// evaluate an expression list producing exactly `want` values
+proc c_explist_into(want) recursive {
+    local n = 0;
+    c_subexpr(0);
+    n = 1;
+    while (tk_is(",") && c_fail == 0) {
+        c_discharge();
+        c_i += 1;
+        c_subexpr(0);
+        n += 1;
+    }
+    if (n < want && e_kind == EK_CALL) {
+        // multiple results from the last call
+        cb[e_wpos] = want - n + 1;
+        e_kind = EK_NONE;
+        return;
+    }
+    c_discharge();
+    while (n < want) { emit(OP_PUSHNIL); n += 1; }
+    while (n > want) { emit(OP_POP); n -= 1; }
+}
+
+proc c_exprstat() recursive {
+    c_suffixedexp();
+    if (tk_is("=") || tk_is(",")) {
+        // assignment
+        if (tk_is(",")) {
+            // multiple assignment: only simple names
+            clear(c_tmpk); clear(c_tmps); clear(c_tmpkey);
+            add(c_tmpk, e_kind); add(c_tmps, e_slot); add(c_tmpkey, e_key);
+            if (e_kind != EK_LOCAL && e_kind != EK_GLOBAL) { c_error("multiple assignment supports only variables"); return; }
+            while (tk_is(",")) {
+                c_i += 1;
+                c_suffixedexp();
+                if (e_kind != EK_LOCAL && e_kind != EK_GLOBAL) { c_error("multiple assignment supports only variables"); return; }
+                add(c_tmpk, e_kind); add(c_tmps, e_slot); add(c_tmpkey, e_key);
+            }
+            c_check("=");
+            local nt = len(c_tmpk);
+            // copy targets to locals of this frame, because nested expressions reuse c_tmp*
+            local enc = "";
+            for k = 1 to nt { enc = enc .. c_tmpk[k] .. ":" .. c_tmps[k] .. ","; }
+            c_explist_into(nt);
+            // assign in reverse order
+            clear(c_tmpk); clear(c_tmps);
+            local num = "";
+            local part = 0;
+            local kk = 0;
+            for k = 1 to len(enc) {
+                local ch = enc[k];
+                if (ch == ":") { kk = num; num = ""; }
+                else if (ch == ",") { add(c_tmpk, kk); add(c_tmps, num); num = ""; }
+                else { num = num .. ch; }
+            }
+            local k4 = nt;
+            while (k4 >= 1) {
+                c_store(c_tmpk[k4], c_tmps[k4], "");
+                k4 -= 1;
+            }
+            return;
+        }
+        local k = e_kind;
+        local slot = e_slot;
+        local key = e_key;
+        if (k == EK_NATIVE || k == EK_MODULE) {
+            // assigning to a built-in name creates a program global
+            k = EK_GLOBAL;
+            slot = c_global_slot(tk_v[c_i - 1]);
+        }
+        c_i += 1;
+        c_expr();
+        c_store(k, slot, key);
+        return;
+    }
+    if (e_kind == EK_CALL) {
+        cb[e_wpos] = 0;   // discard results
+        e_kind = EK_NONE;
+        return;
+    }
+    c_error("syntax error");
+}
+list c_tmpk;
+list c_tmps;
+list c_tmpkey;
+
+proc c_forstat() recursive {
+    c_i += 1;
+    local n1 = c_name();
+    local save_n = len(lc_name);
+    local save_nl = c_nlocals;
+    local save_loop = c_loop;
+    if (tk_is("=")) {
+        // numeric for: hidden slots var, limit, step
+        c_i += 1;
+        c_expr();
+        c_check(",");
+        c_expr();
+        if (tk_is(",")) {
+            c_i += 1;
+            c_expr();
+        } else {
+            emit2(OP_PUSHN, 1);
+        }
+        c_check("do");
+        local sv = c_new_local(n1);
+        c_new_local("(limit)");
+        c_new_local("(step)");
+        emit2(OP_SETL, sv + 2);
+        emit2(OP_SETL, sv + 1);
+        emit2(OP_SETL, sv);
+        local top = emit(OP_FORCHK);
+        emit(sv);
+        local jexit = emit(0);
+        local id = c_loop_begin();
+        c_block();
+        c_check("end");
+        local cont = len(cb) + 1;
+        emit2(OP_FORINC, sv);
+        emit2(OP_JMP, top);
+        cb[jexit] = len(cb) + 1;
+        c_patch_jumps(id, len(cb) + 1, cont);
+    } else {
+        // generic for: k, v in pairs(t) / ipairs(t)
+        local n2 = "(v)";
+        if (tk_is(",")) {
+            c_i += 1;
+            n2 = c_name();
+        }
+        c_check("in");
+        local kind = c_name();
+        local op = OP_ITERP;
+        if (kind == "ipairs") { op = OP_ITERI; }
+        else if (kind != "pairs") { c_error("for-in supports pairs(t) and ipairs(t) only"); return; }
+        c_check("(");
+        c_expr();
+        c_check(")");
+        c_check("do");
+        local ts = c_new_local("(t)");
+        c_new_local("(i)");
+        c_new_local(n1);
+        c_new_local(n2);
+        emit2(OP_PUSHN, 0);
+        emit2(OP_SETL, ts + 1);
+        emit2(OP_SETL, ts);
+        local top2 = emit(op);
+        emit(ts);
+        local jexit2 = emit(0);
+        local id2 = c_loop_begin();
+        c_block();
+        c_check("end");
+        emit2(OP_JMP, top2);
+        cb[jexit2] = len(cb) + 1;
+        c_patch_jumps(id2, len(cb) + 1, top2);
+    }
+    c_scope_exit(save_n, save_nl);
+    c_loop = save_loop;
+}
+
+// compile a whole program; returns 1 on success (code in cb, globals in gl_names)
+proc wcompile(src) {
+    c_fail = 0;
+    c_errmsg = "";
+    clear(cb);
+    clear(lc_name);
+    clear(lc_slot);
+    clear(gl_names);
+    clear(brk_pos); clear(brk_loop); clear(cnt_pos); clear(cnt_loop);
+    add(gl_names, "arg");
+    wlex(src);
+    if (c_fail == 1) { return 0; }
+    c_i = 1;
+    c_fnbase = 0;
+    c_nlocals = 0;
+    c_maxlocals = 0;
+    c_loop = 0;
+    c_loopn = 0;
+    c_line = 0;
+    c_depth = 0;
+    c_main_top = 0;
+    e_kind = EK_NONE;
+    emit(0);           // main chunk header: nparams
+    emit(0);           // nlocals (patched)
+    c_block();
+    if (c_fail == 0 && tk_t[c_i] != TK_EOF) { c_error("'<eof>' expected"); }
+    emit(OP_HALT);
+    cb[2] = c_maxlocals;
+    return 1 - c_fail;
+}

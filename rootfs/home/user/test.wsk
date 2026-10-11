@@ -1,0 +1,63 @@
+-- Whisker language self-test
+local pass, fail = 0, 0
+local function check(name, cond)
+  if cond then pass = pass + 1 else fail = fail + 1; print("FAIL: " .. name) end
+end
+check("arith", 1 + 2 * 3 == 7 and 10 // 3 == 3 and 10 % 3 == 1 and 2 ^ 10 == 1024)
+check("concat", "a" .. 1 .. "b" == "a1b")
+check("strings eq case", "abc" ~= "ABC" and "abc" == "abc")
+local t = {1, 2, 3, x = "y", ["k k"] = 5}
+check("table len", #t == 3)
+check("table field", t.x == "y" and t["k k"] == 5)
+t[#t + 1] = 4
+check("append", #t == 4 and t[4] == 4)
+local sum = 0
+for i, v in ipairs(t) do sum = sum + v end
+check("ipairs", sum == 10)
+local keys = 0
+for k, v in pairs(t) do keys = keys + 1 end
+check("pairs", keys == 6)
+local function fib(n) if n < 2 then return n end return fib(n - 1) + fib(n - 2) end
+check("recursion", fib(15) == 610)
+local count = 0
+function bump() count = count + 1 end
+bump() bump()
+check("upvalue main local", count == 2)
+local s = 0
+for i = 10, 1, -2 do s = s + i end
+check("for step", s == 30)
+local n = 0
+while true do n = n + 1; if n >= 5 then break end end
+check("while break", n == 5)
+local odd = 0
+for i = 1, 10 do if i % 2 == 0 then continue end odd = odd + 1 end
+check("continue", odd == 5)
+local r = 0
+repeat r = r + 1 until r == 3
+check("repeat", r == 3)
+local ok, err = pcall(function() error("boom") end)
+check("pcall", ok == false and string.find(err, "boom") ~= nil)
+local function two() return 1, 2 end
+local a, b = two()
+check("multret", a == 1 and b == 2)
+check("string.format", string.format("%5.2f|%-4d|%s", 3.14159, 42, "x") == " 3.14|42  |x")
+check("upper", ("hello"):upper() == "HELLO")
+check("split", #string.split("a,b,c", ",") == 3)
+local list = {5, 3, 9, 1}
+table.sort(list)
+check("sort", list[1] == 1 and list[4] == 9)
+table.sort(list, function(x, y) return x > y end)
+check("sort cmp", list[1] == 9)
+check("tostring", tostring(nil) == "nil" and tostring(true) == "true" and tostring(12) == "12")
+check("tonumber", tonumber("42") == 42 and tonumber("x") == nil and tonumber("ff", 16) == 255)
+local obj = {n = 1}
+function obj:inc(k) self.n = self.n + k end
+obj:inc(5)
+check("method", obj.n == 6)
+check("type", type({}) == "table" and type("") == "string" and type(print) == "function")
+check("and/or", (nil or 5) == 5 and (false and 1) == false and (1 and 2) == 2)
+check("not", not nil == true)
+check("nested tables", ({{1}, {2, {3}}})[2][2][1] == 3)
+check("len string", #"hello" == 5)
+check("byte/char", string.byte("A") == 65 and string.char(72, 105) == "Hi")
+print(string.format("%d passed, %d failed", pass, fail))

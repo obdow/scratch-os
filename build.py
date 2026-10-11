@@ -22,6 +22,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(ROOT, 'tools'))
 
 import assets  # noqa: E402
+import natives  # noqa: E402
 import osdata  # noqa: E402
 import rootfs  # noqa: E402
 import sbc  # noqa: E402
@@ -40,6 +41,7 @@ TW_CONFIG = {
 def build(main, out):
     data = rootfs.build_data(os.path.join(ROOT, 'rootfs'))
     data.update(osdata.build_data())
+    data.update(natives.build_data())
     prog = sbc.Program(data)
     # Constants made available to SBS source
     prog.consts.update({
@@ -51,6 +53,7 @@ def build(main, out):
         'CURSOR_MASK_COSTUME': assets.CURSOR_MASK_COSTUME,
     })
     prog.consts.update(data.get('_consts', {}))
+    prog.consts.update(data['_native_consts'])
     prog.load(main)
     targets, asset_bytes = prog.build_targets(assets.costume_group)
     stage = targets[0]

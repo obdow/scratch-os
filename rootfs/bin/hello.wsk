@@ -1,0 +1,3 @@
+-- hello.wsk - the classic first program
+local name = arg[1] or os.getenv("USER")
+print("Hello, " .. name .. "! Welcome to " .. sys.version() .. ".")

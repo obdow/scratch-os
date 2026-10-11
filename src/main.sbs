@@ -19,6 +19,12 @@ sprite Kernel {
     include "proc.sbs";
     include "shell.sbs";
     include "boot.sbs";
+    include "heap.sbs";
+    include "wcomp.sbs";
+    include "vm.sbs";
+    include "natives.sbs";
+    include "natives_sys.sbs";
+    include "caps.sbs";
     include "stubs_m2.sbs";
 
     var con = 0;            // console tty
@@ -44,6 +50,10 @@ sprite Kernel {
         if (gui == 1) {
             t = wm_focus_tty();
             if (t == 0) { wm_key(ev); return; }
+        }
+        if (prompt_pid != 0 && prompt_gui == 0 && prompt_tty == t) {
+            caps_key(ev);
+            return;
         }
         local fs = proc_slot(tty_fgpid[t]);
         if (ev == "^c") {

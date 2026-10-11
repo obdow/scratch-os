@@ -633,6 +633,10 @@ def fmt_lit(v):
     if isinstance(v, bool):
         return 'true' if v else 'false'
     if isinstance(v, float):
+        if v != v:
+            return 'NaN'
+        if v in (float('inf'), float('-inf')):
+            return 'Infinity' if v > 0 else '-Infinity'
         if v == int(v) and abs(v) < 1e15:
             return str(int(v))
         return repr(v)

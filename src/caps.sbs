@@ -1,0 +1,243 @@
+// ===========================================================================
+// caps.sbs - capability-based permissions (included inside sprite Kernel)
+//
+// Whisker programs run with no special rights.  Sensitive system calls
+// need a capability:
+//   files    modify files outside /home and /tmp
+//   proc     kill processes the program did not start
+//   gui      open windows on the desktop
+//   system   shut down / reboot the machine
+//
+// /etc/caps grants capabilities to program paths (trailing * = prefix).
+// Otherwise the user is asked the first time a capability is needed:
+//   [y]es (this run)   [n]o   [a]lways (adds a line to /etc/caps)
+// Programs may declare what they need up front with a comment line
+//   --@caps gui files
+// so all prompts appear when the program starts.
+// ===========================================================================
+
+list pol_pat;        // policy pattern (path or prefix*)
+list pol_caps;       // " cap1 cap2 "
+
+var prompt_pid = 0;  // process waiting for an answer (0 = none)
+var prompt_cap = "";
+var prompt_tty = 0;
+var prompt_gui = 0;
+
+list cap_names = ["files", "proc", "gui", "system"];
+list cap_desc = ["modify system files (outside /home and /tmp)", "control other processes",
+                 "open windows on the desktop", "shut down or restart the computer"];
+
+proc caps_init() {
+    caps_load();
+    prompt_pid = 0;
+}
+
+proc caps_load() {
+    clear(pol_pat);
+    clear(pol_caps);
+    local ino = fs_lookup("/etc/caps", 1);
+    if (ino == 0) { return; }
+    local src = fs_data[ino] .. "\n";
+    local line = "";
+    for i = 1 to len(src) {
+        local c = src[i];
+        if (c == "\n") {
+            line = str_trim(line);
+            if (len(line) > 0 && line[1] != "#") {
+                local sp = str_find(line, " ", 1);
+                if (sp > 0) {
+                    add(pol_pat, substr(line, 1, sp - 1));
+                    add(pol_caps, " " .. str_trim(substr(line, sp + 1, len(line))) .. " ");
+                }
+            }
+            line = "";
+        } else {
+            line = line .. c;
+        }
+    }
+}
+
+proc caps_pat_match(pat, path) {
+    if (pat[len(pat)] == "*") {
+        local pre = substr(pat, 1, len(pat) - 1);
+        return substr(path, 1, len(pre)) == pre;
+    }
+    return pat == path;
+}
+
+// "|cap|cap|" granted by policy for a program path
+proc caps_for_path(path) {
+    local out = "|";
+    for i = 1 to len(pol_pat) {
+        if (caps_pat_match(pol_pat[i], path) == 1) {
+            local cs = pol_caps[i];
+            local cur = "";
+            for k = 1 to len(cs) {
+                if (cs[k] == " ") {
+                    if (len(cur) > 0 && !(contains(out, "|" .. cur .. "|"))) { out = out .. cur .. "|"; }
+                    cur = "";
+                } else { cur = cur .. cs[k]; }
+            }
+        }
+    }
+    return out;
+}
+
+proc cap_description(cap) {
+    local i = index(cap_names, cap);
+    if (i == 0) { return "use capability '" .. cap .. "'"; }
+    return cap_desc[i];
+}
+
+// 1 granted, 0 denied, -1 waiting for the user
+proc caps_check(s, cap) {
+    if (contains(p_caps[s], "|" .. cap .. "|")) { return 1; }
+    if (contains(p_caps[s], "|!" .. cap .. "|")) { return 0; }
+    if (index(cap_names, cap) == 0) { return 0; }
+    if (prompt_pid == 0) {
+        caps_prompt(s, cap);
+    }
+    return -1;
+}
+
+proc caps_prompt(s, cap) {
+    prompt_pid = p_pid[s];
+    prompt_cap = cap;
+    prompt_gui = 0;
+    prompt_tty = 0;
+    if (gui == 1 && (p_tty[s] == 0 || tty_win[p_tty[s]] > 0)) {
+        prompt_gui = 1;
+        wm_caps_dialog(p_path[s], cap, cap_description(cap));
+        return;
+    }
+    local t = p_tty[s];
+    if (t == 0 || tty_used[t] == 0) { t = con; }
+    prompt_tty = t;
+    tty_write(t, "\n\e[30;103m Permission request \e[0m \e[97m" .. p_path[s] .. "\e[0m wants to\n");
+    tty_write(t, "  " .. cap_description(cap) .. " \e[93m[" .. cap .. "]\e[0m\n");
+    tty_write(t, "  Allow? \e[97m(y)\e[0mes / \e[97m(n)\e[0mo / \e[97m(a)\e[0mlways: ");
+}
+
+// answer: "y", "n" or "a"
+proc caps_answer(ans) {
+    local s = proc_slot(prompt_pid);
+    if (prompt_tty > 0 && tty_used[prompt_tty] == 1) {
+        if (ans == "n") { tty_write(prompt_tty, "\e[91mdenied\e[0m\n"); }
+        else if (ans == "a") { tty_write(prompt_tty, "\e[92malways allowed\e[0m\n"); }
+        else { tty_write(prompt_tty, "\e[92mallowed\e[0m\n"); }
+    }
+    if (s > 0) {
+        if (ans == "n") {
+            p_caps[s] = p_caps[s] .. "!" .. prompt_cap .. "|";
+        } else {
+            p_caps[s] = p_caps[s] .. prompt_cap .. "|";
+            if (ans == "a") { caps_policy_add(p_path[s], prompt_cap); }
+        }
+        if (p_state[s] == PS_BLOCKED) { p_state[s] = PS_READY; }
+    }
+    prompt_pid = 0;
+    prompt_cap = "";
+    prompt_tty = 0;
+    prompt_gui = 0;
+}
+
+proc caps_key(ev) {
+    if (ev == "y" || ev == "Y" || ev == "enter") { caps_answer("y"); return; }
+    if (ev == "a" || ev == "A") { caps_answer("a"); return; }
+    if (ev == "n" || ev == "N" || ev == "escape" || ev == "^c") { caps_answer("n"); return; }
+}
+
+proc caps_policy_add(path, cap) {
+    local ino = fs_lookup("/etc/caps", 1);
+    if (ino == 0) { ino = fs_create("/etc/caps", FT_FILE, 1); }
+    if (ino == 0) { return; }
+    local d = fs_data[ino];
+    if (len(d) > 0 && d[len(d)] != "\n") { d = d .. "\n"; }
+    fs_data[ino] = d .. path .. " " .. cap .. "\n";
+    fs_mtime[ino] = fs_now();
+    caps_load();
+}
+
+// cancel a prompt whose process died
+proc caps_proc_exit(pid) {
+    if (prompt_pid == pid) {
+        if (prompt_gui == 1) { wm_caps_dialog_close(); }
+        if (prompt_tty > 0 && tty_used[prompt_tty] == 1) { tty_write(prompt_tty, "\n"); }
+        prompt_pid = 0;
+    }
+}
+
+// request the capabilities a program declared with --@caps
+proc caps_preflight(s) {
+    forever {
+        local q = str_trim(p_capq[s]);
+        if (len(q) == 0) {
+            p_capq[s] = "";
+            return 1;
+        }
+        local sp = str_find(q, " ", 1);
+        local cap = q;
+        local rest = "";
+        if (sp > 0) {
+            cap = substr(q, 1, sp - 1);
+            rest = substr(q, sp + 1, len(q));
+        }
+        local r = caps_check(s, cap);
+        if (r == -1) {
+            proc_block(s, BLK_PROMPT);
+            return 0;
+        }
+        p_capq[s] = rest;
+    }
+}
+
+// shell builtin: caps [grant path cap | revoke path [cap]]
+proc caps_command(ok, oi, ek, ei) {
+    local argc = len(sh_argv) - 1;
+    if (argc == 0) {
+        fd_write(ok, oi, "\e[97mCapability policy (/etc/caps):\e[0m\n");
+        for i = 1 to len(pol_pat) {
+            fd_write(ok, oi, "  " .. pad_right(pol_pat[i], 26) .. str_trim(pol_caps[i]) .. "\n");
+        }
+        fd_write(ok, oi, "\e[97mRunning programs:\e[0m\n");
+        for s = 1 to MAX_PROC {
+            if (p_state[s] != PS_FREE && p_kind[s] == PK_VM) {
+                fd_write(ok, oi, "  " .. pad_left(p_pid[s], 4) .. " " .. pad_right(p_path[s], 22) .. p_caps[s] .. "\n");
+            }
+        }
+        fd_write(ok, oi, "Capabilities: files proc gui system\n");
+        return 0;
+    }
+    local sub = sh_argv[2];
+    if (sub == "grant" && argc >= 3) {
+        caps_policy_add(sh_argv[3], sh_argv[4]);
+        return 0;
+    }
+    if (sub == "revoke" && argc >= 2) {
+        local ino = fs_lookup("/etc/caps", 1);
+        if (ino == 0) { return 1; }
+        local src = fs_data[ino] .. "\n";
+        local out = "";
+        local line = "";
+        for i = 1 to len(src) {
+            local c = src[i];
+            if (c == "\n") {
+                local keep = 1;
+                local t = str_trim(line);
+                if (substr(t, 1, len(sh_argv[3]) + 1) == sh_argv[3] .. " ") {
+                    if (argc == 2 || contains(t, " " .. sh_argv[4])) { keep = 0; }
+                }
+                if (keep == 1 && len(line) > 0) { out = out .. line .. "\n"; }
+                line = "";
+            } else {
+                line = line .. c;
+            }
+        }
+        fs_data[ino] = out;
+        caps_load();
+        return 0;
+    }
+    fd_write(ek, ei, "usage: caps [grant PATH CAP | revoke PATH [CAP]]\n");
+    return 1;
+}

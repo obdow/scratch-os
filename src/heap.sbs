@@ -1,0 +1,376 @@
+// ===========================================================================
+// heap.sbs - Whisker values and tables (included inside sprite Kernel)
+//
+// Every Whisker value is a (value, tag) pair:
+//   TNIL 0   TNUM 1   TSTR 2   TBOOL 3 (value 1/0)   TTAB 4 (table handle)
+//   TFUN 5 (absolute code address)   TNAT 6 (native function id)
+//
+// Tables live in the shared heap lists HV / HT.  A table handle indexes the
+// tb_* registry, which records an array part (integer keys 1..n) and a hash
+// part (key/value pairs, linear search).  String keys are compared with
+// Scratch equality, so table keys are case-insensitive.
+//
+// Garbage collection is mark-compact, run between instructions when the
+// heap is large.  Roots: every process stack and globals table, plus
+// tables pinned by the kernel (window display lists).
+// ===========================================================================
+
+const TNIL = 0;
+const TNUM = 1;
+const TSTR = 2;
+const TBOOL = 3;
+const TTAB = 4;
+const TFUN = 5;
+const TNAT = 6;
+
+const HEAP_GC_AT = 120000;
+
+list HV;
+list HT;
+list tb_ab;      // array part base (element i at HV[ab + i])
+list tb_an;      // array length
+list tb_ac;      // array capacity
+list tb_hb;      // hash part base (pair i key at HV[hb + 2i - 1], value at HV[hb + 2i])
+list tb_hn;      // pair count
+list tb_hc;      // pair capacity
+list tb_used;
+list tb_owner;   // pid (0 = kernel)
+list tb_mark;
+list tb_pin;     // pinned by the kernel
+
+var hv_r = "";   // result of table_get
+var ht_r = 0;
+var gc_runs = 0;
+var gc_freed = 0;
+var heap_live = 0;
+
+list gc_stack;
+list NHV;
+list NHT;
+
+proc heap_init() {
+    clear(HV); clear(HT);
+    clear(tb_ab); clear(tb_an); clear(tb_ac); clear(tb_hb); clear(tb_hn); clear(tb_hc);
+    clear(tb_used); clear(tb_owner); clear(tb_mark); clear(tb_pin);
+    gc_runs = 0;
+    heap_live = 0;
+}
+
+proc heap_alloc(n) {
+    local base = len(HV);
+    repeat (n) {
+        add(HV, "");
+        add(HT, 0);
+    }
+    return base;
+}
+
+proc table_new(owner) {
+    local h = index(tb_used, 0);
+    if (h == 0) {
+        add(tb_ab, 0); add(tb_an, 0); add(tb_ac, 0); add(tb_hb, 0); add(tb_hn, 0); add(tb_hc, 0);
+        add(tb_used, 1); add(tb_owner, owner); add(tb_mark, 0); add(tb_pin, 0);
+        h = len(tb_used);
+    } else {
+        tb_ab[h] = 0; tb_an[h] = 0; tb_ac[h] = 0; tb_hb[h] = 0; tb_hn[h] = 0; tb_hc[h] = 0;
+        tb_used[h] = 1; tb_owner[h] = owner; tb_mark[h] = 0; tb_pin[h] = 0;
+    }
+    heap_live += 1;
+    return h;
+}
+
+proc table_free_owner(pid) {
+    for h = 1 to len(tb_used) {
+        if (tb_used[h] == 1 && tb_owner[h] == pid && tb_pin[h] == 0) {
+            tb_used[h] = 0;
+            heap_live -= 1;
+        }
+    }
+}
+
+// grow array part to at least `need` elements
+proc table_grow_arr(h, need) {
+    local cap = tb_ac[h];
+    local nc = cap * 2;
+    if (nc < 4) { nc = 4; }
+    while (nc < need) { nc = nc * 2; }
+    local nb = heap_alloc(nc);
+    local ob = tb_ab[h];
+    for i = 1 to tb_an[h] {
+        HV[nb + i] = HV[ob + i];
+        HT[nb + i] = HT[ob + i];
+    }
+    tb_ab[h] = nb;
+    tb_ac[h] = nc;
+}
+
+proc table_grow_hash(h) {
+    local cap = tb_hc[h];
+    local nc = cap * 2;
+    if (nc < 4) { nc = 4; }
+    local nb = heap_alloc(nc * 2);
+    local ob = tb_hb[h];
+    for i = 1 to tb_hn[h] * 2 {
+        HV[nb + i] = HV[ob + i];
+        HT[nb + i] = HT[ob + i];
+    }
+    tb_hb[h] = nb;
+    tb_hc[h] = nc;
+}
+
+// index of the hash pair holding key (k, kt), or 0
+proc table_hfind(h, k, kt) {
+    local b = tb_hb[h];
+    local n = tb_hn[h];
+    local i = 1;
+    local kl = len(k);
+    while (i <= n) {
+        local p = b + i * 2 - 1;
+        if (HT[p] == kt) {
+            if (HV[p] == k) {
+                if (kt != TSTR || len(HV[p]) == kl) { return i; }
+            }
+        }
+        i += 1;
+    }
+    return 0;
+}
+
+// is (k, kt) a positive integer key?
+proc is_int_key(k, kt) {
+    if (kt != TNUM) { return 0; }
+    if (k < 1) { return 0; }
+    return k == floor(k);
+}
+
+// t[k] -> hv_r / ht_r
+proc table_get(h, k, kt) {
+    if (kt == TNUM) {
+        if (k >= 1 && k <= tb_an[h] && k == floor(k)) {
+            local p = tb_ab[h] + k;
+            hv_r = HV[p];
+            ht_r = HT[p];
+            return;
+        }
+    }
+    if (tb_hn[h] > 0) {
+        local i = table_hfind(h, k, kt);
+        if (i > 0) {
+            local p2 = tb_hb[h] + i * 2;
+            hv_r = HV[p2];
+            ht_r = HT[p2];
+            return;
+        }
+    }
+    hv_r = "";
+    ht_r = TNIL;
+}
+
+// t[k] = v
+proc table_set(h, k, kt, v, vt) {
+    if (kt == TNUM && k >= 1 && k == floor(k)) {
+        local n = tb_an[h];
+        if (k <= n) {
+            local p = tb_ab[h] + k;
+            HV[p] = v;
+            HT[p] = vt;
+            if (vt == TNIL && k == n) {
+                // shrink trailing nils
+                local m = n - 1;
+                while (m > 0 && HT[tb_ab[h] + m] == TNIL) { m -= 1; }
+                tb_an[h] = m;
+            }
+            return;
+        }
+        if (k == n + 1 && vt != TNIL) {
+            if (n + 1 > tb_ac[h]) { table_grow_arr(h, n + 1); }
+            local p3 = tb_ab[h] + n + 1;
+            HV[p3] = v;
+            HT[p3] = vt;
+            tb_an[h] = n + 1;
+            // migrate following keys from the hash part
+            if (tb_hn[h] > 0) { table_migrate(h); }
+            return;
+        }
+    }
+    if (kt == TNIL) { vm_raise("table index is nil"); return; }
+    local i = 0;
+    if (tb_hn[h] > 0) { i = table_hfind(h, k, kt); }
+    if (i > 0) {
+        local p2 = tb_hb[h] + i * 2;
+        if (vt == TNIL) {
+            // remove pair: move the last pair into its place
+            local last = tb_hb[h] + tb_hn[h] * 2;
+            HV[p2 - 1] = HV[last - 1]; HT[p2 - 1] = HT[last - 1];
+            HV[p2] = HV[last]; HT[p2] = HT[last];
+            tb_hn[h] = tb_hn[h] - 1;
+            return;
+        }
+        HV[p2] = v;
+        HT[p2] = vt;
+        return;
+    }
+    if (vt == TNIL) { return; }
+    if (tb_hn[h] >= tb_hc[h]) { table_grow_hash(h); }
+    local n2 = tb_hn[h] + 1;
+    tb_hn[h] = n2;
+    local q = tb_hb[h] + n2 * 2;
+    HV[q - 1] = k; HT[q - 1] = kt;
+    HV[q] = v; HT[q] = vt;
+}
+
+// move hash entries with keys an+1, an+2, ... into the array part
+proc table_migrate(h) {
+    forever {
+        local k = tb_an[h] + 1;
+        local i = table_hfind(h, k, TNUM);
+        if (i == 0) { return; }
+        local p = tb_hb[h] + i * 2;
+        local v = HV[p];
+        local vt = HT[p];
+        table_set(h, k, TNUM, "", TNIL);
+        table_set(h, k, TNUM, v, vt);
+    }
+}
+
+proc table_len(h) {
+    return tb_an[h];
+}
+
+proc table_append(h, v, vt) {
+    table_set(h, tb_an[h] + 1, TNUM, v, vt);
+}
+
+// insert at position (shifting up)
+proc table_insert(h, pos, v, vt) {
+    local n = tb_an[h];
+    if (pos > n) { table_append(h, v, vt); return; }
+    table_append(h, HV[tb_ab[h] + n], HT[tb_ab[h] + n]);
+    local b = tb_ab[h];
+    local i = n;
+    while (i > pos) {
+        HV[b + i] = HV[b + i - 1];
+        HT[b + i] = HT[b + i - 1];
+        i -= 1;
+    }
+    HV[b + pos] = v;
+    HT[b + pos] = vt;
+}
+
+// remove at position; removed value in hv_r/ht_r
+proc table_remove(h, pos) {
+    local n = tb_an[h];
+    if (n == 0 || pos < 1 || pos > n) { hv_r = ""; ht_r = TNIL; return; }
+    local b = tb_ab[h];
+    hv_r = HV[b + pos];
+    ht_r = HT[b + pos];
+    local i = pos;
+    while (i < n) {
+        HV[b + i] = HV[b + i + 1];
+        HT[b + i] = HT[b + i + 1];
+        i += 1;
+    }
+    HV[b + n] = "";
+    HT[b + n] = TNIL;
+    tb_an[h] = n - 1;
+}
+
+// convenience setters for natives building result tables
+proc tset_s(h, key, v) { table_set(h, key, TSTR, v, TSTR); }
+proc tset_n(h, key, v) { table_set(h, key, TSTR, v, TNUM); }
+proc tset_b(h, key, v) { table_set(h, key, TSTR, v, TBOOL); }
+proc tpush_s(h, v) { table_append(h, v, TSTR); }
+proc tpush_n(h, v) { table_append(h, v, TNUM); }
+proc tpush_t(h, v) { table_append(h, v, TTAB); }
+
+// --- garbage collector -------------------------------------------------------
+
+proc gc_mark_value(v, t) {
+    if (t == TTAB) {
+        if (tb_mark[v] == 0 && tb_used[v] == 1) {
+            tb_mark[v] = 1;
+            add(gc_stack, v);
+        }
+    }
+}
+
+proc gc_collect() {
+    gc_runs += 1;
+    clear(gc_stack);
+    for h = 1 to len(tb_used) {
+        tb_mark[h] = 0;
+    }
+    // roots
+    for h = 1 to len(tb_used) {
+        if (tb_used[h] == 1 && tb_pin[h] == 1) { gc_mark_value(h, TTAB); }
+    }
+    for s = 1 to MAX_PROC {
+        if (p_state[s] != PS_FREE && p_kind[s] == PK_VM) {
+            if (p_glob[s] > 0) { gc_mark_value(p_glob[s], TTAB); }
+            local base = p_sbase[s];
+            for i = base + 1 to p_sp[s] {
+                if (STT[i] == TTAB) { gc_mark_value(STK[i], TTAB); }
+            }
+        }
+    }
+    // the running process's live registers
+    if (vm_slot > 0) {
+        for i = p_sbase[vm_slot] + 1 to vm_sp {
+            if (STT[i] == TTAB) { gc_mark_value(STK[i], TTAB); }
+        }
+    }
+    // trace
+    while (len(gc_stack) > 0) {
+        local h2 = gc_stack[len(gc_stack)];
+        del(gc_stack, len(gc_stack));
+        local ab = tb_ab[h2];
+        for i = 1 to tb_an[h2] {
+            if (HT[ab + i] == TTAB) { gc_mark_value(HV[ab + i], TTAB); }
+        }
+        local hb = tb_hb[h2];
+        for i = 1 to tb_hn[h2] * 2 {
+            if (HT[hb + i] == TTAB) { gc_mark_value(HV[hb + i], TTAB); }
+        }
+    }
+    // sweep + compact
+    clear(NHV);
+    clear(NHT);
+    gc_freed = 0;
+    heap_live = 0;
+    for h = 1 to len(tb_used) {
+        if (tb_used[h] == 1) {
+            if (tb_mark[h] == 0) {
+                tb_used[h] = 0;
+                gc_freed += 1;
+            } else {
+                heap_live += 1;
+                local ab2 = tb_ab[h];
+                local na = tb_an[h];
+                local nab = len(NHV);
+                for i = 1 to na {
+                    add(NHV, HV[ab2 + i]);
+                    add(NHT, HT[ab2 + i]);
+                }
+                tb_ab[h] = nab;
+                tb_ac[h] = na;
+                local hb2 = tb_hb[h];
+                local nh = tb_hn[h] * 2;
+                local nhb = len(NHV);
+                for i = 1 to nh {
+                    add(NHV, HV[hb2 + i]);
+                    add(NHT, HT[hb2 + i]);
+                }
+                tb_hb[h] = nhb;
+                tb_hc[h] = tb_hn[h];
+            }
+        }
+    }
+    clear(HV);
+    clear(HT);
+    for i = 1 to len(NHV) {
+        add(HV, NHV[i]);
+        add(HT, NHT[i]);
+    }
+    clear(NHV);
+    clear(NHT);
+}

@@ -1,17 +1,11 @@
-// temporary stubs (replaced by vm.sbs / wm.sbs / caps.sbs)
-proc vm_init() { }
-proc vm_release(s) { }
-proc vm_run(s, n) { }
-proc vm_spawn(parent, ino) {
-    sh_errmsg(parent, fs_name[ino] .. ": cannot execute (Whisker VM not installed yet)");
-    return 0;
-}
+// temporary stubs (replaced by wm.sbs)
 proc wm_init() { }
 proc wm_proc_exit(pid) { }
 proc wm_owner_at(cx, cy) { return 0; }
 proc wm_start(s) { sh_errmsg(s, "startx: no window manager yet"); return 1; }
 proc wm_stop_all() { }
-proc caps_init() { }
-proc caps_command(ok, oi, ek, ei) { return 0; }
 proc wm_focus_tty() { return con; }
 proc wm_key(ev) { }
+proc wm_caps_dialog(path, cap, desc) { }
+proc wm_caps_dialog_close() { }
+proc nat_gui(id) { vm_raise("no window manager"); }

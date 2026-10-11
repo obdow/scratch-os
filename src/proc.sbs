@@ -283,6 +283,7 @@ proc proc_exit(s, code) {
     fd_close_ref(p_err_k[s], p_err_i[s], 1);
     if (p_kind[s] == PK_VM) { vm_release(s); }
     wm_proc_exit(pid);
+    caps_proc_exit(pid);
     // drop queued raw keys
     local i = 1;
     while (i <= len(kq_pid)) {

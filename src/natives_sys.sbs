@@ -1,0 +1,488 @@
+// ===========================================================================
+// natives_sys.sbs - file system, process, terminal and system calls
+// (included inside sprite Kernel).  gui.* / gfx.* live in wm.sbs.
+// ===========================================================================
+
+list run_pid;        // proc.run bookkeeping: caller pid, child pid, pipe, output
+list run_child;
+list run_pipe;
+list run_acc;
+
+proc nat_fail(msg) {
+    nat_retnil();
+    nat_rets(msg);
+}
+
+proc nat_sys(id) {
+    if (id >= N_GUI_WINDOW && id < N_SYS_VERSION) {
+        nat_gui(id);
+        return;
+    }
+    local s = vm_slot;
+    local cwd = p_cwd[s];
+    switch (id) {
+        // ---- file system ----
+        case N_FS_READ: {
+            local ino = nat_path(1, "fs.read");
+            if (vm_raised == 0) {
+                if (ino == 0) { nat_fail(fs_err); }
+                else if (fs_type[ino] == FT_DIR) { nat_fail("is a directory"); }
+                else { nat_rets(fs_data[ino]); }
+            }
+        }
+        case N_FS_WRITE, N_FS_APPEND: {
+            local path = nat_str(1, "fs.write");
+            local data2 = vm_tostr(nat_v(2), nat_t(2));
+            if (vm_raised == 0) {
+                local ino2 = fs_lookup(path, cwd);
+                local target = ino2;
+                if (ino2 == 0) { target = fs_lookup_parent(path, cwd); }
+                if (target == 0) { nat_fail(fs_err); }
+                else if (ino2 > 0 && fs_type[ino2] == FT_DIR) { nat_fail("is a directory"); }
+                else if (nat_fs_cap(target) == 1) {
+                    if (ino2 == 0) { ino2 = fs_create(path, FT_FILE, cwd); }
+                    if (ino2 == 0) { nat_fail(fs_err); }
+                    else {
+                        if (id == N_FS_WRITE) { fs_data[ino2] = data2; } else { fs_data[ino2] = fs_data[ino2] .. data2; }
+                        fs_mtime[ino2] = fs_now();
+                        nat_retb(1);
+                    }
+                }
+            }
+        }
+        case N_FS_LIST: {
+            local ino3 = cwd;
+            if (nat_argc >= 1) { ino3 = nat_path(1, "fs.list"); }
+            if (vm_raised == 0) {
+                if (ino3 == 0) { nat_fail(fs_err); }
+                else if (fs_type[ino3] != FT_DIR) { nat_fail("not a directory"); }
+                else {
+                    fs_list(ino3);
+                    local h = table_new(p_pid[s]);
+                    for k = 1 to len(fs_tmp) { table_append(h, fs_name[fs_tmp[k]], TSTR); }
+                    nat_rett(h);
+                }
+            }
+        }
+        case N_FS_EXISTS: { nat_retb(nat_path(1, "fs.exists") > 0); }
+        case N_FS_ISDIR: {
+            local ino4 = nat_path(1, "fs.isdir");
+            nat_retb(ino4 > 0 && fs_type[ino4] == FT_DIR);
+        }
+        case N_FS_MKDIR: {
+            local path2 = nat_str(1, "fs.mkdir");
+            if (vm_raised == 0) {
+                local ex = fs_lookup(path2, cwd);
+                if (ex > 0) {
+                    if (fs_type[ex] == FT_DIR) { nat_retb(1); } else { nat_fail("file exists"); }
+                } else {
+                    local par = fs_lookup_parent(path2, cwd);
+                    if (par == 0) { nat_fail(fs_err); }
+                    else if (nat_fs_cap(par) == 1) {
+                        if (fs_create(path2, FT_DIR, cwd) == 0) { nat_fail(fs_err); } else { nat_retb(1); }
+                    }
+                }
+            }
+        }
+        case N_FS_REMOVE: {
+            local ino5 = nat_path(1, "fs.remove");
+            if (vm_raised == 0) {
+                if (ino5 == 0) { nat_fail(fs_err); }
+                else if (fs_is_ancestor(ino5, cwd) == 1) { nat_fail("cannot remove the current directory"); }
+                else if (nat_fs_cap(ino5) == 1) {
+                    local rec = 0;
+                    if (nat_argc >= 2 && vm_truthy(nat_v(2), nat_t(2)) == 1) { rec = 1; }
+                    if (fs_remove(ino5, rec) == 1) { nat_retb(1); } else { nat_fail(fs_err); }
+                }
+            }
+        }
+        case N_FS_RENAME, N_FS_COPY: {
+            local src = nat_path(1, "fs.rename");
+            local dpath = nat_str(2, "fs.rename");
+            if (vm_raised == 0) {
+                if (src == 0) { nat_fail(fs_err); }
+                else {
+                    // destination: existing directory -> move inside it
+                    local dino = fs_lookup(dpath, cwd);
+                    local ddir = 0;
+                    local dname = "";
+                    if (dino > 0 && fs_type[dino] == FT_DIR) {
+                        ddir = dino;
+                        dname = fs_name[src];
+                    } else {
+                        ddir = fs_lookup_parent(dpath, cwd);
+                        dname = fs_base;
+                    }
+                    if (ddir == 0) { nat_fail(fs_err); }
+                    else {
+                        local ok = nat_fs_cap(ddir);
+                        if (ok == 1 && id == N_FS_RENAME) { ok = nat_fs_cap(src); }
+                        if (ok == 1) {
+                            local r = 0;
+                            if (id == N_FS_RENAME) { r = fs_rename(src, ddir, dname); }
+                            else { r = fs_copy(src, ddir, dname); }
+                            if (r == 0) { nat_fail(fs_err); } else { nat_retb(1); }
+                        }
+                    }
+                }
+            }
+        }
+        case N_FS_STAT: {
+            local ino6 = nat_path(1, "fs.stat");
+            if (vm_raised == 0) {
+                if (ino6 == 0) { nat_fail(fs_err); }
+                else {
+                    local h2 = table_new(p_pid[s]);
+                    tset_s(h2, "name", fs_name[ino6]);
+                    tset_s(h2, "path", fs_path(ino6));
+                    if (fs_type[ino6] == FT_DIR) { tset_s(h2, "type", "dir"); } else { tset_s(h2, "type", "file"); }
+                    tset_n(h2, "size", len(fs_data[ino6]));
+                    tset_n(h2, "mtime", floor(fs_mtime[ino6] * 86400 + 946684800));
+                    tset_n(h2, "inode", ino6);
+                    tset_b(h2, "protected", fs_protected(ino6));
+                    nat_rett(h2);
+                }
+            }
+        }
+        case N_FS_CWD: { nat_rets(fs_path(cwd)); }
+        case N_FS_CHDIR: {
+            local ino7 = nat_path(1, "fs.chdir");
+            if (vm_raised == 0) {
+                if (ino7 == 0) { nat_fail(fs_err); }
+                else if (fs_type[ino7] != FT_DIR) { nat_fail("not a directory"); }
+                else { p_cwd[s] = ino7; nat_retb(1); }
+            }
+        }
+        case N_FS_ABS: {
+            local path3 = nat_str(1, "fs.abs");
+            if (vm_raised == 0) {
+                local ino8 = fs_lookup(path3, cwd);
+                if (ino8 > 0) { nat_rets(fs_path(ino8)); }
+                else {
+                    local par2 = fs_lookup_parent(path3, cwd);
+                    if (par2 == 0) { nat_fail(fs_err); }
+                    else if (par2 == 1) { nat_rets("/" .. fs_base); }
+                    else { nat_rets(fs_path(par2) .. "/" .. fs_base); }
+                }
+            }
+        }
+        case N_FS_NAME: {
+            local p4 = nat_str(1, "fs.name");
+            while (len(p4) > 1 && p4[len(p4)] == "/") { p4 = substr(p4, 1, len(p4) - 1); }
+            local k4 = len(p4);
+            while (k4 > 0 && p4[k4] != "/") { k4 -= 1; }
+            nat_rets(substr(p4, k4 + 1, len(p4)));
+        }
+        case N_FS_DIR: {
+            local p5 = nat_str(1, "fs.dir");
+            local k5 = len(p5);
+            while (k5 > 1 && p5[k5] == "/") { k5 -= 1; }
+            while (k5 > 0 && p5[k5] != "/") { k5 -= 1; }
+            if (k5 == 0) { nat_rets("."); } else if (k5 == 1) { nat_rets("/"); } else { nat_rets(substr(p5, 1, k5 - 1)); }
+        }
+        // ---- processes ----
+        case N_PROC_SPAWN: {
+            local cmd = nat_str(1, "proc.spawn");
+            if (vm_raised == 0) {
+                local pid = proc_start_cmd(s, cmd, p_out_k[s], p_out_i[s]);
+                if (pid > 0) { nat_retn(pid); } else { nat_fail("cannot start '" .. cmd .. "'"); }
+            }
+        }
+        case N_PROC_RUN: { nat_proc_run(); }
+        case N_PROC_WAIT: {
+            local wp = nat_num(1, "proc.wait");
+            if (vm_raised == 0) {
+                if (proc_slot(wp) > 0) { nat_block(BLK_IO); }
+                else {
+                    local st = proc_status(wp);
+                    if (len(st) == 0) { nat_retnil(); } else { nat_retn(st); }
+                }
+            }
+        }
+        case N_PROC_ALIVE: { nat_retb(proc_slot(nat_num(1, "proc.alive")) > 0); }
+        case N_PROC_KILL: {
+            local kp = nat_num(1, "proc.kill");
+            if (vm_raised == 0) {
+                local ks = proc_slot(kp);
+                if (ks == 0) { nat_fail("no such process"); }
+                else if (p_kind[ks] == PK_INIT) { nat_fail("cannot kill init"); }
+                else if (ks == s) { vm_running = 0; vm_exited = 1; proc_exit(s, 143); }
+                else {
+                    local ok2 = 1;
+                    if (proc_is_descendant(ks, p_pid[s]) == 0) { ok2 = nat_cap("proc"); }
+                    if (ok2 == 1) { proc_kill(ks, 143); nat_retb(1); }
+                }
+            }
+        }
+        case N_PROC_LIST, N_SYS_PROCS: {
+            local h3 = table_new(p_pid[s]);
+            for k = 1 to MAX_PROC {
+                if (p_state[k] != PS_FREE) {
+                    local e = table_new(p_pid[s]);
+                    tset_n(e, "pid", p_pid[k]);
+                    tset_n(e, "ppid", p_parent[k]);
+                    tset_s(e, "name", p_name[k]);
+                    tset_s(e, "path", p_path[k]);
+                    tset_s(e, "state", proc_state_name(k));
+                    tset_n(e, "cpu", p_cpu[k]);
+                    tset_n(e, "time", floor((now_secs() - p_start[k]) * 10) / 10);
+                    tset_n(e, "tty", p_tty[k]);
+                    tset_s(e, "kind", proc_kind_name(k));
+                    tset_n(e, "mem", proc_mem(k));
+                    table_append(h3, e, TTAB);
+                }
+            }
+            nat_rett(h3);
+        }
+        // ---- terminal ----
+        case N_TERM_CLEAR: { term_out(s, "\e[2J\e[H"); }
+        case N_TERM_COLOR: {
+            local t = p_tty[s];
+            if (t > 0) {
+                local fg = nat_optnum(1, 7, "term.color") % 16;
+                local bg = nat_optnum(2, floor(tty_attr[t] / 16), "term.color") % 16;
+                tty_attr[t] = fg + bg * 16;
+            }
+        }
+        case N_TERM_GOTO: {
+            local t2 = p_tty[s];
+            if (t2 > 0) { tty_goto(t2, nat_num(1, "term.goto") - 1, nat_num(2, "term.goto") - 1); }
+        }
+        case N_TERM_SIZE: {
+            local t3 = p_tty[s];
+            if (t3 > 0) { nat_retn(tty_w[t3]); nat_retn(tty_h[t3]); } else { nat_retn(60); nat_retn(22); }
+        }
+        case N_TERM_GETPOS: {
+            local t4 = p_tty[s];
+            if (t4 > 0) { nat_retn(tty_cx[t4] + 1); nat_retn(tty_cy[t4] + 1); } else { nat_retn(1); nat_retn(1); }
+        }
+        case N_TERM_RAW: {
+            local t5 = p_tty[s];
+            if (t5 > 0) {
+                if (vm_truthy(nat_v(1), nat_t(1)) == 1 || nat_argc == 0) { tty_mode[t5] = 1; p_raw[s] = 1; }
+                else { tty_mode[t5] = 0; p_raw[s] = 0; }
+            }
+        }
+        case N_TERM_CURSOR: {
+            local t6 = p_tty[s];
+            if (t6 > 0) { tty_curvis[t6] = vm_truthy(nat_v(1), nat_t(1)); }
+        }
+        case N_TERM_GETKEY, N_TERM_WAITKEY: {
+            local qi = index(kq_pid, p_pid[s]);
+            if (qi > 0) {
+                nat_rets(kq_ev[qi]);
+                del(kq_pid, qi);
+                del(kq_ev, qi);
+            } else if (id == N_TERM_WAITKEY) {
+                nat_block(BLK_IO);
+            } else {
+                nat_retnil();
+            }
+        }
+        case N_TERM_PUT: {
+            local t7 = p_tty[s];
+            if (t7 > 0) {
+                local px = nat_num(1, "term.put") - 1;
+                local py = nat_num(2, "term.put") - 1;
+                local str = vm_tostr(nat_v(3), nat_t(3));
+                local a = tty_attr[t7];
+                if (nat_argc >= 4) { a = nat_num(4, "term.put") % 16 + floor(a / 16) * 16; }
+                if (nat_argc >= 5) { a = a % 16 + (nat_num(5, "term.put") % 16) * 16; }
+                if (vm_raised == 0) { tty_put_str(t7, px, py, str, a); }
+            }
+        }
+        case N_TERM_WRITE: { term_out(s, vm_tostr(nat_v(1), nat_t(1))); }
+        // ---- system ----
+        case N_SYS_VERSION: { nat_rets(OS_NAME .. " " .. OS_VERSION); }
+        case N_SYS_HOSTNAME: { nat_rets(env_get("HOSTNAME")); }
+        case N_SYS_MEM: {
+            local h4 = table_new(p_pid[s]);
+            tset_n(h4, "heap", len(HV));
+            tset_n(h4, "heap_max", 200000);
+            tset_n(h4, "tables", heap_live);
+            tset_n(h4, "code", len(CODE));
+            tset_n(h4, "code_max", CODE_LIMIT);
+            tset_n(h4, "files", fs_count);
+            tset_n(h4, "file_bytes", fs_total_bytes());
+            tset_n(h4, "procs", proc_count);
+            tset_n(h4, "gc_runs", gc_runs);
+            tset_n(h4, "instructions", vm_total);
+            nat_rett(h4);
+        }
+        case N_SYS_GC: { gc_collect(); nat_retn(gc_freed); }
+        case N_SYS_SHUTDOWN, N_SYS_REBOOT: {
+            if (nat_cap("system") == 1) {
+                if (id == N_SYS_SHUTDOWN) { sys_power(0); } else { sys_power(1); }
+            }
+        }
+        case N_SYS_CAPS: {
+            local h5 = table_new(p_pid[s]);
+            local cur = "";
+            local cs = p_caps[s];
+            for k = 1 to len(cs) {
+                if (cs[k] == "|") {
+                    if (len(cur) > 0) { table_append(h5, cur, TSTR); }
+                    cur = "";
+                } else { cur = cur .. cs[k]; }
+            }
+            nat_rett(h5);
+        }
+        case N_SYS_REQUEST: {
+            local cap = nat_str(1, "sys.request");
+            if (vm_raised == 0) {
+                local r2 = caps_check(s, cap);
+                if (r2 == -1) { nat_block(BLK_PROMPT); }
+                else { nat_retb(r2); }
+            }
+        }
+        default: { vm_raise("native " .. nat_names[id] .. " not implemented"); }
+    }
+}
+
+// write directly to the process's terminal
+proc term_out(s, str) {
+    local t = p_tty[s];
+    if (t > 0 && tty_used[t] == 1) { tty_write(t, str); }
+}
+
+// write a string at a cell position without moving the cursor
+proc tty_put_str(t, x, y, str, a) {
+    if (y < 0 || y >= tty_h[t]) { return; }
+    local w = tty_w[t];
+    for i = 1 to len(str) {
+        local col = x + i - 1;
+        if (col >= 0 && col < w) {
+            local idx = tty_idx(t, y, col);
+            local code = ord(str[i]);
+            if (cell_ch[idx] != code || cell_at[idx] != a) {
+                cell_ch[idx] = code;
+                cell_at[idx] = a;
+                tty_mark(t, y, col);
+            }
+        }
+    }
+}
+
+proc proc_state_name(k) {
+    local st = p_state[k];
+    if (st == PS_READY) { return "run"; }
+    if (st == PS_BLOCKED) {
+        local b = p_block[k];
+        if (b == BLK_SLEEP) { return "sleep"; }
+        if (b == BLK_PROMPT) { return "prompt"; }
+        return "wait";
+    }
+    if (st == PS_STOPPED) { return "stop"; }
+    return "?";
+}
+
+proc proc_kind_name(k) {
+    local kd = p_kind[k];
+    if (kd == PK_SHELL) { return "shell"; }
+    if (kd == PK_INIT) { return "init"; }
+    return "wsk";
+}
+
+// approximate memory use of a process: heap cells of its tables
+proc proc_mem(k) {
+    local pid = p_pid[k];
+    local total = 0;
+    if (p_kind[k] == PK_VM) {
+        for h = 1 to len(tb_used) {
+            if (tb_used[h] == 1 && tb_owner[h] == pid) { total += tb_ac[h] + tb_hc[h] * 2 + 8; }
+        }
+        total += p_sp[k] - p_sbase[k];
+    }
+    return total;
+}
+
+proc proc_is_descendant(ks, pid) {
+    local k = ks;
+    local guard = 0;
+    while (k > 0 && guard < 40) {
+        if (p_parent[k] == pid) { return 1; }
+        k = proc_slot(p_parent[k]);
+        guard += 1;
+    }
+    return 0;
+}
+
+// start a command line (no pipes) as a child of slot s; returns pid or 0
+proc proc_start_cmd(s, cmd, out_k, out_i) {
+    sh_tokenize(s, cmd);
+    clear(sh_argv);
+    for k = 1 to len(tok_v) { add(sh_argv, tok_v[k]); }
+    if (len(sh_argv) == 0) { return 0; }
+    local ino = sh_resolve(s, sh_argv[1]);
+    if (ino == 0) { return 0; }
+    local c = 0;
+    local fname = fs_name[ino];
+    if (len(fname) > 3 && substr(fname, len(fname) - 2, len(fname)) == ".sh") {
+        c = shell_spawn(s, fs_data[ino] .. "\n", fs_path(ino));
+        sh_inter[c] = 0;
+    } else {
+        c = vm_spawn(s, ino);
+    }
+    if (c == 0) { return 0; }
+    p_name[c] = cmd;
+    p_out_k[c] = out_k;
+    p_out_i[c] = out_i;
+    fd_open_ref(p_in_k[c], p_in_i[c], 0);
+    fd_open_ref(out_k, out_i, 1);
+    fd_open_ref(p_err_k[c], p_err_i[c], 1);
+    return p_pid[c];
+}
+
+// proc.run(cmd): run a command, wait for it and return its output as a string
+proc nat_proc_run() {
+    local s = vm_slot;
+    local me = p_pid[s];
+    local ri = index(run_pid, me);
+    if (ri == 0) {
+        local cmd = nat_str(1, "proc.run");
+        if (vm_raised == 1) { return; }
+        local pp = pipe_new();
+        if (pp == 0) { nat_fail("too many pipes"); return; }
+        pipe_r[pp] = 1;
+        local child = proc_start_cmd(s, cmd, FD_PIPE, pp);
+        if (child == 0) {
+            pipe_r[pp] = 0;
+            pipe_gc(pp);
+            nat_fail("cannot start '" .. cmd .. "'");
+            return;
+        }
+        add(run_pid, me);
+        add(run_child, child);
+        add(run_pipe, pp);
+        add(run_acc, "");
+        ri = len(run_pid);
+    }
+    local pp2 = run_pipe[ri];
+    forever {
+        local r = pipe_readline(pp2);
+        if (r != 1) { break; }
+        run_acc[ri] = run_acc[ri] .. fd_got .. "\n";
+    }
+    if (proc_slot(run_child[ri]) > 0 || (pipe_w[pp2] > 0)) {
+        nat_block(BLK_IO);
+        return;
+    }
+    nat_rets(run_acc[ri]);
+    local code = proc_status(run_child[ri]);
+    if (len(code) == 0) { code = 0; }
+    nat_retn(code);
+    pipe_r[pp2] = 0;
+    pipe_gc(pp2);
+    del(run_pid, ri); del(run_child, ri); del(run_pipe, ri); del(run_acc, ri);
+}
+
+proc atan2(y, x) {
+    if (x > 0) { return atan(y / x) / 57.29577951308232; }
+    if (x < 0) {
+        if (y >= 0) { return atan(y / x) / 57.29577951308232 + 3.141592653589793; }
+        return atan(y / x) / 57.29577951308232 - 3.141592653589793;
+    }
+    if (y > 0) { return 1.5707963267948966; }
+    if (y < 0) { return -1.5707963267948966; }
+    return 0;
+}
