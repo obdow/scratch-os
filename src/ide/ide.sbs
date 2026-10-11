@@ -39,22 +39,43 @@ var txt_x0 = 0;
 var txt_w = 0;
 var ide_dirty = 1;        // recompose needed
 var ide_full = 1;         // redraw everything
-var theme = 0;            // 0 blue, 1 dark
+var theme = 0;            // 0 dark, 1 light
 var focus = 0;            // 0 editor, 1 output, 2 tree, 3 graphics
 
-// theme colours
-var C_BG = 1;
-var C_FG = 15;
-var C_KW = 14;
-var C_STR = 11;
-var C_NUM = 13;
-var C_COM = 7;
-var C_LIB = 10;
-var C_OP = 15;
-var C_GUT = 3;
-var C_GUTBG = 1;
-var C_SELFG = 0;
-var C_SELBG = 7;
+// theme colours (IDE palette indices, set by ide_theme)
+var C_EDBG = 0;
+var C_PANEL = 0;
+var C_BORDER = 0;
+var C_TEXT = 0;
+var C_DIM = 0;
+var C_GUT = 0;
+var C_GUTCUR = 0;
+var C_CURLINE = 0;
+var C_SEL = 0;
+var C_ACCENT = 0;
+var C_ACTIVE = 0;
+var C_RUN = 0;
+var C_STOP = 0;
+var C_ERRBG = 0;
+var C_ERRFG = 0;
+var C_SCROLL = 0;
+var C_BUTTON = 0;
+var C_POPUP = 0;
+var C_ONACC = 0;
+var C_WARN = 0;
+var C_HEADER = 0;
+var C_PTROUT = 0;
+var C_FOLDER = 0;
+var C_WSK = 0;
+var C_HOVER = 0;
+var C_POPBD = 0;
+var C_FG = 0;             // editor text
+var C_KW = 0;
+var C_STR = 0;
+var C_NUM = 0;
+var C_COM = 0;
+var C_LIB = 0;
+var C_OP = 0;
 
 // --- tabs / buffers ------------------------------------------------------------------
 list tab_path;
@@ -228,23 +249,34 @@ proc ide_boot() nowarp {
 }
 
 proc ide_splash() nowarp {
-    gfx_fill(0, 0, 480, 360, 1);
+    gfx_fill(0, 0, 480, 360, C_EDBG);
+    gfx_fill(224, 124, 32, 32, C_ACCENT);
+    gfx_glyph(236, 132, ord("W"), C_ONACC);
     local t = "Whisker IDE";
-    for i = 1 to len(t) { gfx_glyph(196 + (i - 1) * 8, 150, ord(t[i]), 14); }
+    for i = 1 to len(t) { gfx_glyph(196 + (i - 1) * 8, 172, ord(t[i]), C_TEXT); }
     local u = "loading...";
-    for i = 1 to len(u) { gfx_glyph(200 + (i - 1) * 8, 176, ord(u[i]), 7); }
+    for i = 1 to len(u) { gfx_glyph(200 + (i - 1) * 8, 196, ord(u[i]), C_DIM); }
     wait(0.4);
 }
 
+// 0 dark, 1 light: UI colours, editor colours and the 16 terminal colours
 proc ide_theme(n) {
     theme = n;
-    if (n == 0) {
-        C_BG = 1; C_FG = 15; C_KW = 14; C_STR = 11; C_NUM = 13; C_COM = 7; C_LIB = 10; C_OP = 15;
-        C_GUT = 3; C_GUTBG = 1; C_SELFG = 0; C_SELBG = 7;
-    } else {
-        C_BG = 0; C_FG = 7; C_KW = 9; C_STR = 10; C_NUM = 13; C_COM = 8; C_LIB = 11; C_OP = 15;
-        C_GUT = 8; C_GUTBG = 0; C_SELFG = 15; C_SELBG = 1;
-    }
+    local o = 32 * n;
+    C_EDBG = U_EDBG + o; C_PANEL = U_PANEL + o; C_BORDER = U_BORDER + o; C_TEXT = U_TEXT + o;
+    C_DIM = U_DIM + o; C_GUT = U_GUT + o; C_GUTCUR = U_GUTCUR + o; C_CURLINE = U_CURLINE + o;
+    C_SEL = U_SEL + o; C_ACCENT = U_ACCENT + o; C_ACTIVE = U_ACTIVE + o; C_RUN = U_RUN + o;
+    C_STOP = U_STOP + o; C_ERRBG = U_ERRBG + o; C_ERRFG = U_ERRFG + o; C_SCROLL = U_SCROLL + o;
+    C_BUTTON = U_BUTTON + o; C_POPUP = U_POPUP + o; C_ONACC = U_ONACC + o; C_WARN = U_WARN + o;
+    C_HEADER = U_HEADER + o; C_PTROUT = U_PTROUT + o; C_FOLDER = U_FOLDER + o; C_WSK = U_WSK + o;
+    C_HOVER = U_HOVER + o; C_POPBD = U_POPBD + o;
+    C_FG = U_EDFG + o; C_OP = U_EDFG + o; C_KW = U_KW + o; C_STR = U_STR + o; C_NUM = U_NUM + o;
+    C_COM = U_COM + o; C_LIB = U_LIB + o;
+    gfx_ansi_theme(n);
+    ls_valid = 0;
+    if (con > 0) { tty_full[con] = 1; }
+    if (cv_win > 0) { canvas_repaint(cv_win); }
+    ide_full = 1;
     ide_dirty = 1;
 }
 
@@ -309,14 +341,14 @@ proc ide_menus_init() {
     mi(4, "Output: medium", "", "out5");
     mi(4, "Output: large", "", "out9");
     mi(4, "Output: hidden", "", "out0");
-    mi(4, "Theme: blue", "", "theme0");
-    mi(4, "Theme: dark", "", "theme1");
+    mi(4, "Theme: dark", "", "theme0");
+    mi(4, "Theme: light", "", "theme1");
     mi(5, "Quick start", "", "help");
     mi(5, "Language reference", "", "ref");
     mi(5, "Keyboard shortcuts", "", "keys");
     mi(5, "About", "", "about");
     clear(mn_x);
-    local x = 1;
+    local x = 5;
     for i = 1 to len(mn_title) {
         add(mn_x, x);
         x += len(mn_title[i]) + 2;
@@ -1236,6 +1268,31 @@ proc cv_vis() {
 // composition
 // ===========================================================================
 
+// Cell attributes: fg + AB * bg + AD * deco.  Colours are IDE palette
+// indices (ide/gfx.sbs); deco adds a thin pen-drawn detail over the cell.
+const AB = 128;
+const AD = 16384;
+// deco 1..15 is a mask of 1px borders: 1 top, 2 bottom, 4 left, 8 right
+// (panel borders in C_BORDER, popup borders in C_POPBD when + D_POP)
+const D_TOP = 1;
+const D_BOTTOM = 2;
+const D_LEFTB = 4;
+const D_RIGHT = 8;
+const D_POP = 16;         // + edge mask: popup border colour
+const D_UNDER = 32;       // 2px accent underline (active tab, focused panel title)
+const D_CARET = 33;       // 2px accent bar on the left edge (prompt caret)
+const D_THUMB = 34;       // scrollbar thumb (middle)
+const D_THUMB_T = 35;     // scrollbar thumb (top end)
+const D_THUMB_B = 36;     // scrollbar thumb (bottom end)
+const D_THUMB_1 = 37;     // scrollbar thumb (single cell)
+const D_LEFT = 38;        // 2px accent bar on the left edge (selected item)
+
+const G_CLOSE = 158;      // the IDE font draws a close cross in this slot
+const G_DOT = 7;          // •
+const G_RIGHT = 16;       // ►
+const G_DOWN = 31;        // ▼
+const G_STOP = 254;       // ■
+
 proc put(c, r, code, at) {
     if (c < 0 || r < 0 || c >= IC || r >= IR) { return; }
     local i = r * IC + c + 1;
@@ -1251,21 +1308,77 @@ proc fill_row(r, c0, c1, at) {
     for c = c0 to c1 { put(c, r, 32, at); }
 }
 
+// add a decoration to cells c0..c1 of row r (keeps their glyph and colours)
+proc deco_row(r, c0, c1, d) {
+    for c = c0 to c1 {
+        if (c >= 0 && c < IC) {
+            local i = r * IC + c + 1;
+            if (sc_ch[i] >= 0) { sc_at[i] = sc_at[i] % AD + AD * d; }
+        }
+    }
+}
+
+// recolour the foreground of one cell
+proc put_fg(c, r, fg) {
+    if (c < 0 || r < 0 || c >= IC || r >= IR) { return; }
+    local i = r * IC + c + 1;
+    local a = sc_at[i];
+    sc_at[i] = a - a % AB + fg;
+}
+
+// popup box: fill cells x0..x1 / y0..y1 and outline them with 1px borders
+proc popup_box(x0, y0, x1, y1, at) {
+    for r = y0 to y1 { fill_row(r, x0, x1, at); }
+    for c = x0 to x1 {
+        put_deco(c, y0, D_POP + D_TOP);
+        put_deco(c, y1, D_POP + D_BOTTOM);
+    }
+    for r = y0 to y1 {
+        put_deco(x0, r, D_POP + D_LEFTB + edge_bits(x0, r));
+        put_deco(x1, r, D_POP + D_RIGHT + edge_bits(x1, r));
+    }
+}
+
+proc edge_bits(c, r) {
+    if (c < 0 || r < 0 || c >= IC || r >= IR) { return 0; }
+    local d = floor(sc_at[r * IC + c + 1] / AD);
+    if (d >= 32) { return 0; }
+    return d % 4;
+}
+
+proc put_deco(c, r, d) {
+    if (c < 0 || r < 0 || c >= IC || r >= IR) { return; }
+    local i = r * IC + c + 1;
+    if (sc_ch[i] >= 0) { sc_at[i] = sc_at[i] % AD + AD * d; }
+}
+
 var menu_px0 = 0;
 var menu_px1 = 0;
 var menu_rows = 0;
 
 proc ide_compose() {
-    // menu bar
-    fill_row(0, 0, IC - 1, 0 + 16 * 7);
+    // title bar: app badge, menus, file name, Run / Stop
+    local bar = C_TEXT + AB * C_PANEL;
+    fill_row(0, 0, IC - 1, bar);
+    puts(0, 0, " W ", C_ONACC + AB * C_ACCENT);
     for i = 1 to len(mn_title) {
-        local at = 0 + 16 * 7;
-        if (menu_open == i) { at = 15 + 16 * 0; }
+        local at = bar;
+        if (menu_open == i) { at = C_TEXT + AB * C_HOVER; }
         puts(mn_x[i] - 1, 0, " " .. mn_title[i] .. " ", at);
-        put(mn_x[i], 0, ord(letter(mn_title[i], 1)), 4 + 16 * 7);
-        if (menu_open == i) { put(mn_x[i], 0, ord(letter(mn_title[i], 1)), 12 + 16 * 0); }
     }
-    puts(IC - 13, 0, "Whisker IDE ", 1 + 16 * 7);
+    if (cur_tab > 0) {
+        local nm = fs_name_of(tab_path[cur_tab]);
+        local cx = IC - 10 - len(nm);
+        if (cx > mn_x[len(mn_title)] + 6) { puts(cx, 0, nm, C_DIM + AB * C_PANEL); }
+    }
+    if (run_pid > 0) {
+        puts(IC - 8, 0, "   Stop ", C_TEXT + AB * C_BUTTON);
+        put(IC - 7, 0, G_STOP, C_STOP + AB * C_BUTTON);
+    } else {
+        puts(IC - 8, 0, "   Run  ", C_TEXT + AB * C_BUTTON);
+        put(IC - 7, 0, G_RIGHT, C_RUN + AB * C_BUTTON);
+    }
+    deco_row(0, 0, IC - 1, D_BOTTOM);
     ide_compose_tabs();
     ide_compose_tree();
     ide_compose_editor();
@@ -1282,43 +1395,42 @@ proc ide_compose() {
     cv_vis();
 }
 
+// tab i is drawn as " name ● " / " name × "
+proc tab_label_w(i) {
+    return len(fs_name_of(tab_path[i])) + 4;
+}
+
 proc ide_compose_tabs() {
-    fill_row(1, 0, IC - 1, 7 + 16 * 8);
+    fill_row(ROW_TABS, 0, IC - 1, C_DIM + AB * C_PANEL);
+    deco_row(ROW_TABS, 0, IC - 1, D_BOTTOM);
     local x = 0;
-    local runw = 8;
     for i = 1 to len(tab_path) {
-        local p = tab_path[i];
-        local k = len(p);
-        while (k > 1 && p[k] != "/") { k -= 1; }
-        local name = substr(p, k + 1, len(p));
-        if (tab_dirty[i] == 1) { name = name .. "*"; }
-        local lbl = " " .. name .. " ";
-        if (i == cur_tab) { lbl = lbl .. "x "; }
-        if (x + len(lbl) < IC - runw) {
-            local at = 7 + 16 * 8;
-            if (i == cur_tab) { at = 15 + 16 * C_BG; }
-            puts(x, 1, lbl, at);
-            if (i == cur_tab) { put(x + len(lbl) - 2, 1, ord("x"), 12 + 16 * C_BG); }
-            x += len(lbl) + 1;
+        local name = fs_name_of(tab_path[i]);
+        local lw = tab_label_w(i);
+        if (x + lw <= IC) {
+            local at = C_DIM + AB * C_PANEL;
+            if (i == cur_tab) { at = C_TEXT + AB * C_EDBG; }
+            puts(x, ROW_TABS, " " .. name .. "   ", at);
+            if (tab_dirty[i] == 1) { put(x + lw - 2, ROW_TABS, G_DOT, at); }
+            else { put(x + lw - 2, ROW_TABS, G_CLOSE, at); put_fg(x + lw - 2, ROW_TABS, C_DIM); }
+            if (i == cur_tab) { deco_row(ROW_TABS, x, x + lw - 1, D_UNDER); }
+            else { deco_row(ROW_TABS, x, x + lw - 1, D_BOTTOM); }
+            x += lw;
         }
     }
-    if (run_pid > 0) { puts(IC - runw, 1, " ■ Stop ", 15 + 16 * 4); }
-    else { puts(IC - runw, 1, " ► Run  ", 15 + 16 * 2); }
 }
 
 proc ide_compose_tree() {
     if (show_tree == 0) { return; }
-    local at = 7 + 16 * 0;
+    local at = C_TEXT + AB * C_PANEL;
     local r0 = ed_y0;
     for r = r0 to out_top - 1 {
-        fill_row(r, 0, TREE_W - 2, at);
-        put(TREE_W - 1, r, 179, 8 + 16 * 0);
+        fill_row(r, 0, TREE_W - 1, at);
     }
-    local hat = 0 + 16 * 3;
-    if (focus == 2) { hat = 15 + 16 * 3; }
-    fill_row(r0, 0, TREE_W - 2, hat);
-    puts(0, r0, " FILES", hat);
-    puts(TREE_W - 5, r0, "[+]", hat);
+    local hat = C_HEADER + AB * C_PANEL;
+    puts(1, r0, "Project", hat);
+    puts(TREE_W - 3, r0, "+", C_DIM + AB * C_PANEL);
+    if (focus == 2) { deco_row(r0, 1, 7, D_UNDER); }
     local rows = out_top - r0 - 1;
     if (tr_top > len(tr_path) - rows + 1) { tr_top = len(tr_path) - rows + 1; }
     if (tr_top < 1) { tr_top = 1; }
@@ -1327,22 +1439,30 @@ proc ide_compose_tree() {
         if (i <= len(tr_path)) {
             local r = r0 + 1 + k;
             local ind = tr_depth[i];
-            local fg = 7;
-            local icon = " ";
+            local fg = C_TEXT;
+            local icon = 32;
+            local icol = C_DIM;
+            local name = tr_name[i];
             if (tr_dir[i] == 1) {
-                fg = 14;
-                if (index(tr_exp, tr_path[i]) > 0) { icon = "▼"; } else { icon = "►"; }
-            } else if (len(tr_name[i]) > 4 && substr(tr_name[i], len(tr_name[i]) - 3, len(tr_name[i])) == ".wsk") {
-                fg = 10;
+                if (index(tr_exp, tr_path[i]) > 0) { icon = G_DOWN; } else { icon = G_RIGHT; }
+            } else if (len(name) > 4 && substr(name, len(name) - 3, len(name)) == ".wsk") {
+                icon = G_DOT;
+                icol = C_WSK;
+            } else {
+                icon = G_DOT;
+                icol = C_DIM;
             }
-            local bg = 0;
-            if (i == tr_sel) { bg = 1; }
-            if (cur_tab > 0 && streq(tr_path[i], tab_path[cur_tab]) == 1) { fg = 15; }
-            fill_row(r, 0, TREE_W - 2, 7 + 16 * bg);
-            local txt = substr(rep_space(ind) .. icon .. tr_name[i], 1, TREE_W - 2);
-            puts(1, r, txt, fg + 16 * bg);
+            local bg = C_PANEL;
+            if (i == tr_sel) { bg = C_ACTIVE; }
+            if (cur_tab > 0 && streq(tr_path[i], tab_path[cur_tab]) == 1) { fg = C_HEADER; if (i != tr_sel) { bg = C_HOVER; } }
+            fill_row(r, 0, TREE_W - 1, fg + AB * bg);
+            put(1 + ind, r, icon, icol + AB * bg);
+            if (tr_dir[i] == 1) { fg = C_FOLDER; if (i == tr_sel) { fg = C_TEXT; } }
+            puts(3 + ind, r, substr(name, 1, TREE_W - 4 - ind), fg + AB * bg);
+            if (len(name) > TREE_W - 4 - ind) { put(TREE_W - 2, r, 175, C_DIM + AB * bg); }
         }
     }
+    for r = r0 to out_top - 1 { deco_row(r, TREE_W - 1, TREE_W - 1, D_RIGHT); }
 }
 
 proc ide_compose_editor() {
@@ -1350,17 +1470,22 @@ proc ide_compose_editor() {
     ensure_states(etop + ed_rows);
     if (sel_on == 1) { sel_bounds(); }
     local selx = sel_empty() == 0;
+    local on_err = 0;
+    if (cur_tab > 0) { if (streq(tab_path[cur_tab], err_path) == 1) { on_err = 1; } }
     for r = 0 to ed_rows - 1 {
         local y = etop + r;
         local row = ed_y0 + r;
+        local lbg = C_EDBG;
+        if (y == ecy && cur_tab > 0 && selx == 0) { lbg = C_CURLINE; }
+        if (y == err_line && on_err == 1) { lbg = C_ERRBG; }
         // gutter
-        local gat = C_GUT + 16 * C_GUTBG;
-        if (y == ecy) { gat = 14 + 16 * C_GUTBG; }
-        if (y == err_line && cur_tab > 0 && streq(tab_path[cur_tab], err_path) == 1) { gat = 15 + 16 * 4; }
+        local gat = C_GUT + AB * C_EDBG;
+        if (y == ecy) { gat = C_GUTCUR + AB * C_EDBG; }
+        if (y == err_line && on_err == 1) { gat = C_ERRFG + AB * C_EDBG; }
         if (y <= n && cur_tab > 0) {
-            puts(ed_x0, row, pad_left(y, GUT_W - 1) .. " ", gat);
+            puts(ed_x0, row, pad_left(y, GUT_W - 2) .. "  ", gat);
         } else {
-            puts(ed_x0, row, rep_space(GUT_W), C_GUT + 16 * C_GUTBG);
+            puts(ed_x0, row, rep_space(GUT_W), gat);
         }
         // text
         if (y <= n && cur_tab > 0) {
@@ -1375,57 +1500,69 @@ proc ide_compose_editor() {
                     code = hl_code[x];
                     fg = hl_fg[x];
                 }
-                local bg = C_BG;
+                local bg = lbg;
                 if (selx == 1) {
                     if (pos_before(y, x, s_y1, s_x1) == 0 && pos_before(y, x, s_y2, s_x2) == 1) {
-                        if (x <= len_y || y < s_y2) { fg = C_SELFG; bg = C_SELBG; }
+                        if (x <= len_y || y < s_y2) { bg = C_SEL; }
                     }
                 }
                 if (code == 9) { code = 32; }
-                put(txt_x0 + c, row, code, fg + 16 * bg);
+                put(txt_x0 + c, row, code, fg + AB * bg);
             }
         } else {
-            fill_row(row, txt_x0, txt_x0 + txt_w - 1, C_FG + 16 * C_BG);
-            if (cur_tab > 0) { put(txt_x0, row, ord("~"), 9 + 16 * C_BG); }
+            fill_row(row, txt_x0, txt_x0 + txt_w - 1, C_FG + AB * C_EDBG);
         }
     }
     if (cur_tab == 0) {
-        puts(txt_x0 + 2, ed_y0 + 2, "No file open.", 14 + 16 * C_BG);
-        puts(txt_x0 + 2, ed_y0 + 4, "File > New file, or click a", 7 + 16 * C_BG);
-        puts(txt_x0 + 2, ed_y0 + 5, "file in the tree on the left.", 7 + 16 * C_BG);
+        puts(txt_x0 + 2, ed_y0 + 2, "No file open", C_TEXT + AB * C_EDBG);
+        puts(txt_x0 + 2, ed_y0 + 4, "File > New file, or pick a file", C_DIM + AB * C_EDBG);
+        puts(txt_x0 + 2, ed_y0 + 5, "in the Project tree.", C_DIM + AB * C_EDBG);
+        puts(txt_x0 + 2, ed_y0 + 7, "Ctrl+Enter  Run", C_DIM + AB * C_EDBG);
+        puts(txt_x0 + 2, ed_y0 + 8, "Esc         Menu", C_DIM + AB * C_EDBG);
     }
-    // scrollbar
+    // scrollbar (only when the file is taller than the view)
     local sb = IC - 1;
-    for r = 0 to ed_rows - 1 { put(sb, ed_y0 + r, 176, 7 + 16 * C_BG); }
+    for r = 0 to ed_rows - 1 { put(sb, ed_y0 + r, 32, C_FG + AB * C_EDBG); }
     if (n > ed_rows) {
         local th = floor(ed_rows * ed_rows / n);
         if (th < 1) { th = 1; }
         local tp = floor((etop - 1) * (ed_rows - th) / (n - ed_rows));
         if (tp > ed_rows - th) { tp = ed_rows - th; }
-        for r = 0 to th - 1 { put(sb, ed_y0 + tp + r, 219, 7 + 16 * C_BG); }
-    } else {
-        for r = 0 to ed_rows - 1 { put(sb, ed_y0 + r, 219, 7 + 16 * C_BG); }
+        if (th == 1) { deco_row(ed_y0 + tp, sb, sb, D_THUMB_1); }
+        else {
+            for r = 0 to th - 1 {
+                local d = D_THUMB;
+                if (r == 0) { d = D_THUMB_T; }
+                if (r == th - 1) { d = D_THUMB_B; }
+                deco_row(ed_y0 + tp + r, sb, sb, d);
+            }
+        }
     }
 }
 
 proc ide_compose_output() {
     if (out_h == 0) { return; }
     local hr = out_top;
-    local at = 0 + 16 * 7;
+    local at = C_DIM + AB * C_PANEL;
     fill_row(hr, 0, IC - 1, at);
-    local title = " OUTPUT ";
-    local tat = 0 + 16 * 7;
-    if (focus == 1) { tat = 15 + 16 * 1; }
-    puts(0, hr, title, tat);
-    local info = "";
-    if (run_pid > 0) { info = "running"; puts(9, hr, " running ", 15 + 16 * 2); }
-    else if (err_line > 0) {
-        info = "! line " .. err_line .. ": " .. err_msg;
-        puts(9, hr, substr(" " .. info .. " ", 1, IC - 30), 15 + 16 * 4);
+    puts(1, hr, "Output", C_HEADER + AB * C_PANEL);
+    if (run_pid > 0) {
+        put(9, hr, G_DOT, C_RUN + AB * C_PANEL);
+        puts(11, hr, "running", C_TEXT + AB * C_PANEL);
+    } else if (err_line > 0) {
+        put(9, hr, G_DOT, C_ERRFG + AB * C_PANEL);
+        puts(11, hr, substr("line " .. err_line .. ": " .. err_msg, 1, IC - 32), C_ERRFG + AB * C_PANEL);
     } else if (len(err_msg) > 0) {
-        puts(9, hr, substr(" ! " .. err_msg .. " ", 1, IC - 30), 15 + 16 * 4);
+        put(9, hr, G_DOT, C_ERRFG + AB * C_PANEL);
+        puts(11, hr, substr(err_msg, 1, IC - 32), C_ERRFG + AB * C_PANEL);
     }
-    puts(IC - 19, hr, "[Clear][▲][▼][_]", at);
+    // buttons: same columns as the hit test in ide_press
+    puts(IC - 19, hr, " Clear ", at);
+    puts(IC - 12, hr, " ", at); put(IC - 11, hr, 30, at); puts(IC - 10, hr, " ", at);
+    puts(IC - 9, hr, " ", at); put(IC - 8, hr, 31, at); puts(IC - 7, hr, " ", at);
+    puts(IC - 6, hr, " ", at); put(IC - 5, hr, G_CLOSE, at); puts(IC - 4, hr, " ", at);
+    deco_row(hr, 0, IC - 1, D_TOP);
+    if (focus == 1) { deco_row(hr, 1, 6, D_UNDER); }
     for r = hr + 1 to ROW_STATUS - 1 {
         for c = 0 to IC - 1 { put(c, r, -1, 0); }
     }
@@ -1434,28 +1571,37 @@ proc ide_compose_output() {
 proc ide_compose_status() {
     local r = ROW_STATUS;
     if (len(pr_kind) > 0) {
-        fill_row(r, 0, IC - 1, 15 + 16 * 1);
-        puts(0, r, " " .. pr_label .. pr_buf, 15 + 16 * 1);
-        local cx = 1 + len(pr_label) + len(pr_buf);
-        put(cx, r, 219, 14 + 16 * 1);
-        puts(IC - 17, r, " Enter=ok Esc=x ", 7 + 16 * 1);
+        fill_row(r, 0, IC - 1, C_TEXT + AB * C_EDBG);
+        puts(1, r, pr_label, C_DIM + AB * C_EDBG);
+        local px = 1 + len(pr_label);
+        local shown = pr_buf;
+        local room = IC - 22 - px;
+        if (len(shown) > room) { shown = substr(shown, len(shown) - room + 1, len(shown)); }
+        puts(px, r, shown, C_TEXT + AB * C_EDBG);
+        puts(IC - 21, r, "Enter ok  Esc cancel", C_DIM + AB * C_EDBG);
+        deco_row(r, 0, IC - 1, D_TOP);
+        deco_row(r, px + len(shown), px + len(shown), D_CARET);
         return;
     }
-    fill_row(r, 0, IC - 1, 0 + 16 * 3);
+    local at = C_DIM + AB * C_PANEL;
+    fill_row(r, 0, IC - 1, at);
+    deco_row(r, 0, IC - 1, D_TOP);
     if (len(status_msg) > 0 && now_secs() < status_until) {
-        puts(0, r, substr(" " .. status_msg, 1, IC - 1), 0 + 16 * 3);
+        puts(1, r, substr(status_msg, 1, IC - 2), C_TEXT + AB * C_PANEL);
+        deco_row(r, 0, IC - 1, D_TOP);
         return;
     }
     local name = "no file";
     if (cur_tab > 0) {
         name = tab_path[cur_tab];
-        if (tab_dirty[cur_tab] == 1) { name = name .. " *"; }
-        if (tab_ro[cur_tab] == 1) { name = name .. " (read-only)"; }
+        if (tab_ro[cur_tab] == 1) { name = name .. "  (read-only)"; }
     }
-    puts(0, r, substr(" " .. name, 1, 34), 0 + 16 * 3);
-    local pos = "Ln " .. ecy .. ", Col " .. ecx .. " ";
-    if (sel_empty() == 0) { pos = "sel " .. len(sel_text()) .. "  " .. pos; }
-    puts(IC - len(pos), r, pos, 0 + 16 * 3);
+    puts(1, r, substr(name, 1, 32), at);
+    if (cur_tab > 0 && tab_dirty[cur_tab] == 1) { put(2 + len(substr(name, 1, 32)), r, G_DOT, C_WARN + AB * C_PANEL); }
+    local pos = ecy .. ":" .. ecx .. "   Whisker ";
+    if (sel_empty() == 0) { pos = len(sel_text()) .. " chars   " .. pos; }
+    puts(IC - len(pos), r, pos, at);
+    deco_row(r, 0, IC - 1, D_TOP);
 }
 
 proc ide_compose_canvas() {
@@ -1463,36 +1609,43 @@ proc ide_compose_canvas() {
     local y = cv_y;
     local w = cv_w;
     local h = cv_h;
-    local fa = 15 + 16 * 1;
-    for c = x + 1 to x + w - 2 {
-        put(c, y, 205, fa);
-        put(c, y + h - 1, 205, fa);
-    }
+    local fa = C_DIM + AB * C_PANEL;
+    popup_box(x, y, x + w - 1, y + h - 1, fa);
     for r = y + 1 to y + h - 2 {
-        put(x, r, 186, fa);
-        put(x + w - 1, r, 186, fa);
         for c = x + 1 to x + w - 2 { put(c, r, -2, 1000 + (r - y) * 64 + (c - x)); }
     }
-    put(x, y, 201, fa);
-    put(x + w - 1, y, 187, fa);
-    put(x, y + h - 1, 200, fa);
-    put(x + w - 1, y + h - 1, 188, fa);
-    puts(x + 1, y, "[■]", fa);
-    put(x + 2, y, 254, 10 + 16 * 1);
-    local t = " " .. win_title[cv_win] .. " ";
-    if (len(t) > w - 6) { t = substr(t, 1, w - 6); }
-    local tat = 7 + 16 * 1;
-    if (focus == 3) { tat = 14 + 16 * 1; }
-    puts(x + floor((w - len(t)) / 2), y, t, tat);
+    put(x + 2, y, G_CLOSE, fa + AD * (D_POP + D_TOP));
+    local t = win_title[cv_win];
+    if (len(t) > w - 8) { t = substr(t, 1, w - 8); }
+    local tx = x + floor((w - len(t)) / 2);
+    puts(tx, y, t, C_TEXT + AB * C_PANEL + AD * (D_POP + D_TOP));
+    if (focus == 3) { deco_row(y, tx, tx + len(t) - 1, D_UNDER); }
 }
 
 proc ide_compose_ac() {
     local n = len(ac_items);
     for k = 1 to n {
-        local at = 0 + 16 * 7;
-        if (k == ac_sel) { at = 0 + 16 * 3; }
-        puts(ac_x, ac_y + k - 1, pad_right(" " .. ac_items[k], 24), at);
+        local at = C_TEXT + AB * C_POPUP;
+        if (k == ac_sel) { at = C_TEXT + AB * C_ACTIVE; }
+        local item = ac_items[k];
+        puts(ac_x, ac_y + k - 1, pad_right("  " .. item, 24), at);
+        // module members show their module prefix dimmed
+        local dot = 0;
+        for j = 1 to len(item) { if (item[j] == ".") { dot = j; } }
+        if (dot > 0) { for j = 1 to dot { put_fg(ac_x + 1 + j, ac_y + k - 1, C_DIM); } }
     }
+    for k = 1 to n {
+        put_deco(ac_x, ac_y + k - 1, D_POP + D_LEFTB);
+        put_deco(ac_x + 23, ac_y + k - 1, D_POP + D_RIGHT);
+    }
+    for c = ac_x + 1 to ac_x + 22 {
+        put_deco(c, ac_y, D_POP + D_TOP);
+        put_deco(c, ac_y + n - 1, D_POP + D_BOTTOM + edge_bits(c, ac_y + n - 1));
+    }
+    put_deco(ac_x, ac_y, D_POP + D_LEFTB + D_TOP);
+    put_deco(ac_x + 23, ac_y, D_POP + D_RIGHT + D_TOP);
+    put_deco(ac_x, ac_y + n - 1, D_POP + D_LEFTB + D_BOTTOM + edge_bits(ac_x, ac_y + n - 1));
+    put_deco(ac_x + 23, ac_y + n - 1, D_POP + D_RIGHT + D_BOTTOM + edge_bits(ac_x + 23, ac_y + n - 1));
 }
 
 proc ide_compose_menu() {
@@ -1502,42 +1655,32 @@ proc ide_compose_menu() {
     for i = 1 to len(mi_menu) {
         if (mi_menu[i] == m) {
             menu_rows += 1;
-            local lw = len(mi_label[i]) + len(mi_key[i]) + 4;
+            local lw = len(mi_label[i]) + len(mi_key[i]) + 5;
             if (lw > w) { w = lw; }
         }
     }
-    if (w < 18) { w = 18; }
+    if (w < 20) { w = 20; }
     local x0 = mn_x[m] - 1;
     if (x0 + w + 2 > IC) { x0 = IC - w - 2; }
     menu_px0 = x0;
     menu_px1 = x0 + w + 2;
-    local at = 0 + 16 * 7;
+    local at = C_TEXT + AB * C_POPUP;
     local r = 1;
-    for c = x0 to x0 + w + 1 { put(c, r, 196, at); }
-    put(x0, r, 218, at);
-    put(x0 + w + 1, r, 191, at);
+    popup_box(x0, 1, x0 + w + 1, menu_rows + 2, at);
     for i = 1 to len(mi_menu) {
         if (mi_menu[i] == m) {
             r += 1;
-            put(x0, r, 179, at);
-            put(x0 + w + 1, r, 179, at);
             if (mi_label[i] == "-") {
-                for c = x0 + 1 to x0 + w { put(c, r, 196, 8 + 16 * 7); }
-                put(x0, r, 195, at);
-                put(x0 + w + 1, r, 180, at);
+                for c = x0 + 2 to x0 + w - 1 { put(c, r, 196, C_POPBD + AB * C_POPUP); }
             } else {
-                local a = at;
-                if (i == menu_sel) { a = 15 + 16 * 1; }
-                local txt = " " .. mi_label[i];
-                txt = pad_right(txt, w - len(mi_key[i]) - 1) .. mi_key[i] .. " ";
-                puts(x0 + 1, r, txt, a);
+                local bg = C_POPUP;
+                if (i == menu_sel) { bg = C_ACTIVE; }
+                fill_row(r, x0 + 1, x0 + w, C_TEXT + AB * bg);
+                puts(x0 + 2, r, mi_label[i], C_TEXT + AB * bg);
+                puts(x0 + w - len(mi_key[i]), r, mi_key[i], C_DIM + AB * bg);
             }
         }
     }
-    r += 1;
-    for c = x0 to x0 + w + 1 { put(c, r, 196, at); }
-    put(x0, r, 192, at);
-    put(x0 + w + 1, r, 217, at);
 }
 
 proc ide_compose_dialog() {
@@ -1551,38 +1694,46 @@ proc ide_compose_dialog() {
     dlg_h = h;
     dlg_x = floor((IC - w) / 2);
     dlg_y = floor((IR - h) / 2);
-    local at = 0 + 16 * 7;
-    for r = dlg_y to dlg_y + h - 1 { fill_row(r, dlg_x, dlg_x + w - 1, at); }
-    for c = dlg_x + 1 to dlg_x + w - 2 {
-        put(c, dlg_y, 205, 15 + 16 * 7);
-        put(c, dlg_y + h - 1, 205, 15 + 16 * 7);
-    }
-    for r = dlg_y + 1 to dlg_y + h - 2 {
-        put(dlg_x, r, 186, 15 + 16 * 7);
-        put(dlg_x + w - 1, r, 186, 15 + 16 * 7);
-    }
-    put(dlg_x, dlg_y, 201, 15 + 16 * 7);
-    put(dlg_x + w - 1, dlg_y, 187, 15 + 16 * 7);
-    put(dlg_x, dlg_y + h - 1, 200, 15 + 16 * 7);
-    put(dlg_x + w - 1, dlg_y + h - 1, 188, 15 + 16 * 7);
-    local t = " " .. dlg_title .. " ";
-    puts(dlg_x + floor((w - len(t)) / 2), dlg_y, t, 15 + 16 * 1);
+    local at = C_TEXT + AB * C_POPUP;
+    popup_box(dlg_x, dlg_y, dlg_x + w - 1, dlg_y + h - 1, at);
+    puts(dlg_x + 2, dlg_y + 1, dlg_title, C_HEADER + AB * C_POPUP);
     for k = 1 to len(dlg_lines) {
-        puts(dlg_x + 2, dlg_y + 1 + k, substr(dlg_lines[k], 1, w - 4), 0 + 16 * 7);
+        puts(dlg_x + 2, dlg_y + 1 + k, substr(dlg_lines[k], 1, w - 4), C_DIM + AB * C_POPUP);
     }
     local by = dlg_y + h - 2;
+    local mid = dlg_x + floor(w / 2);
     if (dlg_kind == 2) {
-        puts(dlg_x + floor(w / 2) - 14, by, "  Yes  ", 15 + 16 * 2);
-        puts(dlg_x + floor(w / 2) - 4, by, "  No   ", 15 + 16 * 4);
-        puts(dlg_x + floor(w / 2) + 6, by, " Cancel ", 15 + 16 * 8);
+        puts(mid - 14, by, "  Yes  ", C_ONACC + AB * C_ACCENT);
+        puts(mid - 4, by, "  No   ", C_TEXT + AB * C_BUTTON);
+        puts(mid + 6, by, " Cancel ", C_TEXT + AB * C_BUTTON);
     } else {
-        puts(dlg_x + floor(w / 2) - 3, by, "  OK  ", 15 + 16 * 1);
+        puts(mid - 3, by, "  OK  ", C_ONACC + AB * C_ACCENT);
     }
 }
 
 // ===========================================================================
 // drawing
 // ===========================================================================
+
+proc ide_deco(x, y, deco) {
+    local d = deco;
+    if (d < 32) {
+        local col = C_BORDER;
+        if (d >= D_POP) { col = C_POPBD; d -= D_POP; }
+        if (d % 2 == 1) { gfx_fill(x, y, 8, 1, col); }
+        if (floor(d / 2) % 2 == 1) { gfx_fill(x, y + 15, 8, 1, col); }
+        if (floor(d / 4) % 2 == 1) { gfx_fill(x, y, 1, 16, col); }
+        if (floor(d / 8) % 2 == 1) { gfx_fill(x + 7, y, 1, 16, col); }
+        return;
+    }
+    if (d == D_UNDER) { gfx_fill(x, y + 14, 8, 2, C_ACCENT); return; }
+    if (d == D_CARET) { gfx_fill(x, y + 2, 2, 12, C_ACCENT); return; }
+    if (d == D_THUMB) { gfx_fill(x + 2, y, 4, 16, C_SCROLL); return; }
+    if (d == D_THUMB_T) { gfx_fill(x + 3, y + 2, 2, 1, C_SCROLL); gfx_fill(x + 2, y + 3, 4, 13, C_SCROLL); return; }
+    if (d == D_THUMB_B) { gfx_fill(x + 2, y, 4, 13, C_SCROLL); gfx_fill(x + 3, y + 13, 2, 1, C_SCROLL); return; }
+    if (d == D_THUMB_1) { gfx_fill(x + 3, y + 2, 2, 1, C_SCROLL); gfx_fill(x + 2, y + 3, 4, 10, C_SCROLL); gfx_fill(x + 3, y + 13, 2, 1, C_SCROLL); return; }
+    if (d == D_LEFT) { gfx_fill(x, y, 2, 16, C_ACCENT); return; }
+}
 
 proc ide_draw_cell(i) {
     local col = (i - 1) % IC;
@@ -1597,10 +1748,15 @@ proc ide_draw_cell(i) {
         return;
     }
     local a = sc_at[i];
-    gfx_fill(col * 8, row * 16, 8, 16, floor(a / 16));
-    if (c != 32 && c != 0 && a % 16 != floor(a / 16)) {
-        gfx_glyph(col * 8, row * 16, c, a % 16);
+    local d = floor(a / AD);
+    a = a % AD;
+    local bg = floor(a / AB);
+    local fg = a % AB;
+    gfx_fill(col * 8, row * 16, 8, 16, bg);
+    if (c != 32 && c != 0 && fg != bg) {
+        gfx_glyph(col * 8, row * 16, c, fg);
     }
+    if (d > 0) { ide_deco(col * 8, row * 16, d); }
 }
 
 proc ide_render() {
@@ -1624,7 +1780,7 @@ proc ide_render() {
     }
     if (tty_cells > 0) { tty_full[con] = 1; }
     if (canvas_cells > 0 && cv_win > 0) { canvas_repaint(cv_win); }
-    if (ide_full == 1) { gfx_fill(0, 352, 480, 8, 7); }
+    if (ide_full == 1) { gfx_fill(0, 352, 480, 8, C_PANEL); }
     ide_full = 0;
     caret_on = 0;
 }
@@ -1646,10 +1802,7 @@ proc ide_caret() {
         caret_on = 0;
     }
     if (want == 1) {
-        local i = r * IC + c + 1;
-        local fg = C_FG;
-        if (sc_ch[i] >= 0) { fg = sc_at[i] % 16; if (fg == C_BG) { fg = C_FG; } }
-        gfx_fill(c * 8, r * 16, 2, 16, 15);
+        gfx_fill(c * 8, r * 16 + 1, 2, 14, C_TEXT);
         caret_on = 1;
         caret_c = c;
         caret_r = r;
@@ -1667,15 +1820,15 @@ proc ide_pointer() {
                     if (c < IC && r < IR) { ide_draw_cell(r * IC + c + 1); }
                 }
             }
-            if (ptr_py + 16 > 352) { gfx_fill(ptr_px, 352, 8, 8, 7); }
+            if (ptr_py + 16 > 352) { gfx_fill(ptr_px, 352, 16, 8, C_PANEL); }
             if (caret_on == 1 && (caret_c == c0 || caret_c == c0 + 1) && (caret_r == r0 || caret_r == r0 + 1)) { caret_on = 0; }
         }
     }
-    gfx_color(0);
+    gfx_color(C_PTROUT);
     goto(mx - 240, 180 - my);
     costume(CURSOR_MASK_COSTUME);
     stamp();
-    gfx_color(15);
+    gfx_color(C_ONACC);
     costume(CURSOR_COSTUME);
     stamp();
     ptr_on = 1;
@@ -2071,7 +2224,7 @@ proc ide_cmd(cmd) {
         return;
     }
     if (cmd == "about") {
-        dialog(1, "About", "Whisker IDE 1.0\n\nAn editor and runtime for the Whisker language,\nbuilt in Scratch: everything is drawn with the pen.\nUses the ScratchOS " .. OS_VERSION .. " compiler and virtual machine.", "", "");
+        dialog(1, "About", "Whisker IDE 1.0\n\nAn editor and runtime for the Whisker language,\nbuilt in Scratch: everything is drawn with the pen.\nUses the ScratchOS " .. OS_VERSION .. " compiler and virtual machine.\nText is set in JetBrains Mono (SIL Open Font License).", "", "");
         return;
     }
 }
@@ -2331,6 +2484,10 @@ proc ide_press(c, r) {
         if (r != 0) { return; }
     }
     if (r == 0) {
+        if (c >= IC - 8) {
+            if (run_pid > 0) { ide_cmd("stop"); } else { ide_cmd("run"); }
+            return;
+        }
         for i = 1 to len(mn_title) {
             if (c >= mn_x[i] - 1 && c <= mn_x[i] + len(mn_title[i])) {
                 menu_open = i;
@@ -2363,25 +2520,17 @@ proc ide_press(c, r) {
         }
         return;
     }
-    // tabs row
+    // tabs row: click a tab to switch, its x / dot to close it
     if (r == ROW_TABS) {
-        if (c >= IC - 8) {
-            if (run_pid > 0) { ide_cmd("stop"); } else { ide_cmd("run"); }
-            return;
-        }
         local x = 0;
         for i = 1 to len(tab_path) {
-            local p = tab_path[i];
-            local name = fs_name_of(p);
-            if (tab_dirty[i] == 1) { name = name .. "*"; }
-            local lw = len(name) + 2;
-            if (i == cur_tab) { lw += 2; }
+            local lw = tab_label_w(i);
             if (c >= x && c < x + lw) {
-                if (i == cur_tab && c >= x + lw - 2) { ide_cmd("close"); }
-                else { tab_activate(i); }
+                if (i != cur_tab) { tab_activate(i); }
+                if (c == x + lw - 2) { ide_cmd("close"); }
                 return;
             }
-            x += lw + 1;
+            x += lw;
         }
         return;
     }

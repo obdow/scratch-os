@@ -37,6 +37,18 @@ wm_pointer()      mouse pointer                               (desktop only)
 * Solid rectangles use 81 power-of-two rectangle costumes (1…256 px per side),
   so any fill takes at most 4 stamps.
 * Lines use the pen. The mouse pointer is two stamped glyphs (outline + body).
+* **The Whisker IDE's palette** (`src/ide/gfx.sbs`, `tools/ide_assets.py`)
+  extends the same trick to arbitrary RGB. The colour effect rotates hue in
+  HSV and keeps the *chroma* (max − min channel); brightness then shifts all
+  three channels. So one base set of chroma C reaches every colour with
+  chroma C exactly. The IDE's 112 palette entries (16 terminal colours for
+  each theme, 32 UI colours for each theme) are clustered into 8 chroma
+  levels plus grey, giving 9 base sets of 256 JetBrains Mono glyphs and 81
+  rects. Each palette entry stores its set's costume numbers, hue and
+  brightness. Box-drawing, block and shade characters are drawn
+  procedurally so they meet at cell edges. Thin borders, accent underlines
+  and the scrollbar are extra 1–2 px rect stamps ("decos") carried in the
+  cell attribute.
 
 Measured in headless Chromium with software GL, a stamp costs about 11 µs and
 a full 60×22 redraw about 29 ms. So everything redraws incrementally:

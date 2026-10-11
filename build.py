@@ -9,7 +9,7 @@ Build ScratchOS.sb3 from source.
 Inputs:
     src/*.sbs      kernel source (SBS build language, compiled by tools/sbc.py)
     rootfs/        files baked into the in-memory file system at boot
-    assets/font/   IBM VGA 8x16 font
+    assets/font/   IBM VGA 8x16 font (ScratchOS), JetBrains Mono (Whisker IDE)
 """
 
 import argparse
@@ -22,6 +22,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(ROOT, 'tools'))
 
 import assets  # noqa: E402
+import ide_assets  # noqa: E402
 import natives  # noqa: E402
 import osdata  # noqa: E402
 import rootfs  # noqa: E402
@@ -38,20 +39,26 @@ TW_CONFIG = {
 }
 
 
-def build(main, out, rootfs_dir=None):
+def build(main, out, rootfs_dir=None, ide=False):
     data = rootfs.build_data(rootfs_dir or os.path.join(ROOT, 'rootfs'))
     data.update(osdata.build_data())
     data.update(natives.build_data())
+    if ide:
+        data.update(ide_assets.build_data())
     prog = sbc.Program(data)
     # Constants made available to SBS source
-    prog.consts.update({
-        'GLYPH_BASE': assets.GLYPH_BASE,
-        'RED_GLYPH_BASE': assets.RED_GLYPH_BASE,
-        'RECT_W_BASE': assets.RECT_W_BASE,
-        'RECT_R_BASE': assets.RECT_R_BASE,
-        'CURSOR_COSTUME': assets.CURSOR_COSTUME,
-        'CURSOR_MASK_COSTUME': assets.CURSOR_MASK_COSTUME,
-    })
+    if ide:
+        prog.consts.update(ide_assets.layout())
+        prog.consts.update(ide_assets.ui_consts())
+    else:
+        prog.consts.update({
+            'GLYPH_BASE': assets.GLYPH_BASE,
+            'RED_GLYPH_BASE': assets.RED_GLYPH_BASE,
+            'RECT_W_BASE': assets.RECT_W_BASE,
+            'RECT_R_BASE': assets.RECT_R_BASE,
+            'CURSOR_COSTUME': assets.CURSOR_COSTUME,
+            'CURSOR_MASK_COSTUME': assets.CURSOR_MASK_COSTUME,
+        })
     prog.consts.update(data.get('_consts', {}))
     prog.consts.update(data['_native_consts'])
     prog.load(main)
@@ -60,7 +67,7 @@ def build(main, out, rootfs_dir=None):
     cfg_text = ("Configuration for https://turbowarp.org/\n"
                 "You can move, resize, and minimize this comment, but don't edit it by hand. "
                 "This comment can be deleted to remove the stored settings.\n"
-                + json.dumps(TW_CONFIG) + " // _twconfig_")
+                + json.dumps(dict(TW_CONFIG, hq=True) if ide else TW_CONFIG) + " // _twconfig_")
     stage['comments']['twconfig'] = {'blockId': None, 'x': 0, 'y': 0, 'width': 350, 'height': 170,
                                      'minimized': False, 'text': cfg_text}
     project = {
@@ -91,7 +98,7 @@ def main():
         if a.ide:
             build(os.path.join(ROOT, 'src', 'ide', 'main.sbs'),
                   a.out if a.out != os.path.join(ROOT, 'ScratchOS.sb3') else os.path.join(ROOT, 'WhiskerIDE.sb3'),
-                  a.rootfs or os.path.join(ROOT, 'ide', 'rootfs'))
+                  a.rootfs or os.path.join(ROOT, 'ide', 'rootfs'), ide=True)
         else:
             build(a.main, a.out, a.rootfs)
     except sbc.CompileError as e:

@@ -93,6 +93,13 @@ for Whisker. It reuses the ScratchOS runtime (compiler, VM, heap, natives,
 file system, text engine and canvas code) but has its own full-screen UI,
 so there is no shell or desktop. Open it in TurboWarp and click the flag.
 
+The IDE has its own look, separate from ScratchOS: text is set in
+**JetBrains Mono** (anti-aliased glyph costumes, rendered with TurboWarp's
+high-quality pen), and the flat dark and light themes are modelled on modern
+desktop IDEs. It has a title bar with a Run/Stop button, tabs with accent
+underlines, a project tree, thin 1px borders, popup menus and dialogs, and a
+slim scrollbar. ScratchOS itself keeps the VGA font and palette.
+
 - **Editor with tabs**: syntax highlighting (keywords, strings, numbers,
   comments, library names, and multi-line `--[[ ]]` / `[[ ]]`), line numbers,
   a scrollbar, mouse and shift+arrow selection, cut/copy/paste, multi-level
@@ -113,7 +120,8 @@ so there is no shell or desktop. Open it in TurboWarp and click the flag.
   `examples/bounce.wsk`, `clock.wsk` and `cube.wsk`.
 - **Examples and docs**: 13 example programs, a quick-start guide and the
   full language reference.
-- Two colour themes (blue and dark), and output panel sizes.
+- Dark and light themes (View menu), which also restyle the output panel
+  and the 16 program colours, and adjustable output panel sizes.
 - **Export / import**: the IDE file system lives in memory. File > Export
   copies the current file into the stage list `ide_export`; right-click the
   list to save it as a `.txt` file. File > Import reads one back the same way.
@@ -139,8 +147,9 @@ ide/rootfs/         files baked into the IDE (/projects, /examples, /docs)
 rootfs/             files baked into the file system image (/bin, /etc, /home, /usr)
 tools/sbc.py        SBS -> Scratch 3 compiler
 tools/assets.py     glyph / rectangle costumes from the VGA font
+tools/ide_assets.py the IDE's JetBrains Mono costumes and colour palette
 tools/natives.py    the Whisker system-call table
-assets/font/        IBM VGA 8x16 font (VileR, CC BY-SA 4.0)
+assets/font/        IBM VGA 8x16 font (VileR, CC BY-SA 4.0), JetBrains Mono (OFL 1.1)
 test/               headless TurboWarp harness (Playwright) and regression test
 docs/               architecture, SBS and Whisker documentation
 ```
@@ -171,5 +180,7 @@ manager's cell compositor, and the Scratch quirks that had to be worked around.
   collection (the same data as *Px437 IBM VGA 8x16* in
   [The Ultimate Oldschool PC Font Pack](https://int10h.org/oldschool-pc-fonts/),
   CC BY-SA 4.0).
+* Whisker IDE font: [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono),
+  SIL Open Font License 1.1 (see `assets/font/JetBrainsMono-OFL.txt`).
 * Runs on [TurboWarp](https://turbowarp.org/). Testing uses the
   [TurboWarp packager](https://github.com/TurboWarp/packager)'s scaffolding.

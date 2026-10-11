@@ -165,6 +165,9 @@ def costume_group(group):
         out.append(make_costume('pointer', png_bytes(pointer_image('body')), 'png', 0, 0))
         out.append(make_costume('pointer_outline', png_bytes(pointer_image('outline')), 'png', 0, 0))
         assert len(out) == CURSOR_MASK_COSTUME
+    elif group == 'ide_glyphs':
+        import ide_assets
+        out = ide_assets.costumes()
     elif group == 'backdrop':
         svg = b'<svg xmlns="http://www.w3.org/2000/svg" width="480" height="360" viewBox="0 0 480 360">' \
               b'<rect width="480" height="360" fill="#000000"/></svg>'

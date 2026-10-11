@@ -8,6 +8,8 @@
 //   @shot       screenshot  @ctrl=c      ctrl+key
 //   @click=x,y  mouse click at stage coords (0..480, 0..360)
 //   @drag=x1,y1,x2,y2
+// Options: --scale=N renders the stage N times larger, --hq uses the
+// high-quality pen (as the Whisker IDE's TurboWarp settings request).
 const fs = require('fs');
 const path = require('path');
 const { launch } = require('./harness');
@@ -21,7 +23,8 @@ async function main() {
   const cmds = sep < 0 ? [] : args.slice(sep + 1);
   const waitMs = +((opts.find((o) => o.startsWith('--wait=')) || '--wait=1500').split('=')[1]);
   fs.mkdirSync(outdir, { recursive: true });
-  const h = await launch(sb3);
+  const scale = +((opts.find((o) => o.startsWith('--scale=')) || '--scale=1').split('=')[1]);
+  const h = await launch(sb3, { scale, hq: opts.includes('--hq') });
   const p = h.page;
   const tap = async (k) => { await p.keyboard.down(k); await h.sleep(60); await p.keyboard.up(k); await h.sleep(30); };
   // wait for the keyboard clones, skip the boot animation, wait for the kernel loop

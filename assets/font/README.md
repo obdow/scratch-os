@@ -10,3 +10,10 @@ which is licensed under the Creative Commons Attribution-ShareAlike 4.0
 International license (CC BY-SA 4.0).
 
 `tools/assets.py` turns it into the glyph costumes used by the pen text engine.
+
+# JetBrainsMono-Regular.ttf
+
+JetBrains Mono Regular, Copyright 2020 The JetBrains Mono Project Authors
+(<https://github.com/JetBrains/JetBrainsMono>), licensed under the SIL Open
+Font License 1.1 (`JetBrainsMono-OFL.txt`).  Used only by the Whisker IDE:
+`tools/ide_assets.py` renders it into anti-aliased 8x16-cell glyph costumes.

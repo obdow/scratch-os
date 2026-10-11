@@ -11,7 +11,7 @@ WHISKER IDE - QUICK START
   File  New, Save, Save as, Rename, Delete, Close, Export, Import
   Edit  Undo, Redo, Cut, Copy, Paste, Find, Replace, Go to line ...
   Run   Run, Stop, Check syntax, Clear output
-  View  File tree, output panel size, colour theme
+  View  File tree, output panel size, dark / light theme
   Help  this page, the language reference, About
 
   Programs print into the Output panel at the bottom.  When a program

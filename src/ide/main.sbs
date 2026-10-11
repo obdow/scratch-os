@@ -5,6 +5,8 @@
 // reuses the ScratchOS kernel modules unchanged (pen text engine, keyboard
 // clones, file system, Whisker compiler + VM, natives, canvas drawing) and
 // replaces the shell/desktop with the IDE user interface in ide.sbs.
+// Graphics use the IDE's own costumes and palette (ide/gfx.sbs and
+// tools/ide_assets.py): JetBrains Mono text and modern dark/light themes.
 // ===========================================================================
 
 include "../kbd.sbs";
@@ -12,8 +14,8 @@ include "../kbd.sbs";
 global list ide_export;      // File > Export / Import go through this list monitor
 
 sprite Kernel {
-    costumes "glyphs";
-    include "../gfx.sbs";
+    costumes "ide_glyphs";
+    include "gfx.sbs";              // IDE palette + JetBrains Mono costumes
     include "../str.sbs";
     include "../tty.sbs";
     include "../fs.sbs";
