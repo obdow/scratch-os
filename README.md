@@ -36,9 +36,9 @@ user@scratchos:~$ startx                     # the desktop
 |---|---|
 | Boot | BIOS POST with memory test, boot manager, kernel log, `init` (pid 1) running `/etc/rc`, motd. Press Esc to skip the animations. |
 | Shell | pipes `\|`, redirection `> >> < 2>`, `;` `&&` `\|\|` `&`, quoting, `$VAR` `$?` `$$` `~`, history (↑/↓), line editing, Ctrl+C, job control (`jobs`, `fg`, `kill %n`), scripts (`sh file.sh`, `source`) |
-| Programs | `ls cat cp mv rm mkdir rmdir touch tree find grep wc head tail sort uniq rev tee seq yes basename dirname sleep date cal ps top kill free uname whoami hostname man more edit whisker calc cowsay fortune bench matrix snake hello` |
+| Programs | `ls cat cp mv rm mkdir rmdir touch tree find grep wc head tail sort uniq rev tee seq yes basename dirname sleep date cal ps top kill free uname whoami hostname man more edit whisker calc cowsay fortune bench matrix snake hello cube` |
 | Desktop | overlapping windows (drag, resize, minimise, maximise, close), taskbar with clock, Start menu, desktop icons, terminal windows, permission dialogs, error dialogs |
-| GUI apps | Files (file manager), Paint, Task Manager, Clock, About, plus terminal apps like Text Editor and Snake |
+| GUI apps | Files (file manager), Paint, Task Manager, Clock, 3D Cube (orbit it with the mouse), About, plus terminal apps like Text Editor and Snake |
 | Language | Whisker: Lua-like syntax, tables, functions, methods, `pcall`/`error`, multiple returns, `load`/`require`, 140+ built-in functions |
 | Permissions | programs ask before using `files`, `proc`, `gui` or `system` capabilities: (y)es / (n)o / (a)lways; policy in `/etc/caps` |
 

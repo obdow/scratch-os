@@ -111,10 +111,10 @@ var clock_last = "";
 var focus_win = 0;
 
 // start menu: label, command ("@" = built-in action)
-list menu_lbl = ["Terminal", "Files", "Text Editor", "Paint", "Task Manager", "Clock", "Snake",
+list menu_lbl = ["Terminal", "Files", "Text Editor", "Paint", "Task Manager", "Clock", "3D Cube", "Snake",
                  "Matrix", "Whisker REPL", "Manual", "About ScratchOS", "-", "Exit to console",
                  "Reboot", "Shut down"];
-list menu_cmd = ["@term", "files", "@term edit", "paint", "taskmgr", "clock", "@term snake",
+list menu_cmd = ["@term", "files", "@term edit", "paint", "taskmgr", "clock", "cube", "@term snake",
                  "@term matrix", "@term whisker", "@term man scratchos", "about", "-", "@exit",
                  "@reboot", "@halt"];
 const MENU_W = 22;
@@ -840,6 +840,57 @@ proc canvas_prim(w, h, p) {
         for k = 1 to len(str) {
             clip_glyph(ox + a1 + (k - 1) * 8, oy + a2, ord(str[k]), a4, a5);
         }
+    } else if (op == 9) {
+        clip_poly(ox, oy, a3, a4);
+    }
+}
+
+// filled convex polygon; pts = "x1,y1;x2,y2;..." relative to (ox, oy).
+// Scanline fill: one 1-pixel-high clipped span per row.
+list pg_x;
+list pg_y;
+proc clip_poly(ox, oy, pts, c) {
+    clear(pg_x);
+    clear(pg_y);
+    local num = "";
+    for i = 1 to len(pts) {
+        local ch = pts[i];
+        if (ch == ",") { add(pg_x, ox + num); num = ""; }
+        else if (ch == ";") { add(pg_y, oy + num); num = ""; }
+        else { num = num .. ch; }
+    }
+    local n = len(pg_y);
+    if (n < 3) { return; }
+    local y0 = pg_y[1];
+    local y1 = pg_y[1];
+    for i = 2 to n {
+        if (pg_y[i] < y0) { y0 = pg_y[i]; }
+        if (pg_y[i] > y1) { y1 = pg_y[i]; }
+    }
+    y0 = floor(y0);
+    y1 = ceil(y1);
+    if (y0 < cl_y0) { y0 = cl_y0; }
+    if (y1 > cl_y1 - 1) { y1 = cl_y1 - 1; }
+    local y = y0;
+    while (y <= y1) {
+        local sy = y + 0.5;
+        local xmin = 99999;
+        local xmax = -99999;
+        for i = 1 to n {
+            local j = i % n + 1;
+            local ya = pg_y[i];
+            local yb = pg_y[j];
+            if ((ya <= sy && yb > sy) || (yb <= sy && ya > sy)) {
+                local x = pg_x[i] + (sy - ya) * (pg_x[j] - pg_x[i]) / (yb - ya);
+                if (x < xmin) { xmin = x; }
+                if (x > xmax) { xmax = x; }
+            }
+        }
+        if (xmax >= xmin) {
+            local xa = round(xmin);
+            clip_fill(xa, y, round(xmax) - xa + 1, 1, c);
+        }
+        y += 1;
     }
 }
 
@@ -1412,7 +1463,23 @@ proc nat_gui(id) {
                 if (vm_raised == 0) { dl_add(w12, 8, tx, ty, str, fg, bg, 0); }
             }
         }
-        case N_GFX_BATCH, N_GFX_FLUSH: { }
+        case N_GFX_BATCH: { batch_pid = p_pid[s]; }
+        case N_GFX_FLUSH: { if (batch_pid == p_pid[s]) { batch_pid = 0; } }
+        case N_GFX_POLY: {
+            local w13 = nat_win(1, "gfx.poly");
+            if (w13 > 0) {
+                local pt = nat_table(2, "gfx.poly");
+                local c6 = nat_optnum(3, 15, "gfx.poly") % 16;
+                if (vm_raised == 0) {
+                    local enc = "";
+                    local np = floor(tb_an[pt] / 2);
+                    for k = 1 to np {
+                        enc = enc .. round(HV[tb_ab[pt] + k * 2 - 1]) .. "," .. round(HV[tb_ab[pt] + k * 2]) .. ";";
+                    }
+                    if (np >= 3) { dl_add(w13, 9, 0, 0, enc, c6, 0, 0); }
+                }
+            }
+        }
         default: { vm_raise("native " .. nat_names[id] .. " not implemented"); }
     }
 }

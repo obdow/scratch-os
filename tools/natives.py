@@ -40,7 +40,7 @@ NATIVES = [
     'gui.window', 'gui.close', 'gui.event', 'gui.waitevent', 'gui.size', 'gui.title',
     'gui.active', 'gui.terminal',
     'gfx.clear', 'gfx.pixel', 'gfx.line', 'gfx.rect', 'gfx.fill', 'gfx.circle', 'gfx.text',
-    'gfx.batch', 'gfx.flush', 'gfx.disc',
+    'gfx.batch', 'gfx.flush', 'gfx.disc', 'gfx.poly',
     # system
     'sys.version', 'sys.uptime', 'sys.mem', 'sys.shutdown', 'sys.reboot', 'sys.caps',
     'sys.hostname', 'sys.gc', 'sys.request', 'sys.procs', 'sys.date',

@@ -92,6 +92,7 @@ var cur_slot = 0;      // slot of process currently executing
 var now_s = 0;         // time in seconds at frame start
 var uptime0 = 0;
 var proc_count = 0;
+var batch_pid = 0;      // process inside gfx.batch() ... gfx.flush()
 
 proc now_secs() {
     return days2000() * 86400;
@@ -286,6 +287,7 @@ proc proc_exit(s, code) {
     fd_close_ref(p_err_k[s], p_err_i[s], 1);
     if (p_kind[s] == PK_VM) { vm_release(s); }
     wm_proc_exit(pid);
+    if (batch_pid == pid) { batch_pid = 0; }
     caps_proc_exit(pid);
     // drop queued raw keys
     local i = 1;
@@ -358,7 +360,9 @@ proc proc_step(s) {
     cur_slot = s;
     local k = p_kind[s];
     if (k == PK_VM) {
-        vm_run(s, 4000);
+        // a program drawing a batched frame (gfx.batch) gets a longer slice
+        // so the frame appears all at once instead of flickering
+        if (p_pid[s] == batch_pid) { vm_run(s, 60000); } else { vm_run(s, 4000); }
     } else if (k == PK_SHELL) {
         shell_step(s);
     } else if (k == PK_INIT) {

@@ -133,7 +133,9 @@ pixels), `"resize"` (with `x`, `y` = new size), or `"close"`.
 `pixel(win, x, y, c)`, `line(win, x1, y1, x2, y2, c [, size])`,
 `rect(win, x, y, w, h, c)`, `fill(win, x, y, w, h, c)`,
 `circle(win, x, y, r, c)`, `disc(win, x, y, r, c)`,
-`text(win, x, y, s, fg [, bg])`.
+`text(win, x, y, s, fg [, bg])`, `poly(win, {x1, y1, x2, y2, ...}, c)` (filled convex polygon).
+Wrap a frame's drawing in `gfx.batch()` ... `gfx.flush()` so it appears all at once
+(see `/bin/cube.wsk`).
 
 **sys:** `version()`, `uptime()`, `mem()`, `hostname()`, `caps()`,
 `request(cap)`, `gc()`, `procs()`, `date()`, `shutdown()`, `reboot()`.

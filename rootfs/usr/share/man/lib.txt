@@ -19,7 +19,8 @@ GUI      window(title, w, h) -> win   close(win)  event(win)
          terminal(cmd) opens a terminal window running cmd
 GFX      clear(win, c) pixel(win, x, y, c) line(win, x1, y1, x2, y2, c)
          rect fill(win, x, y, w, h, c) circle/disc(win, x, y, r, c)
-         text(win, x, y, s, fg, bg)
+         text(win, x, y, s, fg, bg)  poly(win, {x1, y1, x2, y2, ...}, c)
+         batch() ... flush()  draw a whole frame at once
 SYS      version uptime mem shutdown reboot caps hostname gc request
          procs date
 
