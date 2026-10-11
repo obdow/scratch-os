@@ -11,7 +11,7 @@ WHISKER IDE - QUICK START
   File  New, Save, Save as, Rename, Delete, Close, Export, Import
   Edit  Undo, Redo, Cut, Copy, Paste, Find, Replace, Go to line ...
   Run   Run, Stop, Check syntax, Clear output
-  View  File tree, output panel size, dark / light theme
+  View  File tree, text preview / edit, output panel size, theme
   Help  this page, the language reference, About
 
   Programs print into the Output panel at the bottom.  When a program
@@ -25,6 +25,10 @@ WHISKER IDE - QUICK START
   appears in a list on the stage - right-click it and choose "export".
   File > Import does the reverse (right-click the list, "import", then
   choose File > Import again).
+
+  Text files (anything that is not a .wsk program, like these docs) open
+  in a formatted Preview with word wrap.  Ctrl+E, or the Preview / Edit
+  switch at the right of the tab bar, switches to plain-text editing.
 
   Libraries in /lib load with require: local sort = require("sort") gives
   a dozen sorting methods (see /docs/sort.txt and /examples/sorting.wsk).

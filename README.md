@@ -114,6 +114,18 @@ ScratchOS itself keeps the 480×360 stage, VGA font and palette.
   a scrollbar, mouse and shift+arrow selection, cut/copy/paste, multi-level
   undo/redo, auto-indent and auto-dedent, toggle comment, duplicate or delete
   line, indent/unindent, find, find next, replace, and go to line.
+- **Native text files**: any file that isn't a `.wsk` program opens in a
+  rendered **Preview**.
+  - Word wrap with hanging indents.
+  - Markdown-style headings, bullet and numbered lists, quotes and rules.
+  - `code`, **bold** and *emphasis*.
+  - Fenced code blocks shown with Whisker syntax highlighting.
+
+  Ctrl+E, or the Preview / Edit switch in the tab bar, flips to a
+  plain-text editor without Whisker colours, autocomplete or block
+  indent. Double-clicking a preview line opens the editor at that line.
+  Find and go-to-line follow into the preview, and Run explains that
+  text files don't run.
 - **Autocomplete** for keywords, library modules and their functions
   (`string.u` offers `string.upper`), and for identifiers in the file.
   It opens as you type, or on Ctrl+Space.
@@ -148,6 +160,7 @@ ScratchOS itself keeps the 480×360 stage, VGA font and palette.
 Shortcuts: Ctrl+Enter run, Esc stop (or open the menu), Ctrl+S save, Ctrl+Z/Y
 undo/redo, Ctrl+X/C/V, Ctrl+A, Ctrl+F find, Ctrl+G go to line, Ctrl+D
 duplicate line, Ctrl+/ comment, Ctrl+] / Ctrl+[ indent, Ctrl+Space complete,
+Ctrl+E text preview / edit,
 Esc opens the menu bar; arrows or a menu's first letter move through it. The browser may
 intercept a few Ctrl shortcuts; the same commands are all in the menus.
 

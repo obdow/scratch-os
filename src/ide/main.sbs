@@ -30,6 +30,7 @@ sprite Kernel {
     include "../caps.sbs";
     include "../wm.sbs";
     include "ide.sbs";
+    include "textview.sbs";        // native rendering of text files
 
     var con = 0;            // the Output panel tty (kernel messages go here too)
     var frames = 0;
