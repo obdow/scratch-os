@@ -260,8 +260,8 @@ proc nat_sys(id) {
         case N_TERM_RAW: {
             local t5 = p_tty[s];
             if (t5 > 0) {
-                if (vm_truthy(nat_v(1), nat_t(1)) == 1 || nat_argc == 0) { tty_mode[t5] = 1; p_raw[s] = 1; }
-                else { tty_mode[t5] = 0; p_raw[s] = 0; }
+                if (vm_truthy(nat_v(1), nat_t(1)) == 1 || nat_argc == 0) { tty_mode[t5] = 1; }
+                else { tty_mode[t5] = 0; }
             }
         }
         case N_TERM_CURSOR: {

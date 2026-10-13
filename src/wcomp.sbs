@@ -266,7 +266,6 @@ proc wlex(src) {
         } else if (c == "-" && i < n && src[i + 1] == "-") {
             // comment
             if (i + 3 <= n && src[i + 2] == "[" && src[i + 3] == "[") {
-                local startl = line;
                 i = wlex_long(src, i + 2, line);
                 for k = 1 to len(lex_str) { if (lex_str[k] == "\n") { line += 1; } }
                 i += 1;

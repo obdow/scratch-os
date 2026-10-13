@@ -27,7 +27,6 @@ list seg_len;
 list seg_refs;       // running processes using it
 list seg_nglob;
 list seg_caps;       // capabilities declared with --@caps
-list seg_path;
 list seg_glnames;    // global names ("\x01"-separated)
 
 list nr_v;           // native results
@@ -52,7 +51,7 @@ var vm_total = 0;    // instructions executed since boot
 proc vm_init() {
     clear(CODE);
     clear(seg_key); clear(seg_start); clear(seg_len); clear(seg_refs); clear(seg_nglob);
-    clear(seg_caps); clear(seg_path); clear(seg_glnames);
+    clear(seg_caps); clear(seg_glnames);
     clear(STK); clear(STT); clear(CSK);
     repeat (MAX_PROC * STACK_SIZE) { add(STK, ""); add(STT, 0); }
     repeat (MAX_PROC * CS_SIZE) { add(CSK, 0); }
@@ -92,7 +91,6 @@ proc seg_alloc(n) {
     add(seg_refs, 0);
     add(seg_nglob, 0);
     add(seg_caps, "");
-    add(seg_path, "");
     add(seg_glnames, "");
     return len(seg_key);
 }
@@ -117,7 +115,6 @@ proc vm_load(ino) {
     seg_key[sg] = key;
     seg_nglob[sg] = len(gl_names);
     seg_caps[sg] = c_caps;
-    seg_path[sg] = fs_path(ino);
     seg_glnames[sg] = gl_names_encode();
     return sg;
 }

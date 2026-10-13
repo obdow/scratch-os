@@ -136,13 +136,6 @@ proc table_hfind(h, k, kt) {
     return 0;
 }
 
-// is (k, kt) a positive integer key?
-proc is_int_key(k, kt) {
-    if (kt != TNUM) { return 0; }
-    if (k < 1) { return 0; }
-    return k == floor(k);
-}
-
 // t[k] -> hv_r / ht_r
 proc table_get(h, k, kt) {
     if (kt == TNUM) {
@@ -233,10 +226,6 @@ proc table_migrate(h) {
     }
 }
 
-proc table_len(h) {
-    return tb_an[h];
-}
-
 proc table_append(h, v, vt) {
     table_set(h, tb_an[h] + 1, TNUM, v, vt);
 }
@@ -279,9 +268,6 @@ proc table_remove(h, pos) {
 proc tset_s(h, key, v) { table_set(h, key, TSTR, v, TSTR); }
 proc tset_n(h, key, v) { table_set(h, key, TSTR, v, TNUM); }
 proc tset_b(h, key, v) { table_set(h, key, TSTR, v, TBOOL); }
-proc tpush_s(h, v) { table_append(h, v, TSTR); }
-proc tpush_n(h, v) { table_append(h, v, TNUM); }
-proc tpush_t(h, v) { table_append(h, v, TTAB); }
 
 // --- garbage collector -------------------------------------------------------
 

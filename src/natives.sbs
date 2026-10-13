@@ -789,7 +789,6 @@ proc vm_load_chunk(src, extra) {
     for k = 1 to len(cb) { CODE[b + k] = cb[k]; }
     seg_key[sg] = "\x02" .. p_pid[s];
     seg_refs[sg] = 1;
-    seg_path[sg] = "(load)";
     // grow the globals table to cover new names
     p_glnames[s] = gl_names_encode();
     local g = p_glob[s];

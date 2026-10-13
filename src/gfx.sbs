@@ -29,13 +29,7 @@ var gfx_gbase = 1;       // costume number of glyph 0 in the current base set
 var gfx_rbase = 513;     // costume number of rect 1x1 in the current base set
 var gfx_pen_col = -1;
 var gfx_pen_size = -1;
-var gfx_stamps = 0;      // drawing activity counter (mouse pointer repair)
 
-// clip rectangle for line drawing (screen coords, inclusive-exclusive)
-var clip_x0 = 0;
-var clip_y0 = 0;
-var clip_x1 = SCR_W;
-var clip_y1 = SCR_H;
 
 proc gfx_init() {
     pen_clear();
@@ -83,7 +77,6 @@ proc gfx_glyph(x, y, code, c) {
     goto(x - HALF_W, HALF_H - y);
     costume(gfx_gbase + gmap[code + 1]);
     stamp();
-    gfx_stamps += 1;
 }
 
 // Stamp glyph `code` at twice the size (16x32 px, the costume's native
@@ -95,7 +88,6 @@ proc gfx_glyph2(x, y, code, c) {
     size(200);
     stamp();
     size(100);
-    gfx_stamps += 1;
 }
 
 // Fill rectangle with palette colour c.  Uses power-of-two rect costumes,
@@ -110,7 +102,6 @@ proc gfx_fill(x, y, w, h, c) {
     local j = 0;
     while (sh * 2 <= h && j < 8) { sh = sh * 2; j += 1; }
     costume(gfx_rbase + i * 9 + j);
-    gfx_stamps += 1;
     local ty = y;
     forever {
         if (ty + sh > y + h) { ty = y + h - sh; }
@@ -124,14 +115,6 @@ proc gfx_fill(x, y, w, h, c) {
         }
         if (ty + sh >= y + h) { break; }
         ty += sh;
-    }
-}
-
-// Draw a text cell: background + glyph.  col,row in character cells.
-proc gfx_cell(col, row, code, fg, bg) {
-    gfx_fill(col * 8, row * 16, 8, 16, bg);
-    if (code != 32 && code != 0 && fg != bg) {
-        gfx_glyph(col * 8, row * 16, code, fg);
     }
 }
 
@@ -164,7 +147,6 @@ proc gfx_rgb_fill(x, y, w, h, rgb) {
             pen_up();
         }
     }
-    gfx_stamps += 1;
 }
 
 // palette index whose colour is nearest to an RGB value (for text, which is
@@ -216,5 +198,4 @@ proc gfx_line(x1, y1, x2, y2, c, sz) {
     pen_down();
     goto(x2 - HALF_W + 0.5, HALF_H - 0.5 - y2);
     pen_up();
-    gfx_stamps += 1;
 }

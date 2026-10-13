@@ -81,6 +81,12 @@ def build(main, out, rootfs_dir=None, ide=False):
             return [assets.make_costume('black', backdrop_svg(sw, sh), 'svg', sw // 2, sh // 2, 1)]
         return assets.costume_group(group)
     targets, asset_bytes = prog.build_targets(costume_group)
+    # drop custom blocks this build never runs, and variables / lists nothing
+    # uses (the test harness reads kb_ready and frames)
+    pruned = sbc.prune_unused(targets, keep={'kb_ready', 'frames'})
+    if os.environ.get('SBC_PRUNED'):
+        with open(os.environ['SBC_PRUNED'], 'w') as f:
+            f.write('\n'.join(sorted(pruned['names'])) + '\n')
     stage = targets[0]
     cfg_text = ("Configuration for https://turbowarp.org/\n"
                 "You can move, resize, and minimize this comment, but don't edit it by hand. "
@@ -101,7 +107,8 @@ def build(main, out, rootfs_dir=None, ide=False):
         for name, b in sorted(asset_bytes.items()):
             z.writestr(name, b)
     nblocks = sbc.count_blocks(targets)
-    print(f"wrote {out}: {nblocks} blocks, {len(asset_bytes)} assets, project.json {len(pj)//1024} KiB")
+    print(f"wrote {out}: {nblocks} blocks, {len(asset_bytes)} assets, project.json {len(pj)//1024} KiB"
+          f" (pruned {pruned['procs']} unused procs, {pruned['vars']} variables, {pruned['lists']} lists)")
     return project
 
 

@@ -257,7 +257,6 @@ proc tty_csi(t, params, fin) {
     local p1 = "";
     local p2 = "";
     local which = 1;
-    local nparams = 0;
     if (fin == "m") {
         if (params == "") { tty_sgr(t, 0); return; }
         local cur = "";
@@ -348,10 +347,6 @@ proc tty_write(t, s) {
         }
         i += 1;
     }
-}
-
-proc tty_print(t, s) {
-    tty_write(t, s .. "\n");
 }
 
 // --- line editing -----------------------------------------------------------

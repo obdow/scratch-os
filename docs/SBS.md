@@ -74,3 +74,19 @@ Scratch considers `"0"` equal to `" "` and `""`, and TurboWarp treats
 constant whitespace strings as the number 0. So `x == "<whitespace>"` is
 compiled as `len(x) == len(W) && contains(W, x)`, and `x == ""` as
 `len(x) == 0`.
+
+## Pruning
+
+After compiling, `prune_unused` (called by `build.py`) removes what a build
+cannot use:
+
+1. **Custom blocks** that no hat script reaches, following call chains.
+   Code shared by ScratchOS and the stand-alone IDE (such as the IDE's
+   boot, or the shell) is dropped from the build that never runs it.
+2. **Writes** to variables and lists that nothing reads. A Scratch reporter
+   has no side effects, so such a `set` / `change` / list write can be
+   deleted. This repeats until nothing changes.
+3. **Variables and lists** that no remaining block mentions.
+
+`build.py` keeps `kb_ready` and `frames`, which the test harness reads. Set
+`SBC_PRUNED=file` to get the list of what was removed.

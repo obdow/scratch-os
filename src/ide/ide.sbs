@@ -412,7 +412,6 @@ proc join_lines() {
 
 proc split_into_ed(text) {
     clear(ed);
-    local cur = "";
     local n = len(text);
     local start = 1;
     for i = 1 to n {
@@ -652,7 +651,6 @@ proc ins_text(text) {
     local line = ed[ecy];
     local head = substr(line, 1, ecx - 1);
     local tail = substr(line, ecx, len(line));
-    local cur = "";
     local first = 1;
     local start = 1;
     local n = len(text);

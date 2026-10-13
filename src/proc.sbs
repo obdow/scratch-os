@@ -57,9 +57,6 @@ list p_pgid;
 list p_caps;       // granted capabilities, "|cap1|cap2|"
 list p_path;       // program path
 list p_block;
-list p_raw;        // raw keyboard mode
-list p_killed;     // pending kill
-list p_exitcode;
 // VM registers (vm.sbs)
 list p_pc;
 list p_sp;
@@ -70,7 +67,6 @@ list p_seg;
 list p_line;
 list p_sbase;
 list p_cbase;
-list p_win;        // focus window for gui programs
 
 list ex_pid;       // exit statuses of finished processes
 list ex_code;
@@ -88,7 +84,6 @@ list kq_ev;
 var next_pid = 1;
 var sched_next = 1;
 var fd_got = "";
-var cur_slot = 0;      // slot of process currently executing
 var now_s = 0;         // time in seconds at frame start
 var uptime0 = 0;
 var proc_count = 0;
@@ -102,17 +97,16 @@ proc proc_init() {
     clear(p_pid); clear(p_state); clear(p_kind); clear(p_name); clear(p_parent); clear(p_tty);
     clear(p_in_k); clear(p_in_i); clear(p_out_k); clear(p_out_i); clear(p_err_k); clear(p_err_i);
     clear(p_cwd); clear(p_wake); clear(p_cpu); clear(p_start); clear(p_pgid); clear(p_caps);
-    clear(p_path); clear(p_block); clear(p_raw); clear(p_killed); clear(p_exitcode);
+    clear(p_path); clear(p_block);
     clear(p_pc); clear(p_sp); clear(p_fp); clear(p_csp); clear(p_glob); clear(p_seg); clear(p_line);
-    clear(p_sbase); clear(p_cbase); clear(p_win);
+    clear(p_sbase); clear(p_cbase);
     for i = 1 to MAX_PROC {
         add(p_pid, 0); add(p_state, PS_FREE); add(p_kind, 0); add(p_name, ""); add(p_parent, 0);
         add(p_tty, 0); add(p_in_k, FD_NULL); add(p_in_i, 0); add(p_out_k, FD_NULL); add(p_out_i, 0);
         add(p_err_k, FD_NULL); add(p_err_i, 0); add(p_cwd, 1); add(p_wake, 0); add(p_cpu, 0);
         add(p_start, 0); add(p_pgid, 0); add(p_caps, "|"); add(p_path, ""); add(p_block, 0);
-        add(p_raw, 0); add(p_killed, 0); add(p_exitcode, 0);
         add(p_pc, 0); add(p_sp, 0); add(p_fp, 0); add(p_csp, 0); add(p_glob, 0); add(p_seg, 0);
-        add(p_line, 0); add(p_sbase, 0); add(p_cbase, 0); add(p_win, 0);
+        add(p_line, 0); add(p_sbase, 0); add(p_cbase, 0);
     }
     clear(ex_pid); clear(ex_code);
     clear(pipe_used); clear(pipe_w); clear(pipe_r); clear(pipe_part);
@@ -140,11 +134,7 @@ proc proc_alloc(name, kind, parent_slot) {
     p_cpu[s] = 0;
     p_start[s] = now_secs();
     p_block[s] = BLK_NONE;
-    p_raw[s] = 0;
-    p_killed[s] = 0;
-    p_exitcode[s] = 0;
     p_path[s] = "";
-    p_win[s] = 0;
     p_glob[s] = 0;
     p_seg[s] = 0;
     if (parent_slot > 0) {
@@ -349,15 +339,9 @@ proc tty_interrupt(t) {
     return 1;
 }
 
-// does process s hold capability `cap`?
-proc has_cap(s, cap) {
-    return contains(p_caps[s], "|" .. cap .. "|");
-}
-
 // --- scheduler ----------------------------------------------------------------
 
 proc proc_step(s) {
-    cur_slot = s;
     local k = p_kind[s];
     if (k == PK_VM) {
         // a program drawing a batched frame (gfx.batch) gets a longer slice
@@ -368,7 +352,6 @@ proc proc_step(s) {
     } else if (k == PK_INIT) {
         init_step(s);
     }
-    cur_slot = 0;
 }
 
 proc sched_run(budget_ms) {

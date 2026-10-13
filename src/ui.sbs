@@ -37,7 +37,6 @@ const G_BIGDOT = 15;      // traffic-light dot
 const G_CLOSE = 158;      // close cross
 const G_DOT = 7;          // •
 const G_RIGHT = 16;       // ►
-const G_UP = 30;          // ▲
 const G_DOWN = 31;        // ▼
 const G_STOP = 254;       // ■
 
@@ -67,7 +66,6 @@ var C_POPUP = 0;
 var C_ONACC = 0;
 var C_WARN = 0;
 var C_HEADER = 0;
-var C_PTROUT = 0;
 var C_FOLDER = 0;
 var C_WSK = 0;
 var C_HOVER = 0;
@@ -83,7 +81,6 @@ var C_OP = 0;
 var C_MENUBAR = 0;
 var C_MENUTXT = 0;
 var C_DOCK = 0;
-var C_DOCKBD = 0;
 var C_DOCKTXT = 0;
 var C_TLRED = 0;
 var C_TLYEL = 0;
@@ -93,7 +90,6 @@ var C_TITLE = 0;
 var C_TITLEIN = 0;
 var C_TITLETXT = 0;
 var C_TITLEDIM = 0;
-var C_DESKTXT = 0;
 var C_WINBD = 0;
 var C_SHADOW = 0;
 var C_ICBLUE = 0;
@@ -114,14 +110,14 @@ proc ui_theme(n) {
     C_SEL = U_SEL + o; C_ACCENT = U_ACCENT + o; C_ACTIVE = U_ACTIVE + o; C_RUN = U_RUN + o;
     C_STOP = U_STOP + o; C_ERRBG = U_ERRBG + o; C_ERRFG = U_ERRFG + o; C_SCROLL = U_SCROLL + o;
     C_BUTTON = U_BUTTON + o; C_POPUP = U_POPUP + o; C_ONACC = U_ONACC + o; C_WARN = U_WARN + o;
-    C_HEADER = U_HEADER + o; C_PTROUT = U_PTROUT + o; C_FOLDER = U_FOLDER + o; C_WSK = U_WSK + o;
+    C_HEADER = U_HEADER + o; C_FOLDER = U_FOLDER + o; C_WSK = U_WSK + o;
     C_HOVER = U_HOVER + o; C_POPBD = U_POPBD + o;
     C_FG = U_EDFG + o; C_OP = U_EDFG + o; C_KW = U_KW + o; C_STR = U_STR + o; C_NUM = U_NUM + o;
     C_COM = U_COM + o; C_LIB = U_LIB + o;
-    C_MENUBAR = U_MENUBAR + o; C_MENUTXT = U_MENUTXT + o; C_DOCK = U_DOCK + o; C_DOCKBD = U_DOCKBD + o;
+    C_MENUBAR = U_MENUBAR + o; C_MENUTXT = U_MENUTXT + o; C_DOCK = U_DOCK + o;
     C_DOCKTXT = U_DOCKTXT + o; C_TLRED = U_TLRED + o; C_TLYEL = U_TLYEL + o; C_TLGRN = U_TLGRN + o;
     C_TLOFF = U_TLOFF + o; C_TITLE = U_TITLE + o; C_TITLEIN = U_TITLEIN + o; C_TITLETXT = U_TITLETXT + o;
-    C_TITLEDIM = U_TITLEDIM + o; C_DESKTXT = U_DESKTXT + o; C_WINBD = U_WINBD + o; C_SHADOW = U_SHADOW + o;
+    C_TITLEDIM = U_TITLEDIM + o; C_WINBD = U_WINBD + o; C_SHADOW = U_SHADOW + o;
     C_ICBLUE = U_ICBLUE + o; C_ICDARK = U_ICDARK + o; C_ICPURP = U_ICPURP + o; C_ICWHITE = U_ICWHITE + o;
     C_ICORANGE = U_ICORANGE + o; C_ICGREEN = U_ICGREEN + o; C_ICGREY = U_ICGREY + o; C_ICRED = U_ICRED + o;
     gfx_ansi_theme(n);

@@ -166,7 +166,6 @@ proc fs_mkdir_p(path) {
     // copy parts since fs_create reuses fs_tmp
     local n = len(fs_tmp);
     local acc = "";
-    local parts = "";
     for k = 1 to n {
         acc = acc .. "/" .. fs_tmp[k];
         add(fs_parts, acc);

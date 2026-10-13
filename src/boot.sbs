@@ -36,12 +36,6 @@ proc boot_keys() {
     }
 }
 
-proc boot_pause(sec) nowarp {
-    boot_keys();
-    if (gui == 0 && skip_boot == 1) { tty_render(); }
-    wait(sec);
-}
-
 // --- the boot screen: logo + progress bar --------------------------------------------
 
 const BOOT_BAR_W = 240;
@@ -52,8 +46,6 @@ proc boot_tri(x1, y1, x2, y2, x3, y3, c) {
     local yb = ceil(max3(y1, y2, y3));
     for y = y0 to yb {
         local sy = y + 0.5;
-        local xa = 99999;
-        local xb = -99999;
         tri_edge(x1, y1, x2, y2, sy);
         tri_edge(x2, y2, x3, y3, sy);
         tri_edge(x3, y3, x1, y1, sy);

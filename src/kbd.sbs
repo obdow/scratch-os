@@ -28,7 +28,6 @@ sprite Keyboard {
     var my_key = "";
     var my_out = "";
     var my_kind = 0;
-    var is_clone = 0;
 
     proc kb_emit() {
         if (my_kind == 3) {
@@ -54,7 +53,6 @@ sprite Keyboard {
     }
 
     on flag {
-        is_clone = 0;
         kb_ready = 0;
         kb_caps = 0;
         clear(kb_queue);
@@ -74,7 +72,6 @@ sprite Keyboard {
     }
 
     on clone {
-        is_clone = 1;
         hide();
         forever {
             wait_until(key(my_key));

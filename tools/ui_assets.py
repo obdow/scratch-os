@@ -63,13 +63,15 @@ _IDE = set(range(32, 127)) | {
 }
 _OS = _IDE | {
     1,     # the ScratchOS logo (menu bar), drawn in the smiley slot
-    3, 4, 5, 6,              # card suits (about, snake)
-    15,    # large dot: window traffic lights
-    17, 18, 24, 25, 26, 27,  # arrows
-    240,   # menu / hamburger
-    0xB0, 0xB1, 0xB2,        # shades
-    0xDB, 0xDC, 0xDD, 0xDE, 0xDF,   # blocks
-} | set(range(0xB3, 0xDB))   # box drawing
+    3, 4,  # card suits: dock icons, Snake, Finder
+    15,    # large dot: window traffic lights, dock icons
+    17,    # left triangle: back buttons
+    240,   # menu / hamburger: dock icon, Finder
+    179, 192, 195,           # box drawing used by `tree` (196 is in _IDE)
+    0xDB, 0xDC, 0xDF,        # blocks: Snake, dock icons
+}
+# Only characters something in the system shows get costumes (each costs one
+# costume per colour set); any other code is drawn as '?'.
 GLYPHS = {'ide': sorted(_IDE), 'os': sorted(_OS)}
 
 GREY_MAX = 8          # chroma at or below this is drawn as a neutral grey
@@ -211,13 +213,7 @@ def set_size(kind):
 
 
 def layout(kind):
-    bases, _ = build_palette()
     return {
-        'GLYPH_BASE': 1,
-        # no drawn pointer (the system cursor is used); kept for old code
-        'CURSOR_COSTUME': 1,
-        'CURSOR_MASK_COSTUME': 1,
-        'UI_SETS': len(bases),
         'ORD_SENTINEL': 1 + GLYPHS[kind].index(63),
         'UI_SLOTS': UI_SLOTS,
         'ANSI_SRC': ANSI_SRC,

@@ -118,7 +118,6 @@ var drag_win = 0;
 var drag_dx = 0;
 var drag_dy = 0;
 var clock_last = "";
-var focus_win = 0;
 var ide_win = 0;      // the IDE's window (0 = not open)
 var ide_gw = 122;     // the IDE window's last geometry
 var ide_gh = 36;
@@ -181,7 +180,6 @@ proc wm_init() {
     menu_open = 0;
     dlg_kind = 0;
     drag_mode = 0;
-    focus_win = 0;
     ide_win = 0;
     dk_hover = 0;
 }
@@ -564,7 +562,6 @@ proc wm_compose() {
         local w = wz[k];
         if (win_min[w] == 0) { wm_compose_window(w, w == top); }
     }
-    focus_win = top;
     wm_compose_dock();
     wm_compose_bar();
     if (menu_open > 0) { wm_compose_menu(); }
@@ -996,18 +993,6 @@ proc wm_draw_cell(i) {
         return;
     }
     ui_cell(col * 8, row * 16, c, ui_at[i]);
-}
-
-proc wm_redraw_rect_cells(px, py, pw, ph) {
-    local c0 = floor(px / 8);
-    local r0 = floor(py / 16);
-    local c1 = floor((px + pw - 1) / 8);
-    local r1 = floor((py + ph - 1) / 16);
-    for r = r0 to r1 {
-        for c = c0 to c1 {
-            if (c >= 0 && r >= 0 && c < WM_COLS && r < WM_ROWS) { wm_draw_cell(r * WM_COLS + c + 1); }
-        }
-    }
 }
 
 // --- visible rectangles of canvas windows -----------------------------------------------

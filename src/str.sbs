@@ -108,12 +108,6 @@ proc str_find(s, pat, init) {
     return 0;
 }
 
-proc str_rep(s, n) {
-    local out = "";
-    repeat (n) { out = out .. s; }
-    return out;
-}
-
 proc str_trim(s) {
     local n = len(s);
     local i = 1;
@@ -149,10 +143,4 @@ proc is_number(v) {
         return 1;
     }
     return 0;
-}
-
-// format number: integers without decimal point, others rounded to 10 digits
-proc fmt_num(v) {
-    if (v == round(v)) { return round(v); }
-    return v;
 }

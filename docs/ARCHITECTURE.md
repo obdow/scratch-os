@@ -27,7 +27,7 @@ tty_cursor_update()  blinking text cursor
 * `tools/ui_assets.py` renders JetBrains Mono at 4× and box-filters it into
   glyph costumes. They are stored as 2× PNGs (16×32 px for an 8×16 cell) with
   the rotation centre at the top-left. Each build ships only the characters
-  it shows: 164 for ScratchOS, 104 for the stand-alone IDE. A
+  it shows: 116 for ScratchOS, 104 for the stand-alone IDE. A
   code-to-slot list (`gmap`) maps every other CP437 code to `?`. The shared
   `ord()` maps costume numbers back to codes through `glyph_code`. Box
   drawing, blocks, shades, the traffic-light dot, card suits and the cat

@@ -1810,5 +1810,147 @@ class Program:
         return targets, assets
 
 
+def prune_unused(targets, keep=()):
+    """Remove what the project cannot use: custom block definitions that no
+    script reaches (directly or through other blocks), then variables and
+    lists that no remaining block refers to.  `keep` names variables / lists
+    that outside tools read (the test harness).  Returns removal counts."""
+    removed = {'procs': 0, 'blocks': 0, 'vars': 0, 'lists': 0, 'names': []}
+    for t in targets:
+        blocks = t['blocks']
+
+        def root(bid):
+            while True:
+                b = blocks[bid]
+                if isinstance(b, list) or b.get('topLevel') or b.get('parent') is None:
+                    return bid
+                bid = b['parent']
+        roots = {}
+        for bid, b in blocks.items():
+            roots.setdefault(root(bid), []).append(bid)
+        # each definition script: its proccode; every script: the procs it calls
+        defs = {}
+        calls = {}
+        for r, members in roots.items():
+            rb = blocks[r]
+            if isinstance(rb, dict) and rb['opcode'] == 'procedures_definition':
+                proto = blocks[rb['inputs']['custom_block'][1]]
+                defs[proto['mutation']['proccode']] = r
+            calls[r] = {blocks[m]['mutation']['proccode'] for m in members
+                        if isinstance(blocks[m], dict) and blocks[m]['opcode'] == 'procedures_call'}
+        live = set()
+        todo = [r for r in roots if not (isinstance(blocks[r], dict) and blocks[r]['opcode'] == 'procedures_definition')
+                and isinstance(blocks[r], dict) and blocks[r]['opcode'].startswith(('event_', 'control_start_as_clone'))]
+        live.update(todo)
+        while todo:
+            r = todo.pop()
+            for pc in calls.get(r, ()):
+                d = defs.get(pc)
+                if d is not None and d not in live:
+                    live.add(d)
+                    todo.append(d)
+        for pc, r in defs.items():
+            if r not in live:
+                for m in roots[r]:
+                    del blocks[m]
+                removed['procs'] += 1
+                removed['blocks'] += len(roots[r])
+                removed['names'].append('proc ' + pc.split(' ')[0])
+    # writes to variables / lists that nothing reads: a Scratch reporter has
+    # no side effects, so the statement can go (repeat: a removed write may
+    # have been the last reader of another variable)
+    WRITES = {'data_setvariableto', 'data_changevariableby', 'data_addtolist', 'data_deleteoflist',
+              'data_deletealloflist', 'data_insertatlist', 'data_replaceitemoflist'}
+    READS = {'data_variable', 'data_itemoflist', 'data_lengthoflist', 'data_listcontainsitem',
+             'data_itemnumoflist', 'data_listcontents'}
+    keep_ids = set()
+    for t in targets:
+        for kind in ('variables', 'lists'):
+            for vid, v in t[kind].items():
+                if v[0] in keep:
+                    keep_ids.add(vid)
+    while True:
+        read = set()
+        for t in targets:
+            for b in t['blocks'].values():
+                if isinstance(b, list):
+                    read.add(b[2])
+                    continue
+                for v in b.get('inputs', {}).values():
+                    for x in v[1:]:
+                        if isinstance(x, list) and x and x[0] in (12, 13):
+                            read.add(x[2])
+                if b['opcode'] in READS:
+                    for k in ('VARIABLE', 'LIST'):
+                        if k in b.get('fields', {}):
+                            read.add(b['fields'][k][1])
+        dead = 0
+        for t in targets:
+            blocks = t['blocks']
+            for bid in list(blocks):
+                b = blocks.get(bid)
+                if not isinstance(b, dict) or b['opcode'] not in WRITES:
+                    continue
+                f = b['fields'].get('VARIABLE') or b['fields'].get('LIST')
+                if f[1] in read or f[1] in keep_ids:
+                    continue
+                _splice_out(blocks, bid)
+                dead += 1
+        removed['writes'] = removed.get('writes', 0) + dead
+        if dead == 0:
+            break
+    used = set()
+    for t in targets:
+        for b in t['blocks'].values():
+            if isinstance(b, list):
+                used.add(b[2])
+                continue
+            for v in b.get('inputs', {}).values():
+                for x in v[1:]:
+                    if isinstance(x, list) and x and x[0] in (12, 13):
+                        used.add(x[2])
+            for k, v in b.get('fields', {}).items():
+                if k in ('VARIABLE', 'LIST') and len(v) > 1:
+                    used.add(v[1])
+    for t in targets:
+        for kind, key in (('variables', 'vars'), ('lists', 'lists')):
+            for vid in list(t[kind]):
+                if vid not in used and t[kind][vid][0] not in keep:
+                    removed['names'].append(key[:-1] + ' ' + t[kind][vid][0])
+                    del t[kind][vid]
+                    removed[key] += 1
+    return removed
+
+
+def _splice_out(blocks, bid):
+    """Remove statement bid (and its input blocks) from its script."""
+    b = blocks[bid]
+    parent, nxt = b.get('parent'), b.get('next')
+    if parent is not None:
+        p = blocks[parent]
+        if p.get('next') == bid:
+            p['next'] = nxt
+        for k, v in p.get('inputs', {}).items():
+            if len(v) > 1 and v[1] == bid:
+                if nxt is None:
+                    del p['inputs'][k]
+                else:
+                    v[1] = nxt
+                break
+    if nxt is not None:
+        blocks[nxt]['parent'] = parent
+        if b.get('topLevel'):
+            blocks[nxt].update(topLevel=True, x=b.get('x', 0), y=b.get('y', 0))
+    todo = [bid]
+    while todo:
+        x = todo.pop()
+        xb = blocks.pop(x, None)
+        if isinstance(xb, dict):
+            for v in xb.get('inputs', {}).values():
+                for y in v[1:]:
+                    if isinstance(y, str) and y in blocks and y != nxt:
+                        todo.append(y)
+
+
 def count_blocks(targets):
     return sum(len(t['blocks']) for t in targets)
