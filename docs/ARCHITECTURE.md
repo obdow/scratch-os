@@ -3,74 +3,76 @@
 ScratchOS is two sprites:
 
 * **Keyboard** has one clone per physical key. It also paces frames.
-* **Kernel** runs everything else. It is hidden and draws only by stamping
-  its own costumes into the pen layer.
+* **Kernel** runs everything else, including the desktop and the Whisker IDE.
+  It is hidden and draws only by stamping its own costumes into the pen layer.
 
 The kernel runs one `forever` loop. Each frame it calls `tick()`, a
 run-without-screen-refresh custom block:
 
 ```
 input_poll()      drain the keyboard queue, route keys (tty / window / dialog)
-wm_tick()         mouse, window dragging, recomposition       (desktop only)
+wm_tick()         mouse, menus, dock, window dragging, the IDE   (desktop only)
 sched_run(ms)     run processes for a time budget
-wm_update()       redraw changed screen cells                 (desktop only)
+wm_update()       recompose and redraw changed screen cells     (desktop only)
 tty_render()      draw dirty terminal cells
 tty_cursor_update()  blinking text cursor
-wm_pointer()      mouse pointer                               (desktop only)
 ```
 
-## Graphics: the pen text engine (`src/gfx.sbs`, `tools/assets.py`)
+## Graphics: the pen text engine (`src/gfx.sbs`, `src/ui.sbs`, `tools/ui_assets.py`)
 
-* The screen is 480×360, which is a 60×22 grid of 8×16 cells.
-* `tools/assets.py` turns the VGA ROM font into 256 glyph costumes, stored as
-  2× PNGs with the rotation centre at the top-left. Stamping at integer
-  positions is pixel exact.
-* **Colours without 4096 costumes.** Each glyph exists twice, in white and in
-  dark red `#AA0000`. Scratch's *brightness* effect adds a constant to R, G
-  and B. Its *colour* effect rotates hue. So:
-  * greys = white glyph + brightness (0, −33.3, −66.7, −100)
-  * the six VGA hues and brown (hue 30°) = red glyph + colour effect
-  * bright colours = the same + brightness +33.3 (because `0x55 = 0xFF − 0xAA`)
-
-  This reproduces all 16 VGA colours exactly. The smoke test checks this
-  pixel by pixel.
+* The ScratchOS screen is 1280×720 (a custom TurboWarp stage), which is a
+  160×45 grid of 8×16 cells. The stand-alone IDE uses 960×544. `build.py`
+  writes the size into the TurboWarp settings comment, and it reaches the SBS
+  code as the constants `SCR_W`/`SCR_H`/`SCR_COLS`/`SCR_ROWS`.
+* `tools/ui_assets.py` renders JetBrains Mono at 4× and box-filters it into
+  glyph costumes. They are stored as 2× PNGs (16×32 px for an 8×16 cell) with
+  the rotation centre at the top-left. Each build ships only the characters
+  it shows: 164 for ScratchOS, 104 for the stand-alone IDE. A
+  code-to-slot list (`gmap`) maps every other CP437 code to `?`. The shared
+  `ord()` maps costume numbers back to codes through `glyph_code`. Box
+  drawing, blocks, shades, the traffic-light dot, card suits and the cat
+  logo are drawn procedurally so they meet at cell edges.
+* **Arbitrary RGB colours from a few costume sets.** Scratch's *colour*
+  effect rotates hue in HSV, which keeps the *chroma* (max − min channel).
+  Its *brightness* effect then adds the same value to R, G and B. So one
+  base set of chroma C reaches every colour with chroma C exactly:
+  base `(V, V−C, V−C)`, colour effect = hue × 200, brightness = the darkest
+  channel's offset. The palette's 250 entries are clustered into 8 chroma
+  levels plus a white set for greys, giving 9 base sets of glyphs and 81
+  rects each. Each palette entry stores its set's costume numbers, hue and
+  brightness. The entries are:
+  * the 16 active terminal colours;
+  * 56 UI colours each for the dark and light themes;
+  * the dark and light terminal colours;
+  * 90 wallpaper steps, all of one chroma, so the gradient has no banding.
 * Solid rectangles use 81 power-of-two rectangle costumes (1…256 px per side),
-  so any fill takes at most 4 stamps.
-* Lines use the pen. The mouse pointer is two stamped glyphs (outline + body).
-* **The Whisker IDE's palette** (`src/ide/gfx.sbs`, `tools/ide_assets.py`)
-  extends the same trick to arbitrary RGB. The colour effect rotates hue in
-  HSV and keeps the *chroma* (max − min channel); brightness then shifts all
-  three channels. So one base set of chroma C reaches every colour with
-  chroma C exactly. The IDE's 112 palette entries (16 terminal colours for
-  each theme, 32 UI colours for each theme) are clustered into 8 chroma
-  levels plus grey, giving 9 base sets of glyphs and 81 rects each.
-  Each palette entry stores its set's costume numbers, hue and brightness.
-  The IDE ships only the 104 characters it actually shows: printable ASCII,
-  its UI symbols (drawn procedurally) and the non-ASCII characters in its
-  bundled files. A code-to-slot list (`gmap`) maps every other CP437 code to
-  `?`. Because glyph costumes are no longer numbered by code, the shared
-  `ord()` maps costume numbers back to codes through `glyph_code` (the
-  identity in ScratchOS). Thin borders, accent underlines
-  and the scrollbar are extra 1–2 px rect stamps ("decos") carried in the
-  cell attribute.
-* **The IDE's stage size** is set by `build.py`. ScratchOS uses 480×360; the
-  IDE uses 960×544, written into the TurboWarp settings comment. The sizes
-  reach the SBS code as the constants `SCR_W`/`SCR_H`/`SCR_COLS`/`SCR_ROWS`,
-  which the window manager and tty use too. The IDE does not ask for the
-  high-quality pen. That pen renders at the stage's displayed size, so
-  resizing the window would rescale (and blur) what had already been drawn.
-  With a fixed-size pen layer, the 2× glyphs need linear filtering to
-  average down cleanly. At exactly 100% size and 90° Scratch samples raster
-  costumes nearest-neighbour, so the IDE's drawing sprite points at 90.001°.
+  so any fill takes at most 4 stamps. Lines use the pen.
+* **Cells** (`ui.sbs`): a cell is a glyph and an attribute
+  `fg + 256·bg + 65536·deco`. A deco is a thin pen-drawn detail over the cell:
+  * 1 px borders;
+  * accent underlines and the caret;
+  * scrollbar thumbs, positioned to the pixel;
+  * rounded corners, painted in whatever colour is behind them;
+  * the wallpaper's second stripe, two per cell row.
+
+  Dock icons are glyphs stamped at 200% size, which is the costumes' native
+  resolution.
+* **Filtering.** The pen layer has a fixed size (no high-quality pen, which
+  would blur already-drawn content when the window is resized). So the 2×
+  glyphs must be linearly filtered to average down cleanly. At exactly 100%
+  size and 90° Scratch samples raster costumes nearest-neighbour, so the
+  drawing sprite points at 90.001°.
 * **Warp mode matters at boot.** The keyboard sprite requests a redraw every
   frame, so any loop that runs outside warp mode (a `nowarp` proc) yields
   once per iteration. The IDE once spent ~22 s at start-up filling its
   1,320-cell screen buffer that way; its boot now runs in warp mode after a
   one-frame splash.
 
-Measured in headless Chromium with software GL, a stamp costs about 11 µs and
-a full 60×22 redraw about 29 ms. So everything redraws incrementally:
-terminals track dirty cells, and the window manager diffs whole screens.
+The system cursor is used; nothing draws a pointer. Measured in headless
+Chromium with software GL, a stamp costs about 11 µs, and the 160×45 screen
+has 7,200 cells. So everything redraws incrementally: terminals track dirty
+cells, and the window manager diffs whole screens. The desktop runs at about
+60 fps there, including while typing in the IDE.
 
 ## Keyboard (`src/kbd.sbs`)
 
@@ -167,13 +169,22 @@ run in a child shell.
 first use blocks the process and asks the user, in the terminal or as a
 desktop dialog. Programs can request capabilities at start with `--@caps`.
 
-## Window manager (`src/wm.sbs`)
+## Desktop (`src/wm.sbs`)
 
-Windows are aligned to the cell grid. `wm_compose()` builds:
+A macOS-style desktop on the cell grid:
+- **Menu bar** (row 0): the logo menu, the focused app's menus, the clock.
+- **Wallpaper**: two gradient stripes per cell row.
+- **Windows**: a title row with the traffic lights and rounded top corners,
+  over content that runs edge to edge.
+- **Dock**: a floating panel of 4×2-cell icon tiles at the bottom, with
+  tooltips and running dots.
 
-* `own[]`, the owner of every cell (desktop, taskbar, menu, dialog, or a
-  window)
-* `ui_ch[]`/`ui_at[]`, the glyph of every non-content cell
+`wm_compose()` builds:
+
+* `own[]`, the owner of every cell (desktop, menu bar, menu, dialog, dock, a
+  window, or `OUT_WIN` for the IDE's Output panel)
+* `ui_ch[]`/`ui_at[]`, the glyph and attribute of every non-content cell
+  (`-1` marks content drawn by a tty or a canvas, `-3` a dock icon cell)
 
 `wm_diff()` compares these with the previous frame and redraws only changed
 cells. Content cells encode their window-relative position in the attribute,
@@ -183,9 +194,20 @@ so moving a window marks all its content dirty.
 * **Canvas windows** (graphics programs) keep a retained display list of
   primitives in a pinned heap table. New primitives draw immediately, clipped
   to the window's visible rectangles, which are the content rectangle minus
-  every rectangle above it. Uncovered regions are repainted by replaying the
-  list with the same clipping (Liang–Barsky lines, rectangle intersection,
-  whole-glyph text).
+  every rectangle above it, the menu bar and the dock. Uncovered regions are
+  repainted by replaying the list with the same clipping (Liang–Barsky lines,
+  rectangle intersection, whole-glyph text). Colours `16…` are system UI
+  colours (`gui.color`), resolved for the current appearance when drawn.
+* **The Whisker IDE** (`src/ide/`) is one window kind. The IDE has a
+  variable size and screen origin (`IC`/`IR`, `ide_ox`/`ide_oy`). Hosted, it
+  only *composes* its cells into its own buffer. `wm_compose()` copies them
+  into the window, so the window manager's diff draws them, with clipping and
+  overlap for free. Output-panel cells are owned by `OUT_WIN` so its tty
+  draws only where the panel is visible. The window manager routes mouse
+  presses (`ide_grab`), the wheel and raw key events (with their `^` / `+`
+  modifier prefixes) to the IDE. Programs the IDE runs open ordinary desktop
+  windows. The same `ide.sbs` builds the stand-alone `WhiskerIDE.sb3`
+  (`IDE_HOSTED = 0`), where the IDE owns the whole stage.
 
 ## Scratch / TurboWarp quirks worked around
 

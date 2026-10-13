@@ -125,11 +125,21 @@ Key names: single characters, `"enter" "backspace" "delete" "escape" "up arrow" 
 **gui** (needs the desktop and the `gui` capability): `window(title, w, h)`
 returns a window id; `close(win)`; `event(win)` (a table or nil);
 `waitevent(win)`; `size(win)`; `title(win, text)`; `active(win)`;
-`terminal([cmd])`. Events are tables with `type` set to `"key"` (with
+`terminal([cmd])`; `color(name)`; `ide([path])` opens the Whisker IDE
+(optionally with a file). Events are tables with `type` set to `"key"` (with
 `key`), `"mousedown"`, `"drag"` or `"mouseup"` (with `x`, `y` in window
-pixels), `"resize"` (with `x`, `y` = new size), or `"close"`.
+pixels), `"wheel"` (with `y` = notches, positive = down), `"resize"` (with
+`x`, `y` = new size), or `"close"`. `size(win)` is the drawing area below
+the title bar.
 
-**gfx** (all take a window first; colours 0–15): `clear(win, c)`,
+Colours: 0–15 are the terminal colours (they follow the light / dark
+appearance). `gui.color(name)` gives a system UI colour, also redrawn when
+the appearance changes: `"window"`, `"sidebar"`, `"text"`, `"dim"`,
+`"accent"`, `"ontext"` (text on the accent), `"selection"`, `"hover"`,
+`"border"`, `"button"`, `"folder"`, `"red"`, `"yellow"`, `"green"`,
+`"error"`, and the fixed `"paper"` (near white) and `"ink"` (near black).
+
+**gfx** (all take a window first; colours as above): `clear(win, c)`,
 `pixel(win, x, y, c)`, `line(win, x1, y1, x2, y2, c [, size])`,
 `rect(win, x, y, w, h, c)`, `fill(win, x, y, w, h, c)`,
 `circle(win, x, y, r, c)`, `disc(win, x, y, r, c)`,
@@ -157,7 +167,7 @@ Sensitive calls need a capability:
 |---|---|
 | `files` | writing outside `/home` and `/tmp` |
 | `proc` | killing processes the program did not start |
-| `gui` | `gui.window`, `gui.terminal` |
+| `gui` | `gui.window`, `gui.terminal`, `gui.ide` |
 | `system` | `sys.shutdown`, `sys.reboot` |
 
 The first use asks the user: (y)es, (n)o or (a)lways. Declare needs on any

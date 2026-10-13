@@ -1,0 +1,196 @@
+// ===========================================================================
+// ui.sbs - the shared modern look (included inside sprite Kernel)
+//
+// Used by the ScratchOS desktop (wm.sbs) and the Whisker IDE (ide/ide.sbs).
+//
+// A screen cell is drawn from a glyph code and an attribute:
+//     attribute = fg + AB * bg + AD * deco
+// fg / bg are palette indices (gfx.sbs, tools/ui_assets.py) and deco adds a
+// thin pen-drawn detail over the cell (borders, underlines, scrollbar
+// thumbs, rounded corners, the wallpaper's second stripe).
+// ===========================================================================
+
+const AB = 256;
+const AD = 65536;
+
+// deco 1..15: a mask of 1px borders (1 top, 2 bottom, 4 left, 8 right),
+// in C_BORDER; + D_POP: in C_POPBD (popups); + D_WIN: in C_WINBD (windows)
+const D_TOP = 1;
+const D_BOTTOM = 2;
+const D_LEFTB = 4;
+const D_RIGHT = 8;
+const D_POP = 16;
+const D_WIN = 64;
+const D_UNDER = 32;       // 2px accent underline (active tab, focused title)
+const D_CARET = 33;       // 2px accent bar on the left edge (prompt caret)
+const D_LEFT = 38;        // 2px accent bar on the left edge (selected item)
+const D_DOT = 39;         // small dot under the cell (dock: app is running)
+const D_SB = 100;         // D_SB + ((a * 17 + b) * 4 + ends): scrollbar thumb
+                          // covering pixel rows a..b-1; ends 1 = top, 2 = bottom
+const D_RC = 2000;        // D_RC + corner * 256 + colour: rounded corner, the
+                          // cut-off pixels painted in `colour` (0 tl 1 tr 2 bl 3 br)
+const D_HALF = 4000;      // D_HALF + colour: bottom 8 px of the cell in `colour`
+                          // (the wallpaper is drawn in half-cell stripes)
+
+const G_LOGO = 1;         // the ScratchOS cat
+const G_BIGDOT = 15;      // traffic-light dot
+const G_CLOSE = 158;      // close cross
+const G_DOT = 7;          // •
+const G_RIGHT = 16;       // ►
+const G_UP = 30;          // ▲
+const G_DOWN = 31;        // ▼
+const G_STOP = 254;       // ■
+
+// --- theme ------------------------------------------------------------------------
+
+var theme = 0;            // 0 dark, 1 light
+
+// theme colours (palette indices, set by ui_theme)
+var C_EDBG = 0;
+var C_PANEL = 0;
+var C_BORDER = 0;
+var C_TEXT = 0;
+var C_DIM = 0;
+var C_GUT = 0;
+var C_GUTCUR = 0;
+var C_CURLINE = 0;
+var C_SEL = 0;
+var C_ACCENT = 0;
+var C_ACTIVE = 0;
+var C_RUN = 0;
+var C_STOP = 0;
+var C_ERRBG = 0;
+var C_ERRFG = 0;
+var C_SCROLL = 0;
+var C_BUTTON = 0;
+var C_POPUP = 0;
+var C_ONACC = 0;
+var C_WARN = 0;
+var C_HEADER = 0;
+var C_PTROUT = 0;
+var C_FOLDER = 0;
+var C_WSK = 0;
+var C_HOVER = 0;
+var C_POPBD = 0;
+var C_FG = 0;             // editor text
+var C_KW = 0;
+var C_STR = 0;
+var C_NUM = 0;
+var C_COM = 0;
+var C_LIB = 0;
+var C_OP = 0;
+// desktop
+var C_MENUBAR = 0;
+var C_MENUTXT = 0;
+var C_DOCK = 0;
+var C_DOCKBD = 0;
+var C_DOCKTXT = 0;
+var C_TLRED = 0;
+var C_TLYEL = 0;
+var C_TLGRN = 0;
+var C_TLOFF = 0;
+var C_TITLE = 0;
+var C_TITLEIN = 0;
+var C_TITLETXT = 0;
+var C_TITLEDIM = 0;
+var C_DESKTXT = 0;
+var C_WINBD = 0;
+var C_SHADOW = 0;
+var C_ICBLUE = 0;
+var C_ICDARK = 0;
+var C_ICPURP = 0;
+var C_ICWHITE = 0;
+var C_ICORANGE = 0;
+var C_ICGREEN = 0;
+var C_ICGREY = 0;
+var C_ICRED = 0;
+
+// 0 dark, 1 light: UI colours and the 16 terminal / graphics colours
+proc ui_theme(n) {
+    theme = n;
+    local o = UI_SLOTS * n;
+    C_EDBG = U_EDBG + o; C_PANEL = U_PANEL + o; C_BORDER = U_BORDER + o; C_TEXT = U_TEXT + o;
+    C_DIM = U_DIM + o; C_GUT = U_GUT + o; C_GUTCUR = U_GUTCUR + o; C_CURLINE = U_CURLINE + o;
+    C_SEL = U_SEL + o; C_ACCENT = U_ACCENT + o; C_ACTIVE = U_ACTIVE + o; C_RUN = U_RUN + o;
+    C_STOP = U_STOP + o; C_ERRBG = U_ERRBG + o; C_ERRFG = U_ERRFG + o; C_SCROLL = U_SCROLL + o;
+    C_BUTTON = U_BUTTON + o; C_POPUP = U_POPUP + o; C_ONACC = U_ONACC + o; C_WARN = U_WARN + o;
+    C_HEADER = U_HEADER + o; C_PTROUT = U_PTROUT + o; C_FOLDER = U_FOLDER + o; C_WSK = U_WSK + o;
+    C_HOVER = U_HOVER + o; C_POPBD = U_POPBD + o;
+    C_FG = U_EDFG + o; C_OP = U_EDFG + o; C_KW = U_KW + o; C_STR = U_STR + o; C_NUM = U_NUM + o;
+    C_COM = U_COM + o; C_LIB = U_LIB + o;
+    C_MENUBAR = U_MENUBAR + o; C_MENUTXT = U_MENUTXT + o; C_DOCK = U_DOCK + o; C_DOCKBD = U_DOCKBD + o;
+    C_DOCKTXT = U_DOCKTXT + o; C_TLRED = U_TLRED + o; C_TLYEL = U_TLYEL + o; C_TLGRN = U_TLGRN + o;
+    C_TLOFF = U_TLOFF + o; C_TITLE = U_TITLE + o; C_TITLEIN = U_TITLEIN + o; C_TITLETXT = U_TITLETXT + o;
+    C_TITLEDIM = U_TITLEDIM + o; C_DESKTXT = U_DESKTXT + o; C_WINBD = U_WINBD + o; C_SHADOW = U_SHADOW + o;
+    C_ICBLUE = U_ICBLUE + o; C_ICDARK = U_ICDARK + o; C_ICPURP = U_ICPURP + o; C_ICWHITE = U_ICWHITE + o;
+    C_ICORANGE = U_ICORANGE + o; C_ICGREEN = U_ICGREEN + o; C_ICGREY = U_ICGREY + o; C_ICRED = U_ICRED + o;
+    gfx_ansi_theme(n);
+}
+
+// --- drawing ----------------------------------------------------------------------
+
+// pixel rows cut off by a rounded corner (radius 5): 3, 1, 1 pixels wide
+proc ui_corner(x, y, corner, col) {
+    for k = 0 to 2 {
+        local w = 1;
+        if (k == 0) { w = 3; }
+        local py = y + k;
+        if (corner >= 2) { py = y + 15 - k; }
+        local px = x;
+        if (corner % 2 == 1) { px = x + 8 - w; }
+        gfx_fill(px, py, w, 1, col);
+    }
+}
+
+proc ui_deco(x, y, deco) {
+    local d = deco;
+    if (d < 32 || (d >= D_WIN && d < D_WIN + 16)) {
+        local col = C_BORDER;
+        if (d >= D_WIN) { col = C_WINBD; d -= D_WIN; }
+        else if (d >= D_POP) { col = C_POPBD; d -= D_POP; }
+        if (d % 2 == 1) { gfx_fill(x, y, 8, 1, col); }
+        if (floor(d / 2) % 2 == 1) { gfx_fill(x, y + 15, 8, 1, col); }
+        if (floor(d / 4) % 2 == 1) { gfx_fill(x, y, 1, 16, col); }
+        if (floor(d / 8) % 2 == 1) { gfx_fill(x + 7, y, 1, 16, col); }
+        return;
+    }
+    if (d >= D_HALF) { gfx_fill(x, y + 8, 8, 8, d - D_HALF); return; }
+    if (d >= D_RC) {
+        local v = d - D_RC;
+        ui_corner(x, y, floor(v / 256), v % 256);
+        return;
+    }
+    if (d == D_UNDER) { gfx_fill(x, y + 14, 8, 2, C_ACCENT); return; }
+    if (d == D_CARET) { gfx_fill(x, y + 2, 2, 12, C_ACCENT); return; }
+    if (d == D_DOT) { gfx_fill(x + 6, y + 5, 3, 3, C_DOCKTXT); return; }
+    if (d >= D_SB) {
+        local v2 = d - D_SB;
+        local ends = v2 % 4;
+        v2 = floor(v2 / 4);
+        local top = y + floor(v2 / 17);
+        local bot = y + v2 % 17;
+        if (ends % 2 == 1) { gfx_fill(x + 3, top, 2, 1, C_SCROLL); top += 1; }
+        if (ends >= 2) { gfx_fill(x + 3, bot - 1, 2, 1, C_SCROLL); bot -= 1; }
+        if (bot > top) { gfx_fill(x + 2, top, 4, bot - top, C_SCROLL); }
+        return;
+    }
+    if (d == D_LEFT) { gfx_fill(x, y, 2, 16, C_ACCENT); return; }
+}
+
+// draw one cell at screen pixel (x, y)
+proc ui_cell(x, y, code, at) {
+    local d = floor(at / AD);
+    local a = at % AD;
+    local bg = floor(a / AB);
+    local fg = a % AB;
+    gfx_fill(x, y, 8, 16, bg);
+    if (code != 32 && code != 0 && fg != bg) {
+        gfx_glyph(x, y, code, fg);
+    }
+    if (d > 0) { ui_deco(x, y, d); }
+}
+
+// background colour of an attribute
+proc ui_bg(at) {
+    return floor((at % AD) / AB);
+}

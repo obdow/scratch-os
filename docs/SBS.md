@@ -13,7 +13,7 @@ global list queue;               // stage list
 include "other.sbs";             // textual include (also allowed inside a sprite)
 
 sprite Kernel {
-    costumes "glyphs";           // costume groups provided by tools/assets.py
+    costumes "os_glyphs";        // costume groups provided by tools/assets.py
     prop visible = 1;
     var x = 0;                   // sprite variable
     list cells = [1, 2, 3];      // list with initial contents

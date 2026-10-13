@@ -4,15 +4,22 @@
 // Sprites:
 //   Keyboard  clone-per-key input listeners + frame pacer (kbd.sbs)
 //   Kernel    everything else: graphics, terminals, file system, processes,
-//             shell, Whisker compiler/VM, window manager.  It is hidden and
-//             draws only by stamping into the pen layer.
+//             shell, Whisker compiler/VM, the desktop and the Whisker IDE.
+//             It is hidden and draws only by stamping into the pen layer.
+//
+// The stage is 1280x720 (160 x 45 text cells).  ScratchOS boots to the
+// desktop; pressing Esc while it boots starts the text console instead
+// ('startx' starts the desktop from there).
 // ===========================================================================
 
 include "kbd.sbs";
 
+global list ide_export;      // the IDE's File > Export / Import list monitor
+
 sprite Kernel {
-    costumes "glyphs";
+    costumes "os_glyphs";
     include "gfx.sbs";
+    include "ui.sbs";
     include "str.sbs";
     include "tty.sbs";
     include "fs.sbs";
@@ -26,6 +33,8 @@ sprite Kernel {
     include "natives_sys.sbs";
     include "caps.sbs";
     include "wm.sbs";
+    include "ide/ide.sbs";          // the Whisker IDE, as a desktop app
+    include "ide/textview.sbs";
 
     var con = 0;            // console tty
     var frames = 0;
@@ -33,20 +42,27 @@ sprite Kernel {
 
     proc kernel_init() {
         gfx_init();
+        ui_theme(0);
         tty_init();
-        con = tty_alloc(60, 22, 0, 0, 0);
-        tty_vis[con] = 1;
+        con = tty_alloc(SCR_COLS, SCR_ROWS, 0, 0, 0);
+        tty_vis[con] = 0;
         cur_t = con;
         gui = 0;
         halted = 0;
         power_req = -1;
-        gfx_fill(0, 352, 480, 8, 0);
+        ide_ready = 0;
+        ide_win = 0;
     }
 
     // route one key event
     proc input_event(event) {
+        // the IDE gets keys as they are, with "^" / "+" modifier prefixes
+        if (gui == 1 && ide_win > 0 && dlg_kind == 0 && menu_open == 0 && wm_top() == ide_win) {
+            ide_key(event);
+            return;
+        }
         local ev = event;
-        // the OS ignores modifiers on special keys ("^enter", "+up arrow")
+        // everything else ignores modifiers on special keys ("^enter", "+up arrow")
         if (len(ev) > 2 && (ev[1] == "^" || ev[1] == "+")) { ev = substr(ev, 2, len(ev)); }
         if (ev == "caps lock") { kb_caps = 1 - kb_caps; return; }
         local t = con;
@@ -100,8 +116,8 @@ sprite Kernel {
             if (wm_need == 1) { wm_update(); }
             tty_render();
             tty_cursor_update();
-            wm_pointer();
         } else {
+            wheel = 0;
             sched_run(10);
             tty_render();
             tty_cursor_update();
@@ -111,6 +127,16 @@ sprite Kernel {
     proc kernel_boot() nowarp {
         kernel_init();
         boot_seq();
+    }
+
+    // Scratch turns the mouse wheel into "up/down arrow key pressed" hat
+    // events without setting the key state, which tells it apart from a
+    // real arrow key.
+    on key "up arrow" {
+        if (!(key("up arrow"))) { wheel -= 1; }
+    }
+    on key "down arrow" {
+        if (!(key("down arrow"))) { wheel += 1; }
     }
 
     on flag {

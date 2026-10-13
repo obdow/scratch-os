@@ -1,31 +1,28 @@
 // ===========================================================================
 // gfx.sbs - pen graphics primitives (included inside sprite Kernel)
 //
-// Screen coordinates: (0,0) is the top-left pixel, x right, y down,
-// 480x360.  Everything is drawn into the pen layer: glyphs and solid
-// rectangles are stamped costumes, lines use pen strokes.
-//
-// Colours are VGA palette indices 0..15.  A colour is produced from a white
-// or dark-red base costume using the colour (hue) and brightness effects -
-// see tools/assets.py for the derivation.
+// Shared by ScratchOS and the Whisker IDE.  Colours are palette indices
+// (arbitrary RGB, see tools/ui_assets.py for the index map), each drawn from
+// one of several base costume sets (JetBrains Mono glyphs + solid rects)
+// with the colour and brightness effects.  0..15 are the terminal colours.
 // ===========================================================================
 
-const SCREEN_W = 480;
-const SCREEN_H = 360;
+// the stage size is set by build.py (SCR_W x SCR_H pixels, SCR_COLS x SCR_ROWS cells)
+const SCREEN_W = SCR_W;
+const SCREEN_H = SCR_H;
+const HALF_W = SCR_W / 2;
+const HALF_H = SCR_H / 2;
 const CELL_W = 8;
 const CELL_H = 16;
-const COLS = 60;
-const ROWS = 22;
+const COLS = SCR_COLS;
+const ROWS = SCR_ROWS;
 
-// palette: which base set (0 = white, 1 = red), hue effect, brightness effect
-list pal_base = [0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 0];
-list pal_hue = [0, 133.3333333, 66.6666667, 100, 0, 166.6666667, 16.6666667, 0,
-                0, 133.3333333, 66.6666667, 100, 0, 166.6666667, 33.3333333, 0];
-list pal_bri = [-100, 0, 0, 0, 0, 0, 0, -33.3333333,
-                -66.6666667, 33.3333333, 33.3333333, 33.3333333, 33.3333333, 33.3333333, 33.3333333, 0];
-// RGB integer of each palette entry (for pen lines)
-list pal_rgb = [0x000000, 0x0000AA, 0x00AA00, 0x00AAAA, 0xAA0000, 0xAA00AA, 0xAA5500, 0xAAAAAA,
-                0x555555, 0x5555FF, 0x55FF55, 0x55FFFF, 0xFF5555, 0xFF55FF, 0xFFFF55, 0xFFFFFF];
+list pal_gb = data("ui_pal_gb");     // costume number of glyph 0 in the entry's base set
+list pal_rb = data("ui_pal_rb");     // costume number of the 1x1 rect in the entry's base set
+list pal_hue = data("ui_pal_hue");
+list pal_bri = data("ui_pal_bri");
+list pal_rgb = data("ui_pal_rgb");   // RGB integer (pen lines)
+list gmap = data("ui_gmap");         // code+1 -> glyph slot in a set ('?' if not included)
 
 var gfx_col = -1;        // colour currently applied via effects
 var gfx_gbase = 1;       // costume number of glyph 0 in the current base set
@@ -37,8 +34,8 @@ var gfx_stamps = 0;      // drawing activity counter (mouse pointer repair)
 // clip rectangle for line drawing (screen coords, inclusive-exclusive)
 var clip_x0 = 0;
 var clip_y0 = 0;
-var clip_x1 = 480;
-var clip_y1 = 360;
+var clip_x1 = SCR_W;
+var clip_y1 = SCR_H;
 
 proc gfx_init() {
     pen_clear();
@@ -48,6 +45,11 @@ proc gfx_init() {
     gfx_pen_col = -1;
     gfx_pen_size = -1;
     size(100);
+    // a hair off 90 degrees: at exactly 100% and 90 degrees Scratch samples
+    // raster costumes with nearest-neighbour filtering, which would decimate
+    // the 2x anti-aliased glyphs when the pen renders at 1x; with linear
+    // filtering a 1x stamp averages each 2x2 block exactly
+    point(90.001);
     hide();
 }
 
@@ -55,23 +57,44 @@ proc gfx_init() {
 proc gfx_color(c) {
     if (c == gfx_col) { return; }
     gfx_col = c;
-    if (pal_base[c + 1] == 0) {
-        gfx_gbase = GLYPH_BASE;
-        gfx_rbase = RECT_W_BASE;
-    } else {
-        gfx_gbase = RED_GLYPH_BASE;
-        gfx_rbase = RECT_R_BASE;
-    }
+    gfx_gbase = pal_gb[c + 1];
+    gfx_rbase = pal_rb[c + 1];
     effect("color", pal_hue[c + 1]);
     effect("brightness", pal_bri[c + 1]);
 }
 
-// Stamp glyph `code` (0..255) with its top-left at screen pixel (x, y).
+// switch the 16 terminal / graphics colours to a theme's set (0 dark, 1 light)
+proc gfx_ansi_theme(n) {
+    local src = ANSI_SRC + n * 16;
+    for i = 1 to 16 {
+        pal_gb[i] = pal_gb[src + i];
+        pal_rb[i] = pal_rb[src + i];
+        pal_hue[i] = pal_hue[src + i];
+        pal_bri[i] = pal_bri[src + i];
+        pal_rgb[i] = pal_rgb[src + i];
+    }
+    gfx_col = -1;
+    gfx_pen_col = -1;
+}
+
+// Stamp glyph `code` (0..255; codes without a glyph show '?') with its top-left at screen pixel (x, y).
 proc gfx_glyph(x, y, code, c) {
     gfx_color(c);
-    goto(x - 240, 180 - y);
-    costume(gfx_gbase + code);
+    goto(x - HALF_W, HALF_H - y);
+    costume(gfx_gbase + gmap[code + 1]);
     stamp();
+    gfx_stamps += 1;
+}
+
+// Stamp glyph `code` at twice the size (16x32 px, the costume's native
+// resolution) with its top-left at screen pixel (x, y).
+proc gfx_glyph2(x, y, code, c) {
+    gfx_color(c);
+    goto(x - HALF_W, HALF_H - y);
+    costume(gfx_gbase + gmap[code + 1]);
+    size(200);
+    stamp();
+    size(100);
     gfx_stamps += 1;
 }
 
@@ -94,7 +117,7 @@ proc gfx_fill(x, y, w, h, c) {
         local tx = x;
         forever {
             if (tx + sw > x + w) { tx = x + w - sw; }
-            goto(tx - 240, 180 - ty);
+            goto(tx - HALF_W, HALF_H - ty);
             stamp();
             if (tx + sw >= x + w) { break; }
             tx += sw;
@@ -122,9 +145,9 @@ proc gfx_line(x1, y1, x2, y2, c, sz) {
         gfx_pen_size = sz;
         pen_size(sz);
     }
-    goto(x1 - 239.5, 179.5 - y1);
+    goto(x1 - HALF_W + 0.5, HALF_H - 0.5 - y1);
     pen_down();
-    goto(x2 - 239.5, 179.5 - y2);
+    goto(x2 - HALF_W + 0.5, HALF_H - 0.5 - y2);
     pen_up();
     gfx_stamps += 1;
 }

@@ -38,7 +38,7 @@ NATIVES = [
     'term.waitkey', 'term.cursor', 'term.put', 'term.write', 'term.getpos',
     # windows / graphics
     'gui.window', 'gui.close', 'gui.event', 'gui.waitevent', 'gui.size', 'gui.title',
-    'gui.active', 'gui.terminal',
+    'gui.active', 'gui.terminal', 'gui.color', 'gui.ide',
     'gfx.clear', 'gfx.pixel', 'gfx.line', 'gfx.rect', 'gfx.fill', 'gfx.circle', 'gfx.text',
     'gfx.batch', 'gfx.flush', 'gfx.disc', 'gfx.poly',
     # system

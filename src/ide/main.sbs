@@ -15,7 +15,8 @@ global list ide_export;      // File > Export / Import go through this list moni
 
 sprite Kernel {
     costumes "ide_glyphs";
-    include "gfx.sbs";              // IDE palette + JetBrains Mono costumes
+    include "../gfx.sbs";
+    include "../ui.sbs";
     include "../str.sbs";
     include "../tty.sbs";
     include "../fs.sbs";

@@ -1,22 +1,61 @@
 # ScratchOS
 
-An operating system built in Scratch. It has a BIOS and boot sequence, a
-Unix-like shell, preemptive multitasking, an in-memory file system, a
-capability-based permission system, a mouse-driven window manager, and
-its own programming language, **Whisker**. Whisker is compiled to bytecode
-and run on a virtual machine, all inside one Scratch project.
+An operating system built in Scratch, with a macOS-style desktop at 720p.
+It has:
+- a boot screen;
+- a menu bar, a dock and windows with traffic-light buttons;
+- Finder, Terminal and the **Whisker IDE**;
+- a Unix-like shell, preemptive multitasking, an in-memory file system and a
+  capability-based permission system;
+- its own programming language, **Whisker**, compiled to bytecode and run on
+  a virtual machine.
 
-Every pixel is drawn with the **pen**. Text is stamped glyph by glyph from
-the IBM VGA 8×16 font (code page 437) in the 16-colour VGA palette. Keyboard
-input uses **one clone per key** instead of `ask` blocks.
+All of it runs inside one Scratch project.
+
+Every pixel is drawn with the **pen**. Text is stamped glyph by glyph in
+**JetBrains Mono** (anti-aliased costumes). Colours come from a modern palette
+with dark and light appearances. Keyboard input uses **one clone per key**
+instead of `ask` blocks.
 
 **Run it:** open `ScratchOS.sb3` in [TurboWarp](https://turbowarp.org/)
 (File → Load from your computer) and click the green flag.
 
 > TurboWarp is required. Its compiler makes the VM fast enough, and it can
 > detect Backspace, Shift, Ctrl, Escape, Home/End and Page Up/Down, which
-> vanilla Scratch cannot. The project sets 60 FPS and turns off sprite
-> fencing through TurboWarp's project settings.
+> vanilla Scratch cannot. The project sets a 1280×720 stage and 60 FPS, and
+> turns off sprite fencing, through TurboWarp's project settings. Fullscreen
+> gives the best view.
+
+## The desktop
+
+ScratchOS boots to the desktop: a cat logo, a progress bar, then the menu
+bar, the wallpaper and the dock. (Hold Esc while it boots for the text
+console; `startx` starts the desktop from there.)
+
+- **Menu bar.**
+  - The cat menu: About, System Settings, Light/Dark appearance, Activity
+    Monitor, Text Console, Restart, Shut Down.
+  - The focused app's menus: About, Hide, Quit, plus File, Window and Help.
+  - The date and time.
+- **Dock.** Finder, Terminal, Whisker IDE, TextEdit, Paint, Clock, 3D Cube,
+  Snake, Matrix, Activity Monitor and System Settings.
+  - Hover for the name; a dot marks running apps.
+  - Click to open an app, or to bring it forward if it is already running.
+- **Windows.**
+  - Red closes, yellow minimises, green zooms.
+  - Double-click the title bar to zoom.
+  - Drag the title to move, and the bottom-right corner to resize.
+  - The mouse wheel scrolls.
+- **Finder.**
+  - A sidebar (Home, Projects, Examples, Applications, Documents…).
+  - Back/forward, and Name/Size/Kind columns.
+  - Double-click a `.wsk` or `.txt` file to open it in the Whisker IDE.
+- **Whisker IDE.** The full IDE in a resizable window, with its editor,
+  output panel, tree of your home folder, examples and docs. Programs it runs
+  open their windows on the desktop. Open it from the dock, from Finder, or
+  with `ide [file]` in a terminal.
+- **System Settings.** Dark and light appearance. This recolours the menu
+  bar, dock, windows, terminals, the IDE and apps that use system colours.
 
 ## What you can do
 
@@ -29,16 +68,17 @@ user@scratchos:~$ hello2.wsk                 # run your program
 user@scratchos:~$ whisker                    # interactive Whisker REPL
 user@scratchos:~$ yes > /dev/null &          # background job; `jobs`, `kill %1`
 user@scratchos:~$ top                        # live process monitor
-user@scratchos:~$ startx                     # the desktop
+user@scratchos:~$ ide projects/primes.wsk    # open a file in the Whisker IDE
+user@scratchos:~$ startx                     # the desktop (from the text console)
 ```
 
 | Area | Features |
 |---|---|
-| Boot | BIOS POST with memory test, boot manager, kernel log, `init` (pid 1) running `/etc/rc`, motd. Press Esc to skip the animations. |
+| Boot | logo and progress bar while the kernel starts (fs, scheduler, VM, capabilities, window manager), `init` (pid 1) running `/etc/rc`; Esc during boot gives the text console with the kernel log and motd |
 | Shell | pipes `\|`, redirection `> >> < 2>`, `;` `&&` `\|\|` `&`, quoting, `$VAR` `$?` `$$` `~`, history (↑/↓), line editing, Ctrl+C, job control (`jobs`, `fg`, `kill %n`), scripts (`sh file.sh`, `source`) |
 | Programs | `ls cat cp mv rm mkdir rmdir touch tree find grep wc head tail sort uniq rev tee seq yes basename dirname sleep date cal ps top kill free uname whoami hostname man more edit whisker calc cowsay fortune bench matrix snake hello cube` |
-| Desktop | overlapping windows (drag, resize, minimise, maximise, close), taskbar with clock, Start menu, desktop icons, terminal windows, permission dialogs, error dialogs |
-| GUI apps | Files (file manager), Paint, Task Manager, Clock, 3D Cube (orbit it with the mouse), About, plus terminal apps like Text Editor and Snake |
+| Desktop | macOS-style: menu bar with app menus and clock, dock with running indicators and tooltips, gradient wallpaper, windows with traffic lights (close, minimise, zoom), drag / resize / double-click zoom, permission and message dialogs, dark and light appearance |
+| GUI apps | Finder, Whisker IDE, Paint, Activity Monitor, Clock, 3D Cube (orbit it with the mouse), About, System Settings, plus terminal apps like TextEdit, Snake and Matrix |
 | Language | Whisker: Lua-like syntax, tables, functions, methods, `pcall`/`error`, multiple returns, `load`/`require`, 140+ built-in functions |
 | Permissions | programs ask before using `files`, `proc`, `gui` or `system` capabilities: (y)es / (n)o / (a)lways; policy in `/etc/caps` |
 
@@ -47,8 +87,9 @@ Type `help`, `man scratchos`, `man whisker`, `man lib` or `man sh` inside the OS
 ### Keys
 
 Up/Down history · Left/Right/Home/End/Backspace/Delete editing ·
-Ctrl+C interrupt · Esc skips the boot animations and opens the editor menu ·
-Ctrl+Space opens the Start menu on the desktop. The browser has no Tab key
+Ctrl+C interrupt · Esc during boot gives the text console, and opens the
+editor's and the IDE's menus · Ctrl+Space opens the cat menu on the desktop
+(arrows and Enter move through the menu bar). The browser has no Tab key
 for the page, so there is no tab completion, and the editor auto-indents
 instead.
 
@@ -88,7 +129,7 @@ See [docs/WHISKER.md](docs/WHISKER.md) for the full language and library referen
 
 ## Whisker IDE
 
-`WhiskerIDE.sb3` is a separate project: a standalone development environment
+`WhiskerIDE.sb3` is also a separate project: a standalone development environment
 for Whisker. It reuses the ScratchOS runtime (compiler, VM, heap, natives,
 file system, text engine and canvas code) but has its own full-screen UI,
 so there is no shell or desktop. Open it in TurboWarp and click the flag.
@@ -107,7 +148,8 @@ The IDE has its own look, separate from ScratchOS:
   pointer is over.
 - **The normal system mouse cursor**.
 
-ScratchOS itself keeps the 480×360 stage, VGA font and palette.
+Inside ScratchOS the same IDE runs as a desktop app (see above), sharing the
+system's font, palette and appearance.
 
 - **Editor with tabs**: syntax highlighting (keywords, strings, numbers,
   comments, library names, and multi-line `--[[ ]]` / `[[ ]]`), line numbers,
@@ -174,14 +216,18 @@ in the Scratch/TurboWarp editor, about 23,000 blocks in total.
 ```
 build.py            build entry point -> ScratchOS.sb3 (--ide -> WhiskerIDE.sb3)
 src/*.sbs           the kernel (Kernel sprite) and keyboard (Keyboard sprite)
-src/ide/            the Whisker IDE front end (shares the kernel sources)
-ide/rootfs/         files baked into the IDE (/projects, /examples, /docs)
+src/ui.sbs          the shared modern look: cell attributes, decorations, themes
+src/wm.sbs          the macOS-style desktop (menu bar, dock, windows, dialogs)
+src/ide/            the Whisker IDE (an app in ScratchOS, or a project of its own)
+ide/rootfs/         the IDE's files (/projects, /examples, /docs, /lib); inside
+                    ScratchOS they appear in ~/examples, ~/projects and
+                    /usr/share/doc/whisker
 rootfs/             files baked into the file system image (/bin, /etc, /home, /usr)
 tools/sbc.py        SBS -> Scratch 3 compiler
-tools/assets.py     glyph / rectangle costumes from the VGA font
-tools/ide_assets.py the IDE's JetBrains Mono costumes and colour palette
+tools/assets.py     CP437 tables and costume helpers
+tools/ui_assets.py  JetBrains Mono glyph costumes and the colour palette
 tools/natives.py    the Whisker system-call table
-assets/font/        IBM VGA 8x16 font (VileR, CC BY-SA 4.0), JetBrains Mono (OFL 1.1)
+assets/font/        JetBrains Mono (OFL 1.1)
 test/               headless TurboWarp harness (Playwright) and regression test
 docs/               architecture, SBS and Whisker documentation
 ```
@@ -207,12 +253,7 @@ manager's cell compositor, and the Scratch quirks that had to be worked around.
 
 ## Credits
 
-* Font: IBM VGA 8×16 from VileR's
-  [VGA text mode fonts](https://github.com/viler-int10h/vga-text-mode-fonts)
-  collection (the same data as *Px437 IBM VGA 8x16* in
-  [The Ultimate Oldschool PC Font Pack](https://int10h.org/oldschool-pc-fonts/),
-  CC BY-SA 4.0).
-* Whisker IDE font: [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono),
+* Font: [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono),
   SIL Open Font License 1.1 (see `assets/font/JetBrainsMono-OFL.txt`).
 * Runs on [TurboWarp](https://turbowarp.org/). Testing uses the
   [TurboWarp packager](https://github.com/TurboWarp/packager)'s scaffolding.

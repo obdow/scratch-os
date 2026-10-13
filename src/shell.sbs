@@ -30,7 +30,7 @@ list sh_inter;       // interactive?
 list sh_oldpwd;
 
 list env_k = ["PATH", "HOME", "USER", "HOSTNAME", "SHELL", "TERM", "OS", "LANG"];
-list env_v = ["/bin:/usr/bin", "/home/user", "user", "scratchos", "/bin/sh", "vga", "ScratchOS", "cp437"];
+list env_v = ["/bin:/usr/bin", "/home/user", "user", "scratchos", "/bin/sh", "scratch-pen", "ScratchOS", "cp437"];
 
 list job_sh;         // background jobs: shell pid, pgid, command
 list job_pgid;
@@ -45,7 +45,7 @@ var sh_err = "";
 
 list builtins = ["cd", "pwd", "echo", "exit", "export", "unset", "set", "env", "history", "help",
                  "clear", "jobs", "fg", "kill", "source", ".", "true", "false", "type", "which",
-                 "wait", "startx", "shutdown", "reboot", "halt", "caps", "logout", "uptime"];
+                 "wait", "startx", "shutdown", "reboot", "halt", "caps", "logout", "uptime", "ide"];
 
 proc shell_init() {
     clear(sh_state); clear(sh_rest); clear(sh_conn); clear(sh_status); clear(sh_wait);
@@ -717,6 +717,21 @@ proc sh_builtin(s, out_k, out_i, err_k, err_i) {
     }
     if (name == "startx") {
         return wm_start(s);
+    }
+    if (name == "ide") {
+        // open the Whisker IDE (on the desktop), optionally with a file
+        if (gui == 0) { sh_errmsg(s, "ide: the desktop is not running (start it with 'startx')"); return 1; }
+        local path = "";
+        if (argc >= 1) {
+            local ino = fs_lookup(sh_argv[2], p_cwd[s]);
+            if (ino == 0) {
+                ino = fs_create(sh_argv[2], FT_FILE, p_cwd[s]);
+                if (ino == 0) { sh_errmsg(s, "ide: cannot open " .. sh_argv[2]); return 1; }
+            }
+            path = fs_path(ino);
+        }
+        wm_open_ide(path);
+        return 0;
     }
     if (name == "shutdown" || name == "halt") {
         sys_power(0);

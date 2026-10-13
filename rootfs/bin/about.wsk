@@ -1,26 +1,43 @@
--- about - information about ScratchOS
+-- about - About ScratchOS
 --@caps gui
-local win = gui.window("About ScratchOS", 320, 176)
-local function draw()
-  gfx.clear(win, 7)
-  gfx.fill(win, 0, 0, 320, 34, 1)
-  gfx.text(win, 12, 9, "ScratchOS " .. sys.version():sub(11), 15)
-  gfx.text(win, 220, 9, "♦ ♣ ♥ ♠", 14)
-  local lines = {
-    "An operating system built in Scratch.",
-    "",
-    "Every pixel is drawn with the pen; text is",
-    "stamped from the IBM VGA 8x16 font (CP437).",
-    "Programs are written in Whisker and run on",
-    "a preemptive bytecode virtual machine.",
-  }
-  for i, l in ipairs(lines) do gfx.text(win, 8, 34 + i * 16, l, 0) end
-  local m = sys.mem()
-  gfx.text(win, 8, 146, string.format("uptime %ds  procs %d  files %d", math.floor(sys.uptime()), m.procs, m.files), 1)
+local W, H = 420, 300
+local win = gui.window("About ScratchOS", W, H)
+W, H = gui.size(win)
+local C = {
+  bg = gui.color("window"), text = gui.color("text"), dim = gui.color("dim"),
+  accent = gui.color("accent"), ontext = gui.color("ontext"), button = gui.color("button"),
+}
+
+-- the ScratchOS cat, drawn with discs and triangles
+local function logo(cx, cy, r, c, eye)
+  gfx.disc(win, cx, cy, r, c)
+  gfx.poly(win, {cx - r * 0.92, cy - r * 0.38, cx - r * 0.78, cy - r * 1.55, cx - r * 0.12, cy - r * 0.9}, c)
+  gfx.poly(win, {cx + r * 0.92, cy - r * 0.38, cx + r * 0.78, cy - r * 1.55, cx + r * 0.12, cy - r * 0.9}, c)
+  gfx.disc(win, cx - r * 0.38, cy - r * 0.08, r * 0.13, eye)
+  gfx.disc(win, cx + r * 0.38, cy - r * 0.08, r * 0.13, eye)
 end
+
+local function centre(y, s, c)
+  gfx.text(win, (W - #s * 8) // 2, y, s, c)
+end
+
+local function draw()
+  gfx.batch()
+  gfx.clear(win, C.bg)
+  logo(W // 2, 84, 40, C.accent, C.bg)
+  centre(140, "ScratchOS", C.text)
+  centre(158, "Version " .. sys.version():sub(11), C.dim)
+  local m = sys.mem()
+  centre(188, "Display    1280 x 720, JetBrains Mono", C.dim)
+  centre(204, string.format("Memory     %d heap cells in use", m.heap), C.dim)
+  centre(220, string.format("Uptime     %ds, %d processes, %d files", math.floor(sys.uptime()), m.procs, m.files), C.dim)
+  centre(H - 34, "Built in Scratch: every pixel is drawn with the pen.", C.dim)
+  gfx.flush()
+end
+
 draw()
 while true do
   local e = gui.waitevent(win)
-  if e.type == "close" or e.type == "key" or e.type == "mousedown" then break end
+  if e.type == "close" or e.type == "key" then break end
 end
 gui.close(win)

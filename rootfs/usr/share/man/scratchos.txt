@@ -3,13 +3,18 @@ SCRATCHOS(7)               ScratchOS Manual
     ScratchOS is an operating system written for Scratch (TurboWarp).
 
     * every pixel is drawn with the pen; text is stamped glyph by glyph
-      from the IBM VGA 8x16 font (CP437) in 16 colours
+      in JetBrains Mono on a 1280x720 (160 x 45 cell) screen
     * one keyboard clone per key listens for input - no ask blocks
     * preemptive multitasking of Whisker bytecode programs
     * in-memory file system rebuilt from the boot image every start
     * Unix-like shell with pipes, redirection and background jobs
-    * a mouse-driven window manager: run `startx`
+    * a macOS-style desktop: menu bar, dock, windows with traffic lights,
+      Finder, Terminal, the Whisker IDE, light and dark appearance
     * capability-based permissions with interactive prompts
 
-    Font: IBM VGA 8x16 from VileR's Oldschool PC Font collection
-    (int10h.org), CC BY-SA 4.0.
+    ScratchOS boots to the desktop.  Hold Esc while it boots for the text
+    console; `startx` starts the desktop from there.  On the desktop,
+    Ctrl+Space opens the cat menu; `ide FILE` opens a file in the IDE.
+
+    Font: JetBrains Mono (github.com/JetBrains/JetBrainsMono), SIL Open
+    Font License 1.1.

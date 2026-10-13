@@ -1,6 +1,6 @@
 // ===========================================================================
-// boot.sbs - BIOS POST, bootloader, kernel start-up log, init (pid 1)
-// and power management (included inside sprite Kernel)
+// boot.sbs - the boot screen, kernel start-up, init (pid 1) and power
+// management (included inside sprite Kernel)
 // ===========================================================================
 
 const OS_NAME = "ScratchOS";
@@ -28,7 +28,7 @@ proc kok(msg) {
     tty_write(con, "\e[97m[\e[92m  OK  \e[97m]\e[0m " .. msg .. "\n");
 }
 
-// drain keyboard during boot: ESC skips the animations
+// drain keyboard during boot: Esc boots into the text console
 proc boot_keys() {
     while (len(kb_queue) > 0) {
         if (kb_queue[1] == "escape") { skip_boot = 1; }
@@ -38,91 +38,121 @@ proc boot_keys() {
 
 proc boot_pause(sec) nowarp {
     boot_keys();
-    tty_render();
-    if (skip_boot == 0) { wait(sec); }
+    if (gui == 0 && skip_boot == 1) { tty_render(); }
+    wait(sec);
+}
+
+// --- the boot screen: logo + progress bar --------------------------------------------
+
+const BOOT_BAR_W = 240;
+
+// filled triangle (screen px), one 1-pixel span per row
+proc boot_tri(x1, y1, x2, y2, x3, y3, c) {
+    local y0 = floor(min3(y1, y2, y3));
+    local yb = ceil(max3(y1, y2, y3));
+    for y = y0 to yb {
+        local sy = y + 0.5;
+        local xa = 99999;
+        local xb = -99999;
+        tri_edge(x1, y1, x2, y2, sy);
+        tri_edge(x2, y2, x3, y3, sy);
+        tri_edge(x3, y3, x1, y1, sy);
+        if (te_max >= te_min) { gfx_fill(round(te_min), y, round(te_max) - round(te_min) + 1, 1, c); }
+        te_min = 99999;
+        te_max = -99999;
+    }
+}
+
+var te_min = 99999;
+var te_max = -99999;
+
+proc tri_edge(xa, ya, xb, yb, sy) {
+    if ((ya <= sy && yb > sy) || (yb <= sy && ya > sy)) {
+        local x = xa + (sy - ya) * (xb - xa) / (yb - ya);
+        if (x < te_min) { te_min = x; }
+        if (x > te_max) { te_max = x; }
+    }
+}
+
+proc min3(a, b, c) {
+    local m = a;
+    if (b < m) { m = b; }
+    if (c < m) { m = c; }
+    return m;
+}
+
+proc max3(a, b, c) {
+    local m = a;
+    if (b > m) { m = b; }
+    if (c > m) { m = c; }
+    return m;
+}
+
+// the ScratchOS logo, a cat's head, centred at (cx, cy) with radius r
+proc boot_logo(cx, cy, r, c, eye) {
+    gfx_line(cx, cy, cx, cy, c, r * 2);
+    boot_tri(cx - r * 0.92, cy - r * 0.38, cx - r * 0.78, cy - r * 1.55, cx - r * 0.12, cy - r * 0.9, c);
+    boot_tri(cx + r * 0.92, cy - r * 0.38, cx + r * 0.78, cy - r * 1.55, cx + r * 0.12, cy - r * 0.9, c);
+    gfx_line(cx - r * 0.38, cy - r * 0.08, cx - r * 0.38, cy - r * 0.08, eye, r * 0.26);
+    gfx_line(cx + r * 0.38, cy - r * 0.08, cx + r * 0.38, cy - r * 0.08, eye, r * 0.26);
+}
+
+var boot_frac = 0;
+
+// advance the progress bar to `f` (0..1)
+proc boot_progress(f) nowarp {
+    boot_keys();
+    if (skip_boot == 1) { return; }
+    local x0 = SCR_W / 2 - BOOT_BAR_W / 2;
+    local y = SCR_H / 2 + 110;
+    local from = boot_frac;
+    // a short animated fill
+    repeat (6) {
+        boot_frac += (f - from) / 6;
+        gfx_line(x0, y, x0 + BOOT_BAR_W * boot_frac, y, U_ICWHITE, 6);
+        wait(0.016);
+    }
+    boot_frac = f;
+}
+
+proc boot_screen() {
+    gfx_fill(0, 0, SCR_W, SCR_H, U_PTROUT);
+    boot_logo(SCR_W / 2, SCR_H / 2 - 20, 58, U_ICWHITE, U_PTROUT);
+    local x0 = SCR_W / 2 - BOOT_BAR_W / 2;
+    local y = SCR_H / 2 + 110;
+    gfx_line(x0, y, x0 + BOOT_BAR_W, y, U_TLOFF, 6);
+    boot_frac = 0;
 }
 
 proc boot_seq() nowarp {
     skip_boot = 0;
     boot_t0 = now_secs();
-    // ---- BIOS POST -----------------------------------------------------------
-    tty_write(con, "\e[2J\e[H");
-    tty_write(con, "\e[93m  ▄▄▄▄  \e[97m ScratchBIOS (C) 2026 Pen & Stamp Technologies\n");
-    tty_write(con, "\e[93m █ ▀▀ █ \e[37m Release 1.0.26  -  PnP / Clone-Input aware\n");
-    tty_write(con, "\e[93m ▀▄▄▄▄▀ \e[0m\n\n");
-    tty_write(con, "Main Processor : Scratch VM (TurboWarp JIT) @ 60 Hz\n");
-    tty_write(con, "Memory Testing : ");
-    local x0 = tty_cx[con];
-    local y0 = tty_cy[con];
-    local mem = 0;
-    while (mem < 65536) {
-        mem += 2048;
-        tty_goto(con, x0, y0);
-        tty_write(con, mem .. "K");
-        boot_pause(0.01);
-    }
-    tty_write(con, " OK\n");
-    boot_pause(0.15);
-    tty_write(con, "Display        : Pen Display Adapter, 480x360, VGA 8x16 font\n");
-    boot_pause(0.1);
-    tty_write(con, "Keyboard       : " .. len(kb_names) .. "-key clone listener array ... ");
+    boot_screen();
     wait_until(kb_ready == 1);
-    tty_write(con, "OK\n");
-    boot_pause(0.1);
-    tty_write(con, "Storage        : SB3 ROM disk, " .. len(rootfs_paths) .. " objects\n");
-    boot_pause(0.1);
-    tty_write(con, "Mouse          : Stage pointer device\n\n");
-    boot_pause(0.2);
-    tty_write(con, "\e[37mPress \e[97mESC\e[37m to skip boot animations\e[0m\n\n");
-    tty_write(con, "Booting from ROM disk");
-    repeat (6) {
-        tty_write(con, ".");
-        boot_pause(0.12);
-    }
-    tty_write(con, "\n");
-    boot_pause(0.3);
-    // ---- bootloader ------------------------------------------------------------
+    boot_progress(0.08);
+    // ---- kernel start-up (logged to the console) ---------------------------------
     tty_write(con, "\e[2J\e[H");
-    tty_write(con, "\e[97;44m" .. pad_right("  PenBoot 1.0 - " .. OS_NAME .. " boot manager", 60) .. "\e[0m\n\n");
-    tty_write(con, "  \e[30;47m " .. pad_right(OS_NAME .. " " .. OS_VERSION .. " (" .. KERNEL_NAME .. ")", 40) .. "\e[0m\n");
-    tty_write(con, "   " .. OS_NAME .. " " .. OS_VERSION .. " (recovery mode)\n\n");
-    tty_write(con, "  Loading kernel  [");
-    repeat (30) {
-        tty_write(con, "\e[92m█\e[0m");
-        boot_pause(0.025);
-    }
-    tty_write(con, "]\n");
-    boot_pause(0.2);
-    // ---- kernel log -------------------------------------------------------------
-    tty_write(con, "\e[2J\e[H");
-    boot_t0 = now_secs();
     klog(OS_NAME .. " " .. OS_VERSION .. " (" .. KERNEL_NAME .. ") #1 PREEMPT");
-    klog("cmdline: root=/dev/sb3 console=tty1 font=vga8x16");
-    klog("pen fb: 480x360 px, 60x22 cells, 16 colours");
-    boot_pause(0.05);
+    klog("cmdline: root=/dev/sb3 console=tty1");
+    klog("pen fb: " .. SCR_W .. "x" .. SCR_H .. " px, " .. SCR_COLS .. "x" .. SCR_ROWS .. " cells, JetBrains Mono");
     klog("memory: 200000 cells per list, heap ready");
     fs_init();
     fs_load_rootfs();
-    boot_pause(0.05);
+    boot_progress(0.3);
     kok("Mounted root file system (" .. fs_count .. " inodes, " .. floor(fs_total_bytes() / 1024) .. " KiB)");
-    boot_pause(0.05);
     kok("Started keyboard service (" .. len(kb_names) .. " clone listeners)");
-    boot_pause(0.05);
     proc_init();
     shell_init();
     vm_init();
+    boot_progress(0.5);
     kok("Started process scheduler (preemptive, " .. MAX_PROC .. " slots)");
-    boot_pause(0.05);
     kok("Started Whisker virtual machine");
-    boot_pause(0.05);
     caps_init();
     kok("Loaded capability policy (/etc/caps)");
-    boot_pause(0.05);
     wm_init();
-    kok("Started window manager (type 'startx')");
-    boot_pause(0.05);
+    boot_progress(0.75);
+    kok("Started window manager");
     kok("Reached target Multi-User System");
-    boot_pause(0.15);
     uptime0 = now_secs();
     // ---- init ----------------------------------------------------------------------
     local s = proc_alloc("init", PK_INIT, 0);
@@ -132,6 +162,18 @@ proc boot_seq() nowarp {
     p_err_k[s] = FD_TTY; p_err_i[s] = con;
     p_caps[s] = "|files|proc|gui|system|";
     init_state = 0;
+    boot_progress(1);
+    boot_keys();
+    if (skip_boot == 1) {
+        // Esc during boot: the text console
+        tty_write(con, "\n\e[97mText console\e[0m - type \e[93mstartx\e[0m to start the desktop.\n\n");
+        tty_vis[con] = 1;
+        tty_full[con] = 1;
+        gfx_fill(0, 0, SCR_W, SCR_H, 0);
+        return;
+    }
+    wait(0.25);
+    wm_start(0);
 }
 
 list kb_names = data("kb_keys");
@@ -207,12 +249,11 @@ proc power_off() nowarp {
         kernel_boot();
         return;
     }
-    tty_write(con, "\e[2J\e[H");
-    tty_write(con, "\n\n\n\n\n\n\n\n\n");
-    tty_write(con, "\e[93m          It is now safe to close this browser tab.\e[0m\n\n");
-    tty_write(con, "\e[37m          (click the green flag to boot " .. OS_NAME .. " again)\e[0m\n");
-    tty_render();
-    tty_curvis[con] = 0;
-    tty_cursor_update();
+    tty_vis[con] = 0;
+    gfx_fill(0, 0, SCR_W, SCR_H, U_PTROUT);
+    local msg = "It is now safe to close this browser tab.";
+    for i = 1 to len(msg) { gfx_glyph(SCR_W / 2 - len(msg) * 4 + (i - 1) * 8, SCR_H / 2 - 8, ord(msg[i]), U_TLOFF); }
+    local msg2 = "Click the green flag to start " .. OS_NAME .. " again.";
+    for i = 1 to len(msg2) { gfx_glyph(SCR_W / 2 - len(msg2) * 4 + (i - 1) * 8, SCR_H / 2 + 16, ord(msg2[i]), U_TLOFF); }
     halted = 1;
 }

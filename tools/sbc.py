@@ -12,7 +12,7 @@ Language summary (see docs/SBS.md for the full reference):
     global counter = 0;            // stage variable
     global list queue;             // stage list
     sprite Kernel {
-        costumes "glyphs";         // costume groups supplied by build.py
+        costumes "os_glyphs";      // costume groups supplied by build.py
         var x = 0;                 // sprite variable
         list buf = data("key");    // list initialised from build data
         proc add2(a, b) { return a + b; }        // warp custom block
@@ -717,7 +717,13 @@ class SpriteGen:
         self.ctx = None
         self.top_y = 0
         sname = spr['name']
+        seen = {}
         for v in spr['vars']:
+            key = (v['name'], v['list'])
+            if key in seen:
+                kind = 'list' if v['list'] else 'var'
+                raise CompileError(f"{v['line']}: duplicate {kind} {v['name']} (first declared at {seen[key]})")
+            seen[key] = v['line']
             self.declare(v['name'], v['list'], v['init'])
         for p in spr['procs']:
             if p['name'] in self.procs:

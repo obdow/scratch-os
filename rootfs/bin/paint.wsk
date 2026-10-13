@@ -2,12 +2,18 @@
 --@caps gui
 -- tools: pencil, line, rectangle, filled rectangle, circle, disc, eraser
 -- keys: c clears, s saves to ~/drawing.pic, o opens it, q quits
-local W, H = 416, 288
+local W, H = 640, 432
 local win = gui.window("Paint", W, H)
-local TOP = 18                 -- toolbar height
-local PAL = 18                 -- palette height
+W, H = gui.size(win)
+local TOP = 28                 -- toolbar height
+local PAL = 28                 -- palette height
+local C = {
+  bar = gui.color("sidebar"), text = gui.color("text"), dim = gui.color("dim"),
+  accent = gui.color("accent"), ontext = gui.color("ontext"), button = gui.color("button"),
+  border = gui.color("border"), paper = gui.color("paper"),
+}
 local tool = "pencil"
-local colour = 0
+local colour = gui.color("ink")
 local size = 1
 local shapes = {}              -- saved drawing: {kind, x1, y1, x2, y2, colour, size}
 local px, py = nil, nil        -- previous point while dragging
@@ -16,25 +22,27 @@ local tools = {"pencil", "line", "rect", "fill", "circle", "disc", "eraser", "si
 local labels = {"Pen", "Line", "Box", "Fill", "Circ", "Disc", "Eras", "1px", "Clr"}
 
 local function toolbar()
-  gfx.fill(win, 0, 0, W, TOP, 7)
+  gfx.fill(win, 0, 0, W, TOP, C.bar)
+  gfx.fill(win, 0, TOP - 1, W, 1, C.border)
   for i, t in ipairs(tools) do
-    local x = (i - 1) * 44 + 2
-    local bg = 8
-    if t == tool then bg = 1 end
-    gfx.fill(win, x, 1, 42, TOP - 2, bg)
+    local x = (i - 1) * 48 + 8
+    local bg, fg = C.button, C.text
+    if t == tool then bg, fg = C.accent, C.ontext end
+    gfx.fill(win, x, 5, 44, 18, bg)
     local lbl = labels[i]
     if t == "size" then lbl = size .. "px" end
-    gfx.text(win, x + 21 - #lbl * 4, 1, lbl, 15)
+    gfx.text(win, x + 22 - #lbl * 4, 6, lbl, fg)
   end
 end
 
 local function palette()
-  gfx.fill(win, 0, H - PAL, W, PAL, 7)
+  gfx.fill(win, 0, H - PAL, W, PAL, C.bar)
+  gfx.fill(win, 0, H - PAL, W, 1, C.border)
   for c = 0, 15 do
-    gfx.fill(win, c * 22 + 2, H - PAL + 2, 20, PAL - 4, c)
-    if c == colour then gfx.rect(win, c * 22 + 1, H - PAL + 1, 22, PAL - 2, 15) end
+    gfx.fill(win, c * 24 + 10, H - PAL + 6, 20, PAL - 12, c)
+    if c == colour then gfx.rect(win, c * 24 + 8, H - PAL + 4, 24, PAL - 8, C.accent) end
   end
-  gfx.text(win, 360, H - PAL + 1, "s/o/q", 0)
+  gfx.text(win, W - 200, H - PAL + 6, "s save  o open  q quit", C.dim)
 end
 
 local function draw_shape(s)
@@ -52,7 +60,7 @@ local function draw_shape(s)
 end
 
 local function redraw_all()
-  gfx.clear(win, 15)
+  gfx.clear(win, C.paper)
   for _, s in ipairs(shapes) do draw_shape(s) end
   toolbar()
   palette()
@@ -61,7 +69,7 @@ end
 local function add(kind, x1, y1, x2, y2)
   local c = colour
   local sz = size
-  if tool == "eraser" then c = 15 sz = math.max(6, size * 4) end
+  if tool == "eraser" then c = C.paper sz = math.max(6, size * 4) end
   local s = {kind, x1, y1, x2, y2, c, sz}
   shapes[#shapes + 1] = s
   draw_shape(s)
@@ -95,13 +103,13 @@ while running do
   if e.type == "close" then running = false
   elseif e.type == "mousedown" then
     if e.y < TOP then
-      local i = e.x // 44 + 1
+      local i = (e.x - 8) // 48 + 1
       local t = tools[i]
       if t == "clear" then shapes = {} redraw_all()
       elseif t == "size" then size = size % 4 + 1 toolbar()
       elseif t then tool = t toolbar() end
     elseif e.y >= H - PAL then
-      local c = (e.x - 2) // 22
+      local c = (e.x - 10) // 24
       if c >= 0 and c <= 15 then colour = c palette() end
     else
       px, py = e.x, e.y

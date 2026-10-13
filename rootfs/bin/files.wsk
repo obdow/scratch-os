@@ -1,19 +1,51 @@
--- files - graphical file manager
+-- files - Finder, the graphical file manager
 --@caps gui files
--- click selects, double-click opens (folders are entered, files open in the
--- editor).  Toolbar: Up, Edit, Run (.wsk programs), New folder, Delete.
--- keys: arrows, Enter (open), e (edit), r (run), Backspace (up), Delete,
+-- Sidebar: favourite places.  Click selects, double-click opens: folders are
+-- entered, .wsk and .txt files open in the Whisker IDE, others in the editor.
+-- Toolbar: back / forward, New Folder, Run (.wsk programs), Delete.
+-- keys: arrows, Enter (open), r (run), Backspace (back), Delete,
 --       n (new folder), q (quit)
-local W, H = 400, 272
-local win = gui.window("Files", W, H)
-local cwd = fs.abs(os.getenv("HOME") or "/")
+local W, H = 760, 432
+local win = gui.window("Finder", W, H)
+W, H = gui.size(win)
+
+-- system colours (they follow the light / dark appearance)
+local C = {
+  bg = gui.color("window"), side = gui.color("sidebar"), text = gui.color("text"),
+  dim = gui.color("dim"), accent = gui.color("accent"), ontext = gui.color("ontext"),
+  sel = gui.color("selection"), border = gui.color("border"), button = gui.color("button"),
+  folder = gui.color("folder"), stripe = gui.color("hover"),
+}
+
+local home = fs.abs(os.getenv("HOME") or "/")
+local PLACES = {
+  {"Home", home}, {"Projects", home .. "/projects"}, {"Examples", home .. "/examples"},
+  {"Applications", "/bin"}, {"Documents", "/usr/share/doc/whisker"}, {"System", "/etc"},
+  {"Temporary", "/tmp"}, {"ScratchOS HD", "/"},
+}
+local SIDE = 152         -- sidebar width
+local TOP = 36           -- toolbar height
+local HEAD = 20          -- column header height
+local ROW = 16
+
+local cwd = home
+local back, fwd = {}, {}
 local items = {}
 local sel, top = 1, 1
-local ROWS = (H - 48) // 16
 local lastclick, lastsel = 0, 0
 local status = ""
-local BUTTONS = {" Up ", " Edit ", " Run ", " New folder ", " Delete "}
-local bx = {}          -- x position of each toolbar button
+local BUTTONS = {"New Folder", "Run", "Open in IDE", "Delete"}
+local bx = {}
+
+local function rows() return (H - TOP - HEAD - ROW) // ROW end
+
+local function kind(it)
+  if it.dir then return "Folder" end
+  if it.name:endswith(".wsk") then return "Whisker program" end
+  if it.name:endswith(".txt") then return "Text document" end
+  if it.name:endswith(".sh") then return "Shell script" end
+  return "Document"
+end
 
 local function load()
   local names = fs.list(cwd) or {}
@@ -26,72 +58,120 @@ local function load()
     else files[#files + 1] = {name = n, path = full, dir = false, size = st.size} end
   end
   items = {}
-  if cwd ~= "/" then items[1] = {name = "..", path = fs.dir(cwd), dir = true, size = 0} end
   for _, d in ipairs(dirs) do items[#items + 1] = d end
   for _, f in ipairs(files) do items[#items + 1] = f end
   if sel > #items then sel = #items end
   if sel < 1 then sel = 1 end
 end
 
+local function size_text(n)
+  if n < 1024 then return n .. " bytes" end
+  return string.format("%.1f KB", n / 1024)
+end
+
 local function draw()
-  gfx.clear(win, 15)
-  -- toolbar
-  gfx.fill(win, 0, 0, W, 16, 7)
-  local x = 4
-  for i, b in ipairs(BUTTONS) do
-    bx[i] = x
-    local bg = 8
-    if b == " Run " and not (items[sel] and items[sel].name:endswith(".wsk")) then bg = 7 end
-    gfx.fill(win, x, 1, #b * 8, 14, bg)
-    gfx.text(win, x, 0, b, 15)
-    x = x + #b * 8 + 8
+  gfx.batch()
+  gfx.clear(win, C.bg)
+  -- sidebar
+  gfx.fill(win, 0, 0, SIDE, H, C.side)
+  gfx.fill(win, SIDE - 1, 0, 1, H, C.border)
+  gfx.text(win, 12, TOP + 4, "Favorites", C.dim)
+  for i, pl in ipairs(PLACES) do
+    local y = TOP + 8 + i * 20
+    if pl[2] == cwd then gfx.fill(win, 6, y - 2, SIDE - 13, 20, C.sel) end
+    gfx.text(win, 14, y, "■", C.accent)
+    gfx.text(win, 32, y, pl[1], C.text)
   end
-  -- path
-  gfx.fill(win, 0, 16, W, 16, 1)
-  gfx.text(win, 4, 16, cwd, 14)
-  -- list
-  for row = 1, ROWS do
+  -- toolbar: back / forward, folder name, buttons
+  gfx.fill(win, SIDE, 0, W - SIDE, TOP, C.side)
+  gfx.fill(win, SIDE, TOP - 1, W - SIDE, 1, C.border)
+  local bc, fc = C.dim, C.dim
+  if #back > 0 then bc = C.text end
+  if #fwd > 0 then fc = C.text end
+  gfx.text(win, SIDE + 12, 10, "◄", bc)
+  gfx.text(win, SIDE + 32, 10, "►", fc)
+  local title = fs.name(cwd)
+  if cwd == "/" then title = "ScratchOS HD" end
+  gfx.text(win, SIDE + 56, 10, title, C.text)
+  local x = W - 8
+  for i = #BUTTONS, 1, -1 do
+    local b = " " .. BUTTONS[i] .. " "
+    x = x - #b * 8
+    bx[i] = x
+    local fg = C.text
+    if BUTTONS[i] == "Run" and not (items[sel] and items[sel].name:endswith(".wsk")) then fg = C.dim end
+    gfx.fill(win, x, 9, #b * 8, 18, C.button)
+    gfx.text(win, x, 10, b, fg)
+    x = x - 8
+  end
+  -- column headers
+  local nx, sx, kx = SIDE + 12, W - 250, W - 150
+  gfx.text(win, nx, TOP + 2, "Name", C.dim)
+  gfx.text(win, sx, TOP + 2, "Size", C.dim)
+  gfx.text(win, kx, TOP + 2, "Kind", C.dim)
+  gfx.fill(win, SIDE, TOP + HEAD - 1, W - SIDE, 1, C.border)
+  -- rows
+  local R = rows()
+  for row = 1, R do
     local i = top + row - 1
     local it = items[i]
+    local y = TOP + HEAD + (row - 1) * ROW
+    local fg, dimc = C.text, C.dim
+    if it and i == sel then
+      gfx.fill(win, SIDE + 4, y, W - SIDE - 8, ROW, C.accent)
+      fg, dimc = C.ontext, C.ontext
+    elseif row % 2 == 0 then
+      gfx.fill(win, SIDE + 4, y, W - SIDE - 8, ROW, C.stripe)
+    end
     if it then
-      local y = 32 + (row - 1) * 16
-      local fg, bg = 0, 15
-      if i == sel then fg, bg = 15, 1 end
-      gfx.fill(win, 0, y, W, 16, bg)
-      local icon = "≡"
-      local c = 8
-      if it.dir then icon = "■" c = 6 elseif it.name:endswith(".wsk") then icon = "♦" c = 2 end
-      if i == sel then c = 14 end
-      gfx.text(win, 6, y, icon, c)
-      gfx.text(win, 22, y, it.name, fg)
-      if not it.dir then gfx.text(win, W - 64, y, string.format("%7d", it.size), fg) end
+      local icon, ic = "≡", dimc
+      if it.dir then icon, ic = "■", C.folder
+      elseif it.name:endswith(".wsk") then icon, ic = "♦", C.accent end
+      if i == sel then ic = C.ontext end
+      gfx.text(win, nx, y, icon, ic)
+      gfx.text(win, nx + 18, y, it.name, fg)
+      if it.dir then gfx.text(win, sx, y, "--", dimc) else gfx.text(win, sx, y, size_text(it.size), dimc) end
+      gfx.text(win, kx, y, kind(it), dimc)
     end
   end
   -- status bar
-  gfx.fill(win, 0, H - 16, W, 16, 7)
+  gfx.fill(win, SIDE, H - ROW, W - SIDE, ROW, C.side)
   local info = #items .. " items"
   if status ~= "" then info = status end
-  gfx.text(win, 4, H - 16, info, 0)
+  gfx.text(win, SIDE + 12, H - ROW, info, C.dim)
+  gfx.flush()
 end
 
 local function ensure_visible()
+  local R = rows()
   if sel < top then top = sel end
-  if sel > top + ROWS - 1 then top = sel - ROWS + 1 end
+  if sel > top + R - 1 then top = sel - R + 1 end
 end
 
-local function go_up()
-  if cwd ~= "/" then
-    cwd = fs.dir(cwd)
-    sel, top = 1, 1
-    status = ""
-    load()
+local function go(path, remember)
+  if path == cwd then return end
+  if remember then back[#back + 1] = cwd fwd = {} end
+  cwd = path
+  sel, top = 1, 1
+  status = ""
+  load()
+end
+
+local function go_back()
+  if #back > 0 then
+    fwd[#fwd + 1] = cwd
+    local p = table.remove(back)
+    go(p, false)
+  elseif cwd ~= "/" then
+    go(fs.dir(cwd), false)
   end
 end
 
-local function edit(it)
-  if it == nil or it.dir then return end
-  gui.terminal("edit " .. it.path)
-  status = "Editing " .. it.name
+local function go_forward()
+  if #fwd > 0 then
+    back[#back + 1] = cwd
+    go(table.remove(fwd), false)
+  end
 end
 
 local function run(it)
@@ -101,29 +181,29 @@ local function run(it)
   status = "Started " .. it.name
 end
 
--- double-click / Enter: enter folders, open files in the editor
+-- double-click / Enter: enter folders, open programs and text in the IDE
 local function open(it)
   if it == nil then return end
-  if it.dir then
-    cwd = it.path
-    sel, top = 1, 1
-    status = ""
-    load()
+  if it.dir then go(it.path, true)
+  elseif it.name:endswith(".wsk") or it.name:endswith(".txt") then
+    gui.ide(it.path)
+    status = "Opened " .. it.name .. " in the Whisker IDE"
   else
-    edit(it)
+    gui.terminal("edit " .. it.path)
+    status = "Editing " .. it.name
   end
 end
 
 local function delete(it)
-  if it == nil or it.name == ".." then return end
+  if it == nil then return end
   local ok, err = fs.remove(it.path, true)
-  if ok then status = "Deleted " .. it.name else status = "Error: " .. tostring(err) end
+  if ok then status = "Moved " .. it.name .. " to nowhere (deleted)" else status = "Error: " .. tostring(err) end
   load()
 end
 
 local function newfolder()
-  local base = cwd .. "/New folder"
-  if cwd == "/" then base = "/New folder" end
+  local base = cwd .. "/untitled folder"
+  if cwd == "/" then base = "/untitled folder" end
   local name = base
   local n = 2
   while fs.exists(name) do name = base .. " " .. n n = n + 1 end
@@ -140,34 +220,42 @@ while running do
   local redraw = true
   if e.type == "close" then running = false
   elseif e.type == "mousedown" then
-    if e.y < 16 then
-      local hit = 0
-      for i, b in ipairs(BUTTONS) do
-        if bx[i] and e.x >= bx[i] and e.x < bx[i] + #b * 8 then hit = i end
+    if e.x < SIDE then
+      -- sidebar places
+      local k = (e.y - TOP - 6) // 20
+      if PLACES[k] and fs.isdir(PLACES[k][2]) then go(PLACES[k][2], true) end
+    elseif e.y < TOP then
+      if e.x < SIDE + 26 then go_back()
+      elseif e.x < SIDE + 46 then go_forward()
+      else
+        local hit = 0
+        for i, b in ipairs(BUTTONS) do
+          if bx[i] and e.x >= bx[i] and e.x < bx[i] + (#b + 2) * 8 then hit = i end
+        end
+        if hit == 1 then newfolder()
+        elseif hit == 2 then run(items[sel])
+        elseif hit == 3 then if items[sel] then gui.ide(items[sel].path) end
+        elseif hit == 4 then delete(items[sel]) end
       end
-      if hit == 1 then go_up()
-      elseif hit == 2 then edit(items[sel])
-      elseif hit == 3 then run(items[sel])
-      elseif hit == 4 then newfolder()
-      elseif hit == 5 then delete(items[sel]) end
-    elseif e.y >= 32 and e.y < H - 16 then
-      local i = top + (e.y - 32) // 16
+    elseif e.y >= TOP + HEAD and e.y < H - ROW then
+      local i = top + (e.y - TOP - HEAD) // ROW
       if items[i] then
         local now = os.millis()
         if i == lastsel and now - lastclick < 450 then open(items[i]) lastsel = 0
         else sel = i lastsel = i lastclick = now end
       end
     end
+  elseif e.type == "wheel" then
+    top = math.max(1, math.min(top + e.y * 3, math.max(1, #items - rows() + 1)))
   elseif e.type == "key" then
     local k = e.key
     if k == "up arrow" and sel > 1 then sel = sel - 1
     elseif k == "down arrow" and sel < #items then sel = sel + 1
-    elseif k == "page up" then sel = math.max(1, sel - ROWS)
-    elseif k == "page down" then sel = math.min(#items, sel + ROWS)
+    elseif k == "page up" then sel = math.max(1, sel - rows())
+    elseif k == "page down" then sel = math.min(#items, sel + rows())
     elseif k == "enter" then open(items[sel])
-    elseif k == "e" then edit(items[sel])
     elseif k == "r" then run(items[sel])
-    elseif k == "backspace" then go_up()
+    elseif k == "backspace" then go_back()
     elseif k == "delete" then delete(items[sel])
     elseif k == "n" then newfolder()
     elseif k == "q" or k == "escape" then running = false
@@ -175,7 +263,6 @@ while running do
     ensure_visible()
   elseif e.type == "resize" then
     W, H = e.x, e.y
-    ROWS = (H - 48) // 16
   else
     redraw = false
   end

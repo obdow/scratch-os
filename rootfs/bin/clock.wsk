@@ -1,8 +1,13 @@
 -- clock - analog clock window
 --@caps gui
-local W, H = 176, 176
+local W, H = 200, 216
 local win = gui.window("Clock", W, H)
-local cx, cy, R = W // 2, H // 2 - 4, 76
+W, H = gui.size(win)
+local cx, cy, R = W // 2, H // 2 - 8, 84
+local C = {
+  bg = gui.color("window"), rim = gui.color("border"), face = gui.color("paper"),
+  ink = gui.color("ink"), dim = gui.color("dim"), red = gui.color("red"), text = gui.color("text"),
+}
 
 local function hand(angle, len, colour, size)
   local x = cx + len * math.sin(angle)
@@ -11,21 +16,20 @@ local function hand(angle, len, colour, size)
 end
 
 local function face()
-  gfx.clear(win, 1)
-  gfx.disc(win, cx, cy, R, 7)
-  gfx.circle(win, cx, cy, R, 15)
-  gfx.disc(win, cx, cy, R - 4, 15)
+  gfx.clear(win, C.bg)
+  gfx.disc(win, cx, cy, R, C.rim)
+  gfx.disc(win, cx, cy, R - 3, C.face)
   for i = 0, 59 do
     local a = i * math.pi / 30
     local r1 = R - 8
     if i % 5 == 0 then r1 = R - 14 end
     gfx.line(win, cx + r1 * math.sin(a), cy - r1 * math.cos(a),
-      cx + (R - 6) * math.sin(a), cy - (R - 6) * math.cos(a), 8, 1)
+      cx + (R - 6) * math.sin(a), cy - (R - 6) * math.cos(a), C.dim, 1)
   end
   for h = 1, 12 do
     local a = h * math.pi / 6
     local s = tostring(h)
-    gfx.text(win, cx + (R - 24) * math.sin(a) - #s * 4, cy - (R - 24) * math.cos(a) - 8, s, 1)
+    gfx.text(win, cx + (R - 24) * math.sin(a) - #s * 4, cy - (R - 24) * math.cos(a) - 8, s, C.ink)
   end
 end
 
@@ -36,12 +40,14 @@ while running do
   local hh, mm, ss = tonumber(d:sub(12, 13)), tonumber(d:sub(15, 16)), tonumber(d:sub(18, 19))
   if d ~= last then
     last = d
+    gfx.batch()
     face()
-    hand((hh % 12 + mm / 60) * math.pi / 6, R * 0.5, 0, 3)
-    hand((mm + ss / 60) * math.pi / 30, R * 0.75, 0, 2)
-    hand(ss * math.pi / 30, R * 0.85, 4, 1)
-    gfx.disc(win, cx, cy, 3, 4)
-    gfx.text(win, cx - 32, H - 16, d:sub(12, 19), 15, 1)
+    hand((hh % 12 + mm / 60) * math.pi / 6, R * 0.5, C.ink, 4)
+    hand((mm + ss / 60) * math.pi / 30, R * 0.75, C.ink, 3)
+    hand(ss * math.pi / 30, R * 0.85, C.red, 1)
+    gfx.disc(win, cx, cy, 3, C.red)
+    gfx.text(win, cx - 32, H - 18, d:sub(12, 19), C.text)
+    gfx.flush()
   end
   local e = gui.event(win)
   while e do

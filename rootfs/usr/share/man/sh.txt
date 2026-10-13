@@ -11,7 +11,7 @@ SYNTAX
 
 BUILTINS
     cd pwd echo [-n] [-e] exit export unset set env history help clear
-    jobs fg kill type which wait source startx shutdown reboot halt
+    jobs fg kill type which wait source startx ide shutdown reboot halt
     caps uptime true false sh run
 
 KEYS
