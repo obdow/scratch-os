@@ -33,6 +33,7 @@ sprite Kernel {
     include "../wm.sbs";
     include "ide.sbs";
     include "textview.sbs";        // native rendering of text files
+    include "yarnhl.sbs";          // Yarn pages: highlighting, indent
 
     var con = 0;            // the Output panel tty (kernel messages go here too)
     var frames = 0;

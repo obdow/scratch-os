@@ -1,0 +1,860 @@
+-- yarn.wsk - Yarn, the ScratchOS web page language: parser, layout, drawing
+--
+--   local yarn = require("yarn")
+--   local doc = yarn.parse(source)          -- doc.errors = {{line =, msg =}, ...}
+--   local view = yarn.layout(doc, width)    -- view.ops, view.hits, view.height
+--   yarn.draw(win, view, x, y, w, h, scroll, hover, focus)
+--   local hit = yarn.hit(view, x, y)        -- what is at page point (x, y)
+--
+-- The language is described in man yarn and /usr/share/doc/whisker/yarn.txt.
+-- A page is one element per line; indentation nests elements:
+--
+--   page "My Site" theme=light
+--     style note color=dim
+--     title "Welcome"
+--     text "Hello, **world**! See [the demo](demo.yarn)."
+--     row
+--       box
+--         text "Left" .note
+--       box
+--         image cat.simg
+--     button "Click" -> say("Hi!")
+--
+-- Library functions cannot see a chunk's locals, so everything lives in the
+-- global table _yarn (the table require returns).
+
+_yarn = {}
+
+-- --- colours and themes -----------------------------------------------------------
+
+-- theme slots: page bg, text, dim text, headings, links / accent, cards,
+-- borders, code, buttons and the text on them, form fields
+_yarn.themes = {
+  light  = {bg = "#ffffff", text = "#1f2328", dim = "#656d76", head = "#1f2328", accent = "#0969da",
+            card = "#f6f8fa", border = "#d0d7de", codebg = "#eff1f3", code = "#b42318",
+            button = "#0969da", ontext = "#ffffff", field = "#ffffff"},
+  dark   = {bg = "#0d1117", text = "#e6edf3", dim = "#8d96a0", head = "#f0f6fc", accent = "#4493f8",
+            card = "#161b22", border = "#30363d", codebg = "#1f242c", code = "#ff7b72",
+            button = "#238636", ontext = "#ffffff", field = "#0d1117"},
+  paper  = {bg = "#f8f1e3", text = "#3b3024", dim = "#7d6b56", head = "#2b2118", accent = "#a0522d",
+            card = "#efe4cc", border = "#d6c6a5", codebg = "#ece0c6", code = "#8b3a1a",
+            button = "#a0522d", ontext = "#ffffff", field = "#fffaf0"},
+  ocean  = {bg = "#0b2545", text = "#eef4ed", dim = "#8da9c4", head = "#ffffff", accent = "#8ecae6",
+            card = "#13315c", border = "#2a4d7a", codebg = "#13315c", code = "#ffb703",
+            button = "#ffb703", ontext = "#0b2545", field = "#0e2c52"},
+  forest = {bg = "#f1f7ed", text = "#1b2d1b", dim = "#52705a", head = "#14301f", accent = "#2d6a4f",
+            card = "#d8f3dc", border = "#95d5b2", codebg = "#e3f1e6", code = "#7a3e00",
+            button = "#2d6a4f", ontext = "#ffffff", field = "#ffffff"},
+}
+
+_yarn.names = {
+  black = "#000000", white = "#ffffff", gray = "#808080", grey = "#808080", silver = "#c0c0c0",
+  red = "#e5534b", orange = "#f0883e", yellow = "#e3b341", gold = "#d4a72c", green = "#2da44e",
+  lime = "#8ac926", teal = "#1a9c8c", cyan = "#39c5cf", blue = "#2f81f7", navy = "#1f3a6e",
+  purple = "#8957e5", pink = "#e85aad", brown = "#9a6b3f", maroon = "#800000",
+}
+
+-- a colour attribute -> colour number (nil when missing or unknown)
+function _yarn.colour(v, th)
+  if v == nil or v == "" then return nil end
+  if type(v) == "number" then return v end
+  if v:sub(1, 1) == "#" then return gfx.hex(v) end
+  local key = v:lower()
+  if th[key] and key ~= "name" then return th[key] end
+  local n = _yarn.names[key]
+  if n then return gfx.hex(n) end
+  return gfx.hex(v)
+end
+
+-- the colours of theme `name`, with the page's own overrides
+function _yarn.theme(name, over)
+  local src = _yarn.themes[name or "light"] or _yarn.themes.light
+  local th = {name = name}
+  for k, v in pairs(src) do th[k] = gfx.hex(v) end
+  if over then
+    for k, v in pairs(over) do
+      if src[k] then
+        local c = _yarn.colour(v, th)
+        if c then th[k] = c end
+      end
+    end
+    -- page color= / bg= set the text and background
+    local c = _yarn.colour(over.color, th)
+    if c then th.text = c th.head = c end
+  end
+  return th
+end
+
+-- --- parsing ------------------------------------------------------------------------
+
+-- elements; the value says whether it may contain other elements
+_yarn.kinds = {
+  page = true, box = true, row = true, column = true, center = true, list = true, item = true,
+  title = false, heading = false, subheading = false, text = false, quote = false, code = false,
+  link = false, button = false, input = false, check = false, image = false,
+  divider = false, space = false, style = false, script = false,
+}
+
+-- bare words that are switches (`text "x" bold center`)
+_yarn.flags = {big = true, bold = true, center = true, right = true, left = true, hidden = true,
+               numbered = true, checked = true, dim = true}
+
+-- quoted string starting at s[i] == '"'; returns the text and the index after it
+function _yarn.qstring(s, i)
+  local out = ""
+  local j = i + 1
+  local n = #s
+  while j <= n do
+    local c = s:sub(j, j)
+    if c == '"' then return out, j + 1 end
+    if c == "\\" and j < n then
+      local d = s:sub(j + 1, j + 1)
+      if d == "n" then out = out .. "\n"
+      elseif d == "t" then out = out .. "  "
+      else out = out .. d end
+      j = j + 2
+    else
+      out = out .. c
+      j = j + 1
+    end
+  end
+  return out, j
+end
+
+-- number of leading spaces (a tab counts as 2)
+function _yarn.indent(s)
+  local n = 0
+  for i = 1, #s do
+    local c = s:sub(i, i)
+    if c == " " then n = n + 1
+    elseif c == "\t" then n = n + 2
+    else return n end
+  end
+  return n
+end
+
+-- one element line -> node
+function _yarn.parse_line(body, ln)
+  local n = {kind = "", args = {}, attrs = {}, styles = {}, kids = {}, line = ln}
+  local i = 1
+  local len = #body
+  local first = true
+  while i <= len do
+    local c = body:sub(i, i)
+    if c == " " or c == "\t" then
+      i = i + 1
+    elseif c == "-" and body:sub(i, i + 1) == "->" then
+      n.action = body:sub(i + 2, len):trim()
+      i = len + 1
+    elseif c == '"' then
+      local s, j = _yarn.qstring(body, i)
+      if first then n.kind = "text" first = false end
+      n.args[#n.args + 1] = s
+      i = j
+    else
+      local j = i
+      local w = ""
+      local key = nil
+      while j <= len do
+        local d = body:sub(j, j)
+        if d == " " or d == "\t" then break end
+        if d == "=" and key == nil then
+          key = w
+          w = ""
+          if body:sub(j + 1, j + 1) == '"' then
+            local s, k = _yarn.qstring(body, j + 1)
+            w = s
+            j = k
+            break
+          end
+        else
+          w = w .. d
+        end
+        j = j + 1
+      end
+      i = j
+      local lw = w:lower()
+      if first then
+        n.kind = lw
+        first = false
+      elseif key then
+        n.attrs[key:lower()] = w
+      elseif w:sub(1, 1) == "#" and #w > 1 and w:sub(2, 2):lower() ~= w:sub(2, 2):upper() then
+        n.attrs.id = w:sub(2, #w)
+      elseif w:sub(1, 1) == "." and #w > 1 and w:sub(2, 2):lower() ~= w:sub(2, 2):upper() then
+        n.styles[#n.styles + 1] = w:sub(2, #w)
+      elseif _yarn.flags[lw] then
+        n.attrs[lw] = "true"
+      else
+        n.args[#n.args + 1] = w
+      end
+    end
+  end
+  return n
+end
+
+function _yarn.err(doc, line, msg)
+  doc.errors[#doc.errors + 1] = {line = line, msg = msg}
+end
+
+_yarn.uid = 0
+
+-- give a parsed node its element-specific fields, and register its id
+function _yarn.setup(doc, n)
+  _yarn.uid = _yarn.uid + 1
+  n.uid = _yarn.uid
+  local k = n.kind
+  if k == "input" then
+    if n.attrs.id == nil and n.args[1] then n.attrs.id = n.args[1] table.remove(n.args, 1) end
+    n.value = n.attrs.value or ""
+    n.hint = n.args[1] or n.attrs.placeholder or ""
+  elseif k == "check" then
+    if n.attrs.id == nil and n.args[1] and n.args[2] then n.attrs.id = n.args[1] table.remove(n.args, 1) end
+    n.label = n.args[1] or ""
+    n.checked = n.attrs.checked == "true"
+  elseif k == "link" then
+    n.label = n.args[1] or ""
+    n.target = n.action or n.args[2] or n.label
+    n.action = nil
+  elseif k == "button" then
+    n.label = n.args[1] or "Button"
+    if n.action == nil then _yarn.err(doc, n.line, "button \"" .. n.label .. "\" has no action (add -> code)") end
+  elseif k == "image" then
+    n.src = n.args[1] or n.attrs.src
+    if n.src == nil then _yarn.err(doc, n.line, "image needs a file name") end
+  end
+  if n.attrs.id then
+    local id = n.attrs.id
+    if doc.ids[id] and doc.ids[id] ~= n then _yarn.err(doc, n.line, "the id #" .. id .. " is used twice") end
+    doc.ids[id] = n
+  end
+end
+
+-- parse source text into doc.root.kids; `into` (optional) receives the
+-- top-level elements instead (page.add)
+function _yarn.parse(src, doc, into)
+  if doc == nil then
+    doc = {root = {kind = "page", args = {}, attrs = {}, styles = {}, kids = {}, line = 0},
+           styles = {}, scripts = {}, ids = {}, errors = {}, title = "", theme = "light", pattrs = {}}
+  end
+  local root = into or doc.root
+  local lines = string.split(src or "", "\n")
+  local stack = {root}
+  local inds = {-1}
+  local i = 1
+  while i <= #lines do
+    local raw = lines[i]:replace("\r", "")
+    local body = raw:trim()
+    if body == "" or body:startswith("--") then
+      i = i + 1
+      continue
+    end
+    local ind = _yarn.indent(raw)
+    while inds[#inds] >= ind do
+      table.remove(stack)
+      table.remove(inds)
+    end
+    local parent = stack[#stack]
+    local n = _yarn.parse_line(body, i)
+    i = i + 1
+    local k = n.kind
+    -- raw blocks: script and code, and text / quote with no string
+    if k == "script" or k == "code" or ((k == "text" or k == "quote") and #n.args == 0) then
+      local block = {}
+      local minind = nil
+      while i <= #lines do
+        local r2 = lines[i]:replace("\r", "")
+        if r2:trim() ~= "" then
+          local i2 = _yarn.indent(r2)
+          if i2 <= ind then break end
+          if minind == nil or i2 < minind then minind = i2 end
+        end
+        block[#block + 1] = r2
+        i = i + 1
+      end
+      while #block > 0 and block[#block]:trim() == "" do table.remove(block) end
+      local cut = (minind or 0) + 1
+      for b = 1, #block do block[b] = block[b]:sub(cut, #block[b]) end
+      if k == "script" then
+        doc.scripts[#doc.scripts + 1] = {line = n.line + 1, src = table.concat(block, "\n")}
+      elseif k == "code" then
+        n.raw = block
+        if #n.args > 0 then n.raw = string.split(n.args[1], "\n") end
+      else
+        -- a paragraph: lines join with spaces, blank lines break
+        local para = ""
+        for _, l in ipairs(block) do
+          local t = l:trim()
+          if t == "" then para = para .. "\n"
+          elseif para == "" or para:endswith("\n") then para = para .. t
+          else para = para .. " " .. t end
+        end
+        n.args = {para}
+      end
+      if k ~= "script" then
+        _yarn.setup(doc, n)
+        parent.kids[#parent.kids + 1] = n
+      end
+      continue
+    end
+    if k == "style" then
+      local name = n.args[1]
+      if name == nil then _yarn.err(doc, n.line, "style needs a name: style NAME color=... bg=...")
+      else doc.styles[name:lower()] = n.attrs end
+      continue
+    end
+    if k == "page" and into == nil then
+      if n.args[1] then doc.title = n.args[1] end
+      if n.attrs.theme then doc.theme = n.attrs.theme:lower() end
+      if _yarn.themes[doc.theme] == nil then
+        _yarn.err(doc, n.line, "unknown theme '" .. doc.theme .. "' (light, dark, paper, ocean, forest)")
+        doc.theme = "light"
+      end
+      doc.pattrs = n.attrs
+    end
+    if _yarn.kinds[k] == nil then
+      _yarn.err(doc, n.line, "unknown element '" .. k .. "'")
+      n.kind = "box"
+      n.bad = true
+    end
+    _yarn.setup(doc, n)
+    parent.kids[#parent.kids + 1] = n
+    stack[#stack + 1] = n
+    inds[#inds + 1] = ind
+  end
+  return doc
+end
+
+-- the text of an element (for page.get)
+function _yarn.text_of(n)
+  if n.label then return n.label end
+  if n.raw then return table.concat(n.raw, "\n") end
+  return table.concat(n.args, " ")
+end
+
+-- an element's attributes: element-kind style, its named styles, its own
+function _yarn.eff(doc, n)
+  if n.eff then return n.eff end
+  local a = {}
+  local ks = doc.styles[n.kind]
+  if ks then for k, v in pairs(ks) do a[k] = v end end
+  local names = {}
+  for _, s in ipairs(n.styles) do names[#names + 1] = s end
+  if n.attrs.style then names[#names + 1] = n.attrs.style end
+  for _, s in ipairs(names) do
+    local st = doc.styles[s:lower()]
+    if st then for k, v in pairs(st) do a[k] = v end end
+  end
+  for k, v in pairs(n.attrs) do a[k] = v end
+  n.eff = a
+  return a
+end
+
+function _yarn.hidden(doc, n)
+  if n.hide ~= nil then return n.hide end
+  return _yarn.eff(doc, n).hidden == "true"
+end
+
+-- "50%" or "200" (pixels) within `avail`; nil when not set
+function _yarn.size(v, avail)
+  if v == nil then return nil end
+  if v:endswith("%") then
+    local p = tonumber(v:sub(1, #v - 1))
+    if p then return math.floor(avail * p / 100) end
+    return nil
+  end
+  local px = tonumber(v:replace("px", ""))
+  if px then return math.floor(px) end
+  return nil
+end
+
+-- --- layout -------------------------------------------------------------------------
+
+function _yarn.op(v, o)
+  v.ops[#v.ops + 1] = o
+  return o
+end
+
+function _yarn.layout(doc, width)
+  local th = _yarn.theme(doc.theme, doc.pattrs)
+  local v = {ops = {}, hits = {}, height = 0, th = th, doc = doc, width = width, links = 0}
+  local m = 28
+  if width < 480 then m = 12 end
+  local ctx = {fg = th.text, align = "left"}
+  local h = _yarn.lay_kids(v, doc.root, m, 20, width - 2 * m, ctx)
+  v.height = h + 40
+  return v
+end
+
+function _yarn.gap(n)
+  local k = n.kind
+  if k == "heading" then return 18 end
+  if k == "title" or k == "subheading" then return 14 end
+  if k == "space" then return 0 end
+  return 10
+end
+
+function _yarn.lay_kids(v, n, x, y, w, ctx)
+  local y0 = y
+  local first = true
+  for _, k in ipairs(n.kids) do
+    if not _yarn.hidden(v.doc, k) then
+      if not first then y = y + _yarn.gap(k) end
+      local h = _yarn.lay(v, k, x, y, w, ctx)
+      y = y + h
+      first = false
+    end
+  end
+  return y - y0
+end
+
+-- lay out element n at (x, y) in width w; returns its height
+function _yarn.lay(v, n, x, y, w, ctx)
+  local th = v.th
+  local a = _yarn.eff(v.doc, n)
+  local k = n.kind
+  local wd = _yarn.size(a.width, w)
+  if wd and wd < w and k ~= "input" then
+    -- a narrower element; align=center / right move it
+    local al = a.align or ctx.align
+    if a.center then al = "center" end
+    if al == "center" then x = x + (w - wd) // 2 elseif al == "right" then x = x + w - wd end
+    w = wd
+  end
+  local pad = tonumber(a.pad)
+  local bg = _yarn.colour(a.bg, th)
+  local bd = _yarn.colour(a.border, th)
+  if k == "box" then
+    if pad == nil then pad = 14 end
+    if bg == nil and a.bg == nil then bg = th.card end
+    if bd == nil and a.border == nil then bd = th.border end
+  end
+  if k == "page" then
+    -- the page's bg / color set the whole page (see _yarn.theme)
+    bg = nil
+    bd = nil
+    pad = 0
+  end
+  if n.bad then bd = gfx.hex("#e5534b") end
+  if pad == nil then
+    pad = 0
+    if bg or bd then pad = 6 end
+  end
+  local bgop = nil
+  if bg or bd then bgop = _yarn.op(v, {op = "box", x = x, y = y, w = w, h = 0, bg = bg, bd = bd}) end
+  -- inherited text colour and alignment
+  local c2 = ctx
+  local fg = nil
+  if k ~= "page" then fg = _yarn.colour(a.color, th) end
+  if a.dim then fg = th.dim end
+  local al = a.align
+  if a.center or k == "center" then al = "center" end
+  if a.right then al = "right" end
+  if a.left then al = "left" end
+  if fg or al then
+    c2 = {fg = fg or ctx.fg, align = al or ctx.align}
+  end
+  n.y = y
+  local h = _yarn.lay_inner(v, n, a, x + pad, y + pad, w - 2 * pad, c2) + 2 * pad
+  if bgop then bgop.h = h end
+  return h
+end
+
+function _yarn.lay_inner(v, n, a, x, y, w, ctx)
+  local th = v.th
+  local k = n.kind
+  if k == "page" or k == "box" or k == "column" or k == "center" then
+    return _yarn.lay_kids(v, n, x, y, w, ctx)
+  elseif k == "row" then
+    return _yarn.lay_row(v, n, x, y, w, ctx)
+  elseif k == "title" then
+    local fg = ctx.fg
+    if fg == th.text then fg = th.head end
+    return _yarn.flow(v, _yarn.text_of(n), x, y, w, fg, 2, a.bold == "true", ctx.align, nil)
+  elseif k == "heading" then
+    local fg = ctx.fg
+    if fg == th.text then fg = th.head end
+    local h = _yarn.flow(v, _yarn.text_of(n), x, y, w, fg, 1, true, ctx.align, nil)
+    _yarn.op(v, {op = "fill", x = x, y = y + h + 3, w = w, h = 1, c = th.border})
+    return h + 4
+  elseif k == "subheading" then
+    local fg = ctx.fg
+    if fg == th.text then fg = th.head end
+    return _yarn.flow(v, _yarn.text_of(n), x, y, w, fg, 1, true, ctx.align, nil)
+  elseif k == "text" then
+    local sc = 1
+    if a.big then sc = 2 end
+    return _yarn.flow(v, _yarn.text_of(n), x, y, w, ctx.fg, sc, a.bold == "true", ctx.align, nil)
+  elseif k == "quote" then
+    local fg = ctx.fg
+    if fg == th.text then fg = th.dim end
+    local h = _yarn.flow(v, _yarn.text_of(n), x + 14, y, w - 14, fg, 1, a.bold == "true", ctx.align, nil)
+    _yarn.op(v, {op = "fill", x = x, y = y, w = 3, h = h - 2, c = th.border})
+    return h
+  elseif k == "link" then
+    return _yarn.flow(v, n.label, x, y, w, th.accent, 1, a.bold == "true", ctx.align, n.target)
+  elseif k == "item" then
+    local h = _yarn.flow(v, _yarn.text_of(n), x, y, w, ctx.fg, 1, a.bold == "true", ctx.align, nil)
+    if #n.kids > 0 then h = h + 4 + _yarn.lay_kids(v, n, x, y + h + 4, w, ctx) end
+    return h
+  elseif k == "list" then
+    return _yarn.lay_list(v, n, a, x, y, w, ctx)
+  elseif k == "code" then
+    local fg = _yarn.colour(a.color, th) or th.text
+    local maxc = math.max(1, (w - 16) // 8)
+    local lines = n.raw or {}
+    local bg = _yarn.op(v, {op = "fill", x = x, y = y, w = w, h = #lines * 18 + 14, c = th.codebg})
+    for i, l in ipairs(lines) do
+      if #l > maxc then l = l:sub(1, maxc - 1) .. ">" end
+      _yarn.op(v, {op = "text", x = x + 8, y = y + 7 + (i - 1) * 18, s = l, fg = fg, sc = 1})
+    end
+    return bg.h
+  elseif k == "button" then
+    local bw = #n.label * 8 + 28
+    local bx = _yarn.alignx(x, w, bw, ctx.align)
+    local bg = _yarn.colour(a.bg, th) or th.button
+    local fg = _yarn.colour(a.color, th) or th.ontext
+    _yarn.op(v, {op = "button", x = bx, y = y, w = bw, h = 26, s = n.label, bg = bg, fg = fg, key = n.uid, bd = th.border})
+    v.hits[#v.hits + 1] = {x = bx, y = y, w = bw, h = 26, kind = "button", n = n, key = n.uid}
+    return 26
+  elseif k == "input" then
+    local iw = _yarn.size(a.width, w) or math.min(w, 260)
+    if iw > w then iw = w end
+    local ix = _yarn.alignx(x, w, iw, ctx.align)
+    _yarn.op(v, {op = "input", x = ix, y = y, w = iw, h = 26, n = n, key = n.uid})
+    v.hits[#v.hits + 1] = {x = ix, y = y, w = iw, h = 26, kind = "input", n = n, key = n.uid}
+    return 26
+  elseif k == "check" then
+    local cw = 22 + #n.label * 8
+    local cx = _yarn.alignx(x, w, cw, ctx.align)
+    _yarn.op(v, {op = "check", x = cx, y = y, w = cw, h = 18, n = n, s = n.label, fg = ctx.fg, key = n.uid})
+    v.hits[#v.hits + 1] = {x = cx, y = y, w = cw, h = 18, kind = "check", n = n, key = n.uid}
+    return 18
+  elseif k == "image" then
+    return _yarn.lay_image(v, n, a, x, y, w, ctx)
+  elseif k == "divider" then
+    _yarn.op(v, {op = "fill", x = x, y = y + 6, w = w, h = 1, c = th.border})
+    return 13
+  elseif k == "space" then
+    return math.floor((tonumber(n.args[1]) or 1) * 16)
+  end
+  return 0
+end
+
+function _yarn.alignx(x, w, iw, align)
+  if align == "center" then return x + (w - iw) // 2 end
+  if align == "right" then return x + w - iw end
+  return x
+end
+
+-- children side by side: set widths first, the rest share what is left
+function _yarn.lay_row(v, n, x, y, w, ctx)
+  local kids = {}
+  for _, k in ipairs(n.kids) do
+    if not _yarn.hidden(v.doc, k) then kids[#kids + 1] = k end
+  end
+  if #kids == 0 then return 0 end
+  local gap = tonumber(_yarn.eff(v.doc, n).gap) or 14
+  local avail = w - gap * (#kids - 1)
+  local widths = {}
+  local free = avail
+  local nfree = 0
+  for i, k in ipairs(kids) do
+    local kw = _yarn.size(_yarn.eff(v.doc, k).width, avail)
+    widths[i] = kw
+    if kw then free = free - kw else nfree = nfree + 1 end
+  end
+  for i = 1, #kids do
+    if widths[i] == nil then widths[i] = math.max(8, free // math.max(1, nfree)) end
+  end
+  local cx = x
+  local h = 0
+  for i, k in ipairs(kids) do
+    -- the element's own width= has been used here
+    local saved = _yarn.eff(v.doc, k).width
+    k.eff.width = nil
+    local kh = _yarn.lay(v, k, cx, y, widths[i], ctx)
+    k.eff.width = saved
+    if kh > h then h = kh end
+    cx = cx + widths[i] + gap
+  end
+  return h
+end
+
+function _yarn.lay_list(v, n, a, x, y, w, ctx)
+  local th = v.th
+  local y0 = y
+  local num = 0
+  local first = true
+  for _, k in ipairs(n.kids) do
+    if not _yarn.hidden(v.doc, k) then
+      if not first then y = y + 6 end
+      first = false
+      if k.kind == "item" then
+        num = num + 1
+        if a.numbered then
+          local s = num .. "."
+          _yarn.op(v, {op = "text", x = x + 18 - #s * 8 + 4, y = y, s = s, fg = th.dim, sc = 1})
+        else
+          _yarn.op(v, {op = "fill", x = x + 7, y = y + 6, w = 4, h = 4, c = ctx.fg})
+        end
+        y = y + _yarn.lay(v, k, x + 26, y, w - 26, ctx)
+      else
+        y = y + _yarn.lay(v, k, x + 26, y, w - 26, ctx)
+      end
+    end
+  end
+  return y - y0
+end
+
+function _yarn.lay_image(v, n, a, x, y, w, ctx)
+  local th = v.th
+  if n.img == nil and n.imgerr == nil and n.src then
+    local p = n.src
+    if p:sub(1, 1) ~= "/" and v.doc.base then p = v.doc.base .. "/" .. p end
+    local img, err = image.load(p)
+    if img then n.img = img else n.imgerr = tostring(err) end
+  end
+  if n.img == nil then
+    local msg = "[image " .. tostring(n.src) .. ": " .. tostring(n.imgerr) .. "]"
+    return _yarn.flow(v, msg, x, y, w, th.dim, 1, false, ctx.align, nil)
+  end
+  local iw, ih = image.size(n.img)
+  local sc = tonumber(a.scale)
+  local want = _yarn.size(a.width, w)
+  if want then sc = want / iw end
+  if sc == nil then
+    sc = 1
+    -- small pictures are shown larger, whole pixels at a time
+    while iw * (sc + 1) <= math.min(w, 320) and sc < 8 do sc = sc + 1 end
+  end
+  if iw * sc > w then sc = w / iw end
+  local dw = math.floor(iw * sc)
+  local ix = _yarn.alignx(x, w, dw, ctx.align)
+  _yarn.op(v, {op = "image", x = ix, y = y, w = dw, h = math.floor(ih * sc), img = n.img, sc = sc})
+  return math.floor(ih * sc)
+end
+
+-- --- inline text --------------------------------------------------------------------
+
+-- "**bold**, `code` and [links](target)" -> runs {s, b, c, t, lk}
+function _yarn.inline(v, s, target)
+  local runs = {}
+  local cur = ""
+  local bold = false
+  local lk = nil
+  if target then
+    v.links = v.links + 1
+    lk = v.links
+  end
+  local i = 1
+  local n = #s
+  while i <= n do
+    local c = s:sub(i, i)
+    if c == "*" and s:sub(i + 1, i + 1) == "*" then
+      if cur ~= "" then runs[#runs + 1] = {s = cur, b = bold, t = target, lk = lk} end
+      cur = ""
+      bold = not bold
+      i = i + 2
+    elseif c == "`" and string.find(s, "`", i + 1) then
+      local j = string.find(s, "`", i + 1)
+      if cur ~= "" then runs[#runs + 1] = {s = cur, b = bold, t = target, lk = lk} end
+      cur = ""
+      runs[#runs + 1] = {s = s:sub(i + 1, j - 1), b = bold, c = true, t = target, lk = lk}
+      i = j + 1
+    elseif c == "[" and string.find(s, "](", i + 1) and target == nil then
+      local j = string.find(s, "](", i + 1)
+      local e = string.find(s, ")", j + 2)
+      if e then
+        if cur ~= "" then runs[#runs + 1] = {s = cur, b = bold} end
+        cur = ""
+        v.links = v.links + 1
+        runs[#runs + 1] = {s = s:sub(i + 1, j - 1), b = bold, t = s:sub(j + 2, e - 1):trim(), lk = v.links}
+        i = e + 1
+      else
+        cur = cur .. c
+        i = i + 1
+      end
+    elseif c == "\\" and i < n then
+      cur = cur .. s:sub(i + 1, i + 1)
+      i = i + 2
+    else
+      cur = cur .. c
+      i = i + 1
+    end
+  end
+  if cur ~= "" or #runs == 0 then runs[#runs + 1] = {s = cur, b = bold, t = target, lk = lk} end
+  return runs
+end
+
+-- word-wrap text into width w at (x, y); returns the height used
+function _yarn.flow(v, s, x, y, w, fg, sc, bold, align, target)
+  local runs = _yarn.inline(v, s, target)
+  local cw = 8 * sc
+  local lh = 18 * sc
+  local maxc = math.max(1, w // cw)
+  local line = {}
+  local col = 0
+  local ly = y
+  for _, r in ipairs(runs) do
+    local txt = r.s
+    local j = 1
+    local tn = #txt
+    while j <= tn do
+      local ch = txt:sub(j, j)
+      if ch == "\n" then
+        _yarn.flush(v, line, x, ly, w, align, sc, fg, bold)
+        line = {}
+        col = 0
+        ly = ly + lh
+        j = j + 1
+      elseif ch == " " then
+        if col > 0 then
+          line[#line + 1] = {s = " ", r = r}
+          col = col + 1
+        end
+        j = j + 1
+      else
+        local e = j
+        while e <= tn and txt:sub(e, e) ~= " " and txt:sub(e, e) ~= "\n" do e = e + 1 end
+        local word = txt:sub(j, e - 1)
+        if col + #word > maxc and col > 0 then
+          _yarn.flush(v, line, x, ly, w, align, sc, fg, bold)
+          line = {}
+          col = 0
+          ly = ly + lh
+        end
+        while #word > maxc do
+          line[#line + 1] = {s = word:sub(1, maxc), r = r}
+          _yarn.flush(v, line, x, ly, w, align, sc, fg, bold)
+          line = {}
+          ly = ly + lh
+          word = word:sub(maxc + 1, #word)
+        end
+        line[#line + 1] = {s = word, r = r}
+        col = col + #word
+        j = e
+      end
+    end
+  end
+  _yarn.flush(v, line, x, ly, w, align, sc, fg, bold)
+  return ly - y + lh
+end
+
+-- emit one wrapped line: consecutive pieces of the same run become one op
+function _yarn.flush(v, line, x, y, w, align, sc, fg, bold)
+  while #line > 0 and line[#line].s == " " do table.remove(line) end
+  if #line == 0 then return end
+  local th = v.th
+  local cw = 8 * sc
+  local total = 0
+  for _, p in ipairs(line) do total = total + #p.s end
+  local cx = _yarn.alignx(x, w, total * cw, align)
+  local i = 1
+  while i <= #line do
+    local r = line[i].r
+    local s = line[i].s
+    local j = i + 1
+    while j <= #line and line[j].r == r do
+      s = s .. line[j].s
+      j = j + 1
+    end
+    local o = {op = "text", x = cx, y = y, s = s, fg = fg, sc = sc, b = bold or r.b}
+    if r.c then o.fg = th.code o.bg = th.codebg end
+    if r.t then
+      if not r.c then o.fg = th.accent end
+      o.lk = r.lk
+      v.hits[#v.hits + 1] = {x = cx, y = y, w = #s * cw, h = 16 * sc + 2, kind = "link", target = r.t, key = r.lk}
+    end
+    _yarn.op(v, o)
+    cx = cx + #s * cw
+    i = j
+  end
+end
+
+-- --- drawing ------------------------------------------------------------------------
+
+-- draw the part of the page from `scroll` in the rectangle (x0, y0, w, h);
+-- `hover` is the key of the link / button under the pointer, `focus` the
+-- focused input node
+function _yarn.draw(win, v, x0, y0, w, h, scroll, hover, focus)
+  local th = v.th
+  gfx.fill(win, x0, y0, w, h, th.bg)
+  local top = scroll
+  local bot = scroll + h
+  for _, o in ipairs(v.ops) do
+    local oh = o.h or 18 * (o.sc or 1)
+    if o.y + oh > top and o.y < bot then
+      local dx = x0 + o.x
+      local dy = y0 + o.y - scroll
+      local kind = o.op
+      if kind == "text" then
+        if o.bg then gfx.fill(win, dx, dy, #o.s * 8 * o.sc, 16 * o.sc, o.bg) end
+        gfx.text(win, dx, dy, o.s, o.fg, nil, o.sc)
+        if o.b then gfx.text(win, dx + 1, dy, o.s, o.fg, nil, o.sc) end
+        if o.lk and o.lk == hover then gfx.fill(win, dx, dy + 16 * o.sc, #o.s * 8 * o.sc, o.sc, o.fg) end
+      elseif kind == "fill" then
+        gfx.fill(win, dx, dy, o.w, o.h, o.c)
+      elseif kind == "box" then
+        if o.bg then gfx.fill(win, dx, dy, o.w, o.h, o.bg) end
+        if o.bd then gfx.rect(win, dx, dy, o.w, o.h, o.bd) end
+      elseif kind == "disc" then
+        gfx.disc(win, dx, dy, o.r, o.c)
+      elseif kind == "image" then
+        gfx.image(win, o.img, dx, dy, o.sc)
+      elseif kind == "button" then
+        local bg = o.bg
+        gfx.fill(win, dx, dy, o.w, o.h, bg)
+        if o.key == hover then gfx.rect(win, dx, dy, o.w, o.h, o.fg) end
+        gfx.text(win, dx + 14, dy + 5, o.s, o.fg)
+      elseif kind == "input" then
+        local n = o.n
+        gfx.fill(win, dx, dy, o.w, o.h, th.field)
+        local bc = th.border
+        if focus == n or o.key == hover then bc = th.accent end
+        gfx.rect(win, dx, dy, o.w, o.h, bc)
+        if focus == n then gfx.rect(win, dx + 1, dy + 1, o.w - 2, o.h - 2, bc) end
+        local maxc = math.max(1, (o.w - 16) // 8)
+        local s = n.value
+        if s == "" and focus ~= n then
+          gfx.text(win, dx + 8, dy + 5, n.hint:sub(1, maxc), th.dim)
+        else
+          if #s >= maxc then s = s:sub(#s - maxc + 2, #s) end
+          gfx.text(win, dx + 8, dy + 5, s, th.text)
+          if focus == n then gfx.fill(win, dx + 8 + #s * 8, dy + 5, 2, 16, th.accent) end
+        end
+      elseif kind == "check" then
+        local n = o.n
+        local bc = th.border
+        if o.key == hover then bc = th.accent end
+        gfx.fill(win, dx, dy + 2, 14, 14, th.field)
+        gfx.rect(win, dx, dy + 2, 14, 14, bc)
+        if n.checked then gfx.fill(win, dx + 3, dy + 5, 8, 8, th.accent) end
+        gfx.text(win, dx + 22, dy + 1, o.s, o.fg)
+      end
+    end
+  end
+end
+
+-- the link / button / input / checkbox at page point (x, y), or nil
+function _yarn.hit(v, x, y)
+  for i = #v.hits, 1, -1 do
+    local h = v.hits[i]
+    if x >= h.x and x < h.x + h.w and y >= h.y and y < h.y + h.h then return h end
+  end
+  return nil
+end
+
+-- `say "hi"` -> `say("hi")`, so actions can use the short call form
+function _yarn.fixcall(code)
+  local i = string.find(code, ' "')
+  if i == nil or string.find(code, "(") then return code end
+  local name = code:sub(1, i - 1)
+  for j = 1, #name do
+    local c = name:sub(j, j)
+    if not (c:lower() ~= c:upper() or c == "_" or c == "." or (c >= "0" and c <= "9")) then return code end
+  end
+  return name .. "(" .. code:sub(i + 1, #code) .. ")"
+end
+
+return _yarn

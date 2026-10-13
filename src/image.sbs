@@ -389,7 +389,7 @@ proc img_draw(h, sx, sy, scale) {
                     local rx1 = floor(sx + (x + n) * scale);
                     if (rx0 < cl_x0) { rx0 = cl_x0; }
                     if (rx1 > cl_x1) { rx1 = cl_x1; }
-                    if (rx1 > rx0) { gfx_rgb_fill(rx0, ry0, rx1 - rx0, ry1 - ry0, c); }
+                    if (rx1 > rx0) { rgb_clipped(rx0, ry0, rx1, ry1, c); }
                 }
                 x += n;
             }

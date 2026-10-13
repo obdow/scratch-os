@@ -23,7 +23,7 @@
 // changes (rv_valid = 0).
 // ===========================================================================
 
-list tab_kind;            // 0 Whisker program, 1 text file
+list tab_kind;            // 0 Whisker program, 1 text file, 2 Yarn page
 list tab_view;            // 0 editor, 1 preview
 list tab_rtop;            // preview scroll position per tab
 
@@ -38,10 +38,11 @@ var rv_w = 0;
 var rv_top = 1;
 var rv_follow = 0;        // 1: scroll the preview to the cursor line (find / go to)
 
-// 1 when the path is a text file rather than a Whisker program
+// the tab kind for a path: 0 a Whisker program, 1 a text file, 2 a Yarn page
 proc path_is_text(p) {
     local n = len(p);
     if (n > 4 && substr(p, n - 3, n) == ".wsk") { return 0; }
+    if (n > 5 && substr(p, n - 4, n) == ".yarn") { return 2; }
     return 1;
 }
 
@@ -365,8 +366,8 @@ proc preview_key(ev) {
 // 0 editor, 1 preview, for the current text tab
 proc set_view(v) {
     if (cur_tab == 0) { return; }
-    if (tab_kind[cur_tab] == 0) {
-        if (v == 1) { ide_status("Preview is for text files; .wsk files open in the editor"); }
+    if (tab_kind[cur_tab] != 1) {
+        if (v == 1) { ide_status("Preview is for text files; Run shows a .yarn page in the Browser"); }
         return;
     }
     if (v == tab_view[cur_tab]) { return; }

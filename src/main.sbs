@@ -36,6 +36,7 @@ sprite Kernel {
     include "wm.sbs";
     include "ide/ide.sbs";          // the Whisker IDE, as a desktop app
     include "ide/textview.sbs";
+    include "ide/yarnhl.sbs";          // Yarn pages in the IDE
 
     var con = 0;            // console tty
     var frames = 0;

@@ -147,15 +147,15 @@ proc gfx_rgb_fill(x, y, w, h, rgb) {
         local xa = x - HALF_W;
         local xb = x + w - 1 - HALF_W;
         for r = 0 to h - 1 {
-            local py = HALF_H - (y + r);
+            local py = HALF_H - (y + r) - 1;
             goto(xa, py);
             pen_down();
             goto(xb, py);
             pen_up();
         }
     } else {
-        local ya = HALF_H - y;
-        local yb = HALF_H - (y + h - 1);
+        local ya = HALF_H - y - 1;
+        local yb = HALF_H - (y + h);
         for c = 0 to w - 1 {
             local px = x + c - HALF_W;
             goto(px, ya);
@@ -169,7 +169,22 @@ proc gfx_rgb_fill(x, y, w, h, rgb) {
 
 // palette index whose colour is nearest to an RGB value (for text, which is
 // stamped from costumes)
+list gn_key;               // gfx_nearest cache: RGB values ...
+list gn_val;               // ... and their palette indices
+var gn_theme = -1;
+
 proc gfx_nearest(rgb) {
+    if (gn_theme != theme) { clear(gn_key); clear(gn_val); gn_theme = theme; }
+    local k = index(gn_key, rgb);
+    if (k > 0) { return gn_val[k]; }
+    if (len(gn_key) > 200) { clear(gn_key); clear(gn_val); }
+    local best = gfx_nearest_scan(rgb);
+    add(gn_key, rgb);
+    add(gn_val, best);
+    return best;
+}
+
+proc gfx_nearest_scan(rgb) {
     local r = floor(rgb / 65536);
     local g = floor(rgb / 256) % 256;
     local b = rgb % 256;

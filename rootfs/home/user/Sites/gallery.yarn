@@ -1,0 +1,18 @@
+page "Gallery" theme=dark
+  link "< Home" -> index.yarn
+  title "Gallery"
+  text "Pictures from ~/Pictures. Click a name to show just that one." dim
+  row
+    link "Sunset" -> #sunset
+    link "Mountains" -> #mountains
+    link "Spectrum" -> #spectrum
+  space
+  box #sunset
+    subheading "Sunset over the sea"
+    image ../Pictures/sunset.simg scale=2
+  box #mountains
+    subheading "Mountains"
+    image ../Pictures/mountains.simg scale=2
+  box #spectrum
+    subheading "Spectrum"
+    image ../Pictures/spectrum.simg scale=3

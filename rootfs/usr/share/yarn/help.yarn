@@ -1,0 +1,90 @@
+-- about:help - the Yarn guide (it is itself a Yarn page: press Source)
+page "Yarn guide"
+  style eg bg=codebg pad=10
+  title "Yarn" #top
+  text "Yarn is the ScratchOS language for web pages. A page is a list of **elements**, one per line. Indenting a line puts it **inside** the element above it. Lines starting with `--` are comments."
+  code
+    page "My Site" theme=light
+      title "Welcome"
+      text "Hello, **world**!"
+      link "About me" -> about.yarn
+      button "Click" -> say("Hi!")
+
+  heading "Text"
+  list
+    item "`title`, `heading`, `subheading` - headings, from large to small"
+    item "`text \"...\"` - a paragraph; a line that starts with a quote is text too"
+    item "`quote`, `code` - a quotation, and lines of code shown as they are"
+    item "In text: `**bold**`, backquotes around `code`, and links: `[label](page.yarn)`"
+  text "Write long paragraphs as indented lines under `text` with no quotes. A blank line starts a new paragraph."
+
+  heading "Layout"
+  list
+    item "`box` - a card with padding, a background and a border"
+    item "`row` - its children side by side; `column` groups elements in a row"
+    item "`center` - centres everything inside it"
+    item "`list` with `item`s (add `numbered` for 1. 2. 3.)"
+    item "`divider` - a line;  `space` or `space 3` - empty lines"
+    item "`image cat.simg` - a picture (`scale=2` or `width=50%`)"
+  row
+    box
+      text "A **box**"
+    box bg=blue color=white
+      text "with bg=blue"
+    box .eg
+      text "and a style"
+
+  heading "Attributes"
+  text "Add `key=value` after an element, or a switch word:"
+  list
+    item "`color=red`, `bg=#202840` - colours: names, `#rgb` / `#rrggbb`, or theme colours (text, dim, accent, card, border...)"
+    item "`align=center` (or `center`, `right`), `width=40%` or `width=200`, `pad=12`, `border=gray`"
+    item "`bold`, `big`, `dim`, `hidden`"
+    item "`#name` gives an element an id; `.name` applies a style"
+  text "Styles are named sets of attributes, defined anywhere in the page:"
+  code
+    style note color=dim bg=card pad=8
+    text "A note" .note
+    style heading color=accent      -- a style named after an element applies to all of them
+  text "Themes: `page \"Title\" theme=dark` - light, dark, paper, ocean or forest. The page can also set bg=, color= and accent=."
+
+  heading "Links and forms"
+  list
+    item "`link \"About\" -> about.yarn` - paths are relative to the page; `-> #id` scrolls to an element"
+    item "`button \"Go\" -> code` - runs Whisker code when clicked"
+    item "`input name \"placeholder\"` - a text field (Enter runs its `-> code`)"
+    item "`check agree \"I agree\"` - a checkbox (`checked` to start ticked)"
+
+  heading "Scripts" #scripts
+  text "A `script` block holds Whisker code. It runs when the page opens; its functions can be called from buttons. A function called `onload` runs once the page is shown."
+  code
+    input name "Your name" -> greet()
+    button "Greet" -> greet()
+    text "" #out
+    script
+      function greet()
+        page.set("out", "Hello, " .. page.get("name") .. "!")
+      end
+  box .eg
+    input name "Your name" -> greet()
+    space
+    button "Greet" -> greet()
+    text "" #out
+  script
+    function greet()
+      local n = page.get("name")
+      if n == "" then n = "stranger" end
+      page.set("out", "Hello, " .. n .. "!")
+    end
+  subheading "The page API"
+  list
+    item "`page.get(id)`, `page.set(id, value)` - text, field values, checkboxes"
+    item "`page.show(id)`, `page.hide(id)`, `page.toggle(id)`, `page.visible(id)`"
+    item "`page.attr(id, key, value)`, `page.style(id, name)`"
+    item "`page.add(id, yarn)` adds elements to a box or list; `page.clear(id)` empties it"
+    item "`page.go(url)`, `page.back()`, `page.reload()`, `page.url()`, `page.title([text])`"
+    item "`say(message)` shows a message at the top of the page"
+  text "Scripts are full Whisker programs: they can use `fs`, `image`, `math` and the rest of the library."
+  divider
+  text "Check a page for mistakes with **Check syntax** in the IDE, or `browser --check page.yarn`. See also `man yarn`." dim
+  link "Back to the top" -> #top

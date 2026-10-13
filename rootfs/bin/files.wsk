@@ -20,6 +20,7 @@ local C = {
 local home = fs.abs(os.getenv("HOME") or "/")
 local PLACES = {
   {"Home", home}, {"Projects", home .. "/projects"}, {"Pictures", home .. "/Pictures"},
+  {"Sites", home .. "/Sites"},
   {"Examples", home .. "/examples"},
   {"Applications", "/bin"}, {"Documents", "/usr/share/doc/whisker"}, {"System", "/etc"},
   {"Temporary", "/tmp"}, {"ScratchOS HD", "/"},
@@ -45,6 +46,7 @@ local function kind(it)
   if it.name:endswith(".wsk") then return "Whisker program" end
   if it.name:endswith(".txt") then return "Text document" end
   if it.name:endswith(".simg") then return "Picture" end
+  if it.name:endswith(".yarn") then return "Web page" end
   if it.name:endswith(".sh") then return "Shell script" end
   return "Document"
 end
@@ -129,7 +131,8 @@ local function draw()
       local icon, ic = "≡", dimc
       if it.dir then icon, ic = "■", C.folder
       elseif it.name:endswith(".wsk") then icon, ic = "♦", C.accent
-      elseif it.name:endswith(".simg") then icon, ic = "▲", C.folder end
+      elseif it.name:endswith(".simg") then icon, ic = "▲", C.folder
+      elseif it.name:endswith(".yarn") then icon, ic = "@", C.accent end
       if i == sel then ic = C.ontext end
       gfx.text(win, nx, y, icon, ic)
       gfx.text(win, nx + 18, y, it.name, fg)
@@ -191,6 +194,9 @@ local function open(it)
   elseif it.name:endswith(".simg") then
     gui.launch("preview " .. it.path)
     status = "Opened " .. it.name .. " in Preview"
+  elseif it.name:endswith(".yarn") then
+    gui.launch("browser " .. it.path)
+    status = "Opened " .. it.name .. " in the Browser (Open in IDE to edit it)"
   elseif it.name:endswith(".wsk") or it.name:endswith(".txt") then
     gui.ide(it.path)
     status = "Opened " .. it.name .. " in the Whisker IDE"

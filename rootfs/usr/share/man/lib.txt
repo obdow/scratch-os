@@ -14,7 +14,7 @@ PROC     spawn(cmd) -> pid   wait(pid) -> code   kill(pid)  list()
          run(cmd) -> output, code     alive(pid)   pid()
 TERM     clear color(fg, bg) goto(x, y) size() -> w, h  raw(on)
          getkey() waitkey() cursor(on) put(x, y, s, fg, bg) getpos()
-GUI      window(title, w, h) -> win   close(win)  event(win)
+GUI      window(title, w, h) -> win   close(win)  event(win)  track(win)
          waitevent(win)  size(win) title(win, s) active()
          terminal(cmd) opens a terminal window running cmd
 GFX      clear(win, c) pixel(win, x, y, c) line(win, x1, y1, x2, y2, c)

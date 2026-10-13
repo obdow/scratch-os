@@ -61,6 +61,7 @@ list win_sw;
 list win_sh;
 list win_auto;        // terminal: close the window when its programs exit
 list win_bg;          // canvas background colour
+list win_trk;         // 1: the canvas gets "move" events (gui.track)
 list win_app;         // dock item the window belongs to (0 none)
 
 list wz;              // z order, bottom -> top (window ids)
@@ -141,13 +142,13 @@ list wmi_cmd;
 
 // --- dock ------------------------------------------------------------------------
 //   icon: one or two characters drawn at double size on a coloured tile
-list dk_name = ["Finder", "Terminal", "Whisker IDE", "TextEdit", "Paint", "Preview", "Clock", "3D Cube",
+list dk_name = ["Finder", "Terminal", "Whisker IDE", "TextEdit", "Paint", "Preview", "Browser", "Clock", "3D Cube",
                 "Snake", "Matrix", "Activity Monitor", "System Settings"];
-list dk_cmd = ["files", "@term", "@ide", "@term edit", "paint", "preview", "clock", "cube",
+list dk_cmd = ["files", "@term", "@ide", "@term edit", "paint", "preview", "browser", "clock", "cube",
                "@term snake", "@term matrix", "taskmgr", "@settings"];
-list dk_icon = ["☺", ">_", "{}", "Aa", "♥", "☼▲", "12", "♦", "~☼", "01", "▄█", "≡"];
-list dk_bgn = ["blue", "dark", "purple", "white", "orange", "blue", "white", "dark", "green", "dark", "dark", "grey"];
-list dk_fgn = ["white", "white", "white", "dark", "white", "white", "dark", "blue", "white", "green", "green", "white"];
+list dk_icon = ["☺", ">_", "{}", "Aa", "♥", "☼▲", "@", "12", "♦", "~☼", "01", "▄█", "≡"];
+list dk_bgn = ["blue", "dark", "purple", "white", "orange", "blue", "white", "white", "dark", "green", "dark", "dark", "grey"];
+list dk_fgn = ["white", "white", "white", "dark", "white", "white", "blue", "dark", "blue", "white", "green", "green", "white"];
 var dk_x0 = 0;        // dock panel columns
 var dk_x1 = 0;
 var dk_hover = 0;     // icon under the pointer (tooltip)
@@ -155,11 +156,11 @@ var dk_hover = 0;     // icon under the pointer (tooltip)
 proc wm_init() {
     clear(win_used); clear(win_x); clear(win_y); clear(win_w); clear(win_h); clear(win_title);
     clear(win_kind); clear(win_tty); clear(win_pid); clear(win_dl); clear(win_min); clear(win_max);
-    clear(win_sx); clear(win_sy); clear(win_sw); clear(win_sh); clear(win_auto); clear(win_bg); clear(win_app);
+    clear(win_sx); clear(win_sy); clear(win_sw); clear(win_sh); clear(win_auto); clear(win_bg); clear(win_trk); clear(win_app);
     for i = 1 to MAX_WIN {
         add(win_used, 0); add(win_x, 0); add(win_y, 0); add(win_w, 0); add(win_h, 0); add(win_title, "");
         add(win_kind, 0); add(win_tty, 0); add(win_pid, 0); add(win_dl, 0); add(win_min, 0); add(win_max, 0);
-        add(win_sx, 0); add(win_sy, 0); add(win_sw, 0); add(win_sh, 0); add(win_auto, 0); add(win_bg, 0);
+        add(win_sx, 0); add(win_sy, 0); add(win_sw, 0); add(win_sh, 0); add(win_auto, 0); add(win_bg, 0); add(win_trk, 0);
         add(win_app, 0);
     }
     clear(wz);
@@ -278,6 +279,7 @@ proc wm_new_window(title, kind, x, y, cw, ch, pid) {
     win_max[w] = 0;
     win_auto[w] = 0;
     win_bg[w] = 0;
+    win_trk[w] = 0;
     win_app[w] = wm_app_for(title);
     add(wz, w);
     wm_need = 1;
@@ -290,9 +292,9 @@ proc wm_app_for(title) {
     if (k > 0) { return k; }
     if (title == "Files") { return 1; }
     if (title == "Text Editor" || title == "edit") { return 4; }
-    if (title == "Task Manager") { return 11; }
-    if (title == "snake") { return 9; }
-    if (title == "matrix") { return 10; }
+    if (title == "Task Manager") { return 12; }
+    if (title == "snake") { return 10; }
+    if (title == "matrix") { return 11; }
     return 0;
 }
 
@@ -1079,6 +1081,29 @@ var cl_x1 = 0;
 var cl_y1 = 0;
 
 // draw a filled rect clipped to the current clip rect (screen px)
+// True-colour fill of the already-clipped rect (x0, y0)-(x1, y1).  A pen
+// stroke leaves a faint (2-3%) tail on the pixels just outside it.  Inside
+// the clip rect they are painted over again, but outside it - another
+// window, the title bar - repeated redraws would pile the tails up into a
+// visible line.  So a side lying on the clip rect's edge gets its last
+// pixel row / column from stamps, in the nearest palette colour, which
+// leave no tail.
+proc rgb_clipped(x0, y0, x1, y1, rgb) {
+    local ix0 = x0;
+    local iy0 = y0;
+    local ix1 = x1;
+    local iy1 = y1;
+    local pc = -1;
+    if (y0 <= cl_y0 || y1 >= cl_y1 || x0 <= cl_x0 || x1 >= cl_x1) { pc = gfx_nearest(rgb); }
+    if (y0 <= cl_y0) { gfx_fill(x0, y0, x1 - x0, 1, pc); iy0 = y0 + 1; }
+    if (y1 >= cl_y1 && y1 - 1 >= iy0) { gfx_fill(x0, y1 - 1, x1 - x0, 1, pc); iy1 = y1 - 1; }
+    if (iy1 > iy0) {
+        if (x0 <= cl_x0) { gfx_fill(x0, iy0, 1, iy1 - iy0, pc); ix0 = x0 + 1; }
+        if (x1 >= cl_x1 && x1 - 1 >= ix0) { gfx_fill(x1 - 1, iy0, 1, iy1 - iy0, pc); ix1 = x1 - 1; }
+    }
+    if (ix1 > ix0 && iy1 > iy0) { gfx_rgb_fill(ix0, iy0, ix1 - ix0, iy1 - iy0, rgb); }
+}
+
 proc clip_fill(x, y, w, h, c) {
     local x0 = x;
     local y0 = y;
@@ -1089,7 +1114,7 @@ proc clip_fill(x, y, w, h, c) {
     if (x1 > cl_x1) { x1 = cl_x1; }
     if (y1 > cl_y1) { y1 = cl_y1; }
     if (x1 > x0 && y1 > y0) {
-        if (c >= 256) { gfx_rgb_fill(x0, y0, x1 - x0, y1 - y0, c - 256); }
+        if (c >= 256) { rgb_clipped(x0, y0, x1, y1, c - 256); }
         else { gfx_fill(x0, y0, x1 - x0, y1 - y0, c); }
     }
 }
@@ -1131,6 +1156,7 @@ proc clip_line(xa, ya, xb, yb, c, sz) {
 }
 
 // visible rectangle of the window being drawn (glyphs must lie inside it)
+var cv_vwin = 0;
 var cv_x0 = 0;
 var cv_y0 = 0;
 var cv_x1 = 0;
@@ -1139,16 +1165,48 @@ var cv_y1 = 0;
 // Stamps cannot be partially clipped: a glyph touching the clip rect is
 // stamped whole, provided it lies inside the window's visible rectangle.
 // Its pixels outside the clip rect are identical to what is already there.
-proc clip_glyph(x, y, code, fg, bg) {
-    if (bg >= 0) { clip_fill(x, y, 8, 16, bg); }
-    if (code != 32 && x < cl_x1 && x + 8 > cl_x0 && y < cl_y1 && y + 16 > cl_y0
-        && x >= cv_x0 && y >= cv_y0 && x + 8 <= cv_x1 && y + 16 <= cv_y1) {
-        if (fg >= 256) { gfx_glyph(x, y, code, gfx_nearest(fg - 256)); }
-        else { gfx_glyph(x, y, code, fg); }
+// A glyph straddling a cell row can lie across two visible rectangles (the
+// visible area is cut into bands wherever another window's edge lies), so
+// the test is against all of the window's rectangles, not just the current
+// one. Their edges are on cell boundaries, so each cell the glyph touches is
+// wholly visible or wholly hidden, and its centre decides.
+proc clip_glyph(x, y, code, fg, bg, sc) {
+    local gw = 8 * sc;
+    local gh = 16 * sc;
+    if (bg >= 0) { clip_fill(x, y, gw, gh, bg); }
+    if (code != 32 && x < cl_x1 && x + gw > cl_x0 && y < cl_y1 && y + gh > cl_y0) {
+        local ok = 1;
+        if (x < cv_x0 || y < cv_y0 || x + gw > cv_x1 || y + gh > cv_y1) {
+            // every cell the glyph touches must be visible
+            local c0 = floor(x / 8);
+            local c1 = floor((x + gw - 1) / 8);
+            local r0 = floor(y / 16);
+            local r1 = floor((y + gh - 1) / 16);
+            for r = r0 to r1 {
+                for c = c0 to c1 {
+                    if (ok == 1 && vis_pt(cv_vwin, c * 8 + 4, r * 16 + 8) == 0) { ok = 0; }
+                }
+            }
+        }
+        if (ok == 1) {
+            local gc = fg;
+            if (fg >= 256) { gc = gfx_nearest(fg - 256); }
+            if (sc == 2) { gfx_glyph2(x, y, code, gc); } else { gfx_glyph(x, y, code, gc); }
+        }
     }
 }
 
+// is screen point (px, py) inside a visible rectangle of canvas window w?
+proc vis_pt(w, px, py) {
+    for k = 1 to len(vrc_win) {
+        if (vrc_win[k] == w && px >= vrc_x[k] && py >= vrc_y[k]
+            && px < vrc_x[k] + vrc_w[k] && py < vrc_y[k] + vrc_h[k]) { return 1; }
+    }
+    return 0;
+}
+
 proc set_vis(k) {
+    cv_vwin = vrc_win[k];
     cv_x0 = vrc_x[k];
     cv_y0 = vrc_y[k];
     cv_x1 = vrc_x[k] + vrc_w[k];
@@ -1224,8 +1282,10 @@ proc canvas_prim(w, h, p) {
         local tfg = wm_col(a4);
         local tbg = a5;
         if (tbg >= 0) { tbg = wm_col(tbg); }
+        local tsc = 1;
+        if (a6 == 2) { tsc = 2; }
         for k = 1 to len(str) {
-            clip_glyph(ox + a1 + (k - 1) * 8, oy + a2, ord(str[k]), tfg, tbg);
+            clip_glyph(ox + a1 + (k - 1) * 8 * tsc, oy + a2, ord(str[k]), tfg, tbg, tsc);
         }
     } else if (op == 9) {
         clip_poly(ox, oy, a3, wm_col(a4));
@@ -1335,7 +1395,7 @@ proc canvas_repaint_clip(w, x, y, rw, rh) {
     cl_x1 = x + rw;
     cl_y1 = y + rh;
     local bgc = wm_col(win_bg[w]);
-    if (bgc >= 256) { gfx_rgb_fill(x, y, rw, rh, bgc - 256); } else { gfx_fill(x, y, rw, rh, bgc); }
+    if (bgc >= 256) { rgb_clipped(x, y, x + rw, y + rh, bgc - 256); } else { gfx_fill(x, y, rw, rh, bgc); }
     local h = win_dl[w];
     if (h == 0) { return; }
     local n = tb_an[h];
@@ -1410,6 +1470,13 @@ proc wm_mouse() {
     else if (m_down == 1 && m_moved == 1) { wm_drag(cx, cy); }
     else if (m_down == 0 && m_was == 1) { wm_release(cx, cy); }
     if (m_moved == 1) { wm_hover(cx, cy); }
+    // pointer moves over the top window, for canvases that track them
+    if (m_moved == 1 && m_down == 0) {
+        local tw = wm_top();
+        if (tw > 0 && win_trk[tw] == 1 && wm_owner_at(cx, cy) == tw && cy > win_y[tw]) {
+            wm_event(tw, "move", mx - win_x[tw] * 8, my - (win_y[tw] + 1) * 16, "");
+        }
+    }
 }
 
 // menus follow the pointer; the dock shows the name of the icon under it
@@ -1827,6 +1894,15 @@ proc nat_gui(id) {
                 if (vm_raised == 0) { wm_open_ide(ipath); }
             }
         }
+        case N_GUI_TRACK: {
+            // gui.track(win [, on]): deliver "move" events while the pointer is over the window
+            local tw2 = nat_win(1, "gui.track");
+            if (tw2 > 0) {
+                local on = 1;
+                if (nat_argc >= 2 && vm_truthy(nat_v(2), nat_t(2)) == 0) { on = 0; }
+                win_trk[tw2] = on;
+            }
+        }
         case N_GUI_LAUNCH: {
             // start a desktop program (with arguments), e.g. "preview a.simg"
             if (gui == 0 || IDE_HOSTED == 0) { vm_raise("the desktop is not running"); }
@@ -1974,7 +2050,9 @@ proc nat_gui(id) {
                 local fg = wm_colarg(nat_optnum(5, 15, "gfx.text"));
                 local bg = -1;
                 if (nat_argc >= 6 && nat_t(6) != TNIL) { bg = wm_colarg(nat_num(6, "gfx.text")); }
-                if (vm_raised == 0) { dl_add(w12, 8, tx, ty, str, fg, bg, 0); }
+                local tsc = 1;
+                if (nat_argc >= 7 && nat_t(7) != TNIL && nat_num(7, "gfx.text") >= 2) { tsc = 2; }
+                if (vm_raised == 0) { dl_add(w12, 8, tx, ty, str, fg, bg, tsc); }
             }
         }
         case N_GFX_BATCH: { batch_pid = p_pid[s]; }

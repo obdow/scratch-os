@@ -740,7 +740,7 @@ proc type_char(ch) {
     ecx += 1;
     lines_changed(ecy);
     mark_dirty();
-    if (tab_kind[cur_tab] == 1) { return; }
+    if (tab_kind[cur_tab] != 0) { return; }
     if (char_class[ord(ch) + 1] == 1) { auto_dedent(); }
     if (ch == ".") { ac_show(0); }
     else if (ac_open == 1) { ac_show(0); }
@@ -756,6 +756,7 @@ proc key_enter() {
     local ind = indent_of(line);
     if (ind > ecx - 1) { ind = ecx - 1; }
     if (tab_kind[cur_tab] == 0 && opens_block(before) == 1) { ind += 2; }
+    if (tab_kind[cur_tab] == 2 && yarn_opens(before) == 1) { ind += 2; }
     local after = str_trim_left(substr(line, ecx, len(line)));
     ed[ecy] = before;
     insert(ed, ecy + 1, rep_space(ind) .. after);
@@ -1041,7 +1042,9 @@ proc ensure_states(upto) {
     while (len(ls_state) > ls_valid) { del(ls_state, len(ls_state)); }
     while (ls_valid < target) {
         local y = ls_valid;
-        local st = hl_line(ed[y], ls_state[y]);
+        local st = 0;
+        if (cur_tab > 0 && tab_kind[cur_tab] == 2) { st = yarn_hl_line(ed[y], ls_state[y]); }
+        else { st = hl_line(ed[y], ls_state[y]); }
         add(ls_state, st);
         ls_valid += 1;
     }
@@ -1127,7 +1130,21 @@ proc ide_run(check_only) {
     if (tab_ro[cur_tab] == 0) { save_tab(); }
     local ino = fs_lookup(path, 1);
     if (ino == 0) { ide_status("Cannot find " .. path); return; }
-    if (tab_ro[cur_tab] == 1) {
+    clear(sh_argv);
+    local chk = check_only;
+    if (tab_kind[cur_tab] == 2) {
+        // a Yarn page: run the browser on it (with --check to check it)
+        ino = fs_lookup("/bin/browser.wsk", 1);
+        if (ino == 0) { ide_status("Open .yarn pages in the ScratchOS Browser"); return; }
+        add(sh_argv, "/bin/browser.wsk");
+        if (chk == 1) { add(sh_argv, "--check"); }
+        add(sh_argv, path);
+        err_line = 0;
+        err_msg = "";
+        err_path = path;
+        chk = 0;
+    }
+    if (tab_ro[cur_tab] == 1 && tab_kind[cur_tab] == 0) {
         // documents run from a temporary copy of the buffer
         ino = fs_create("/tmp/run.wsk", FT_FILE, 1);
         fs_data[ino] = join_lines();
@@ -1136,7 +1153,7 @@ proc ide_run(check_only) {
     err_line = 0;
     err_msg = "";
     err_path = path;
-    if (check_only == 1) {
+    if (chk == 1) {
         if (wcompile(fs_data[ino]) == 1) {
             ide_status("No syntax errors in " .. fs_name[ino] .. " (" .. len(cb) .. " instructions)");
         } else {
@@ -1146,8 +1163,7 @@ proc ide_run(check_only) {
     }
     tty_attr[ide_con] = 7;
     tty_write(ide_con, "\n\e[90m► run " .. path .. "\e[0m\n");
-    clear(sh_argv);
-    add(sh_argv, path);
+    if (len(sh_argv) == 0) { add(sh_argv, path); }
     local c = vm_spawn(host, ino);
     if (c == 0) {
         ide_set_error(vm_err, 1);
@@ -1587,6 +1603,7 @@ proc ide_compose_editor() {
         // text
         if (y <= n && cur_tab > 0) {
             if (tab_kind[cur_tab] == 1) { plain_line(ed[y]); }
+            else if (tab_kind[cur_tab] == 2) { yarn_hl_line(ed[y], ls_state[y]); }
             else { hl_line(ed[y], ls_state[y]); }
             local len_y = len(ed[y]);
             for c = 0 to txt_w - 1 {
@@ -1682,6 +1699,7 @@ proc ide_compose_status() {
     puts(1, r, substr(name, 1, IC - 40), at);
     if (cur_tab > 0 && tab_dirty[cur_tab] == 1) { put(2 + len(substr(name, 1, IC - 40)), r, G_DOT, C_WARN + AB * C_PANEL); }
     local pos = ecy .. ":" .. ecx .. "   Whisker ";
+    if (text_tab() == 2) { pos = ecy .. ":" .. ecx .. "   Run shows it in the Browser   Yarn "; }
     if (text_tab() == 1) {
         if (in_preview() == 1) { pos = "Preview  Ctrl+E edit   Text "; }
         else { pos = ecy .. ":" .. ecx .. "   Ctrl+E preview   Text "; }
@@ -2014,10 +2032,12 @@ proc prompt_done() {
         local ino = fs_create(path, FT_FILE, 1);
         if (ino == 0) { ide_status("Cannot create " .. path .. ": " .. fs_err); return; }
         if (path_is_text(path) == 1) { fs_data[ino] = ""; }
+        else if (path_is_text(path) == 2) { fs_data[ino] = yarn_template(fs_name[ino]); }
         else { fs_data[ino] = "-- " .. fs_name[ino] .. "\n\n"; }
         tree_build();
         open_file(path);
         if (tab_kind[cur_tab] == 1) { set_view(0); ecy = 1; ecx = 1; return; }
+        if (tab_kind[cur_tab] == 2) { ecy = 4; ecx = 3; return; }
         ecy = 3;
         ecx = 1;
         if (len(ed) < 3) { add(ed, ""); }
@@ -2039,7 +2059,8 @@ proc prompt_done() {
             save_tab();
         }
         tab_kind[cur_tab] = path_is_text(tab_path[cur_tab]);
-        if (tab_kind[cur_tab] == 0) { tab_view[cur_tab] = 0; }
+        if (tab_kind[cur_tab] != 1) { tab_view[cur_tab] = 0; }
+        ls_valid = 0;
         rv_valid = 0;
         tree_build();
         ide_status(old .. " -> " .. tab_path[cur_tab]);
@@ -2238,7 +2259,7 @@ proc ide_cmd(cmd) {
     if (cmd == "findnext") { if (len(find_text) == 0) { prompt("find", "Find: ", ""); } else { find_next(); } return; }
     if (cmd == "replace") { prompt("replace", "Replace: ", find_text); return; }
     if (cmd == "goto") { prompt("goto", "Go to line: ", ""); return; }
-    if (cmd == "comment") { if (cur_tab > 0 && text_tab() == 0) { toggle_comment(); } return; }
+    if (cmd == "comment") { if (cur_tab > 0 && text_tab() != 1) { toggle_comment(); } return; }
     if (cmd == "preview") { if (cur_tab > 0) { set_view(1 - tab_view[cur_tab]); } return; }
     if (cmd == "indent") { if (cur_tab > 0) { indent_lines(1); } return; }
     if (cmd == "unindent") { if (cur_tab > 0) { indent_lines(-1); } return; }

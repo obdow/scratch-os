@@ -1,0 +1,14 @@
+page "About" theme=paper
+  link "< Home" -> index.yarn
+  title "About this site"
+  row
+    image ../Pictures/cat.simg scale=3 width=150
+    column
+      text "This is a small website made of Yarn pages, kept in your home folder."
+      text "Yarn pages are plain text: one element per line, indented to nest. Styles and themes set the look; Whisker scripts make them do things."
+  quote "Any sufficiently simple page language is indistinguishable from a text file."
+  heading "Made with"
+  list numbered
+    item "The **Whisker IDE**, to write the pages"
+    item "**Paint**, for the pictures"
+    item "The **Browser**, to read them"

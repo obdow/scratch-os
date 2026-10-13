@@ -1,0 +1,51 @@
+-- demo.yarn - buttons, fields and scripts
+page "Demo" theme=ocean
+  style panel bg=card pad=14
+  link "< Home" -> index.yarn
+  title "Demo"
+
+  box .panel
+    subheading "Counter"
+    row
+      button "-" -> add(-1)
+      text "0" #count big center
+      button "+" -> add(1)
+
+  box .panel
+    subheading "Greeter"
+    input name "Your name" -> greet()
+    check shout "Shout"
+    button "Say hello" -> greet()
+    text "" #hello
+
+  box .panel
+    subheading "To-do list"
+    row
+      input todo "Something to do" width=70% -> add_todo()
+      button "Add" -> add_todo()
+    list #todos
+      item "Write a Yarn page"
+    button "Clear the list" -> page.clear("todos")
+
+  button "Show a secret" -> page.toggle("secret")
+  text "Yarn pages can hide and show parts of themselves." #secret hidden
+
+  script
+    count = 0          -- page state lives in globals
+    function add(d)
+      count = count + d
+      page.set("count", count)
+    end
+    function greet()
+      local n = page.get("name")
+      if n == "" then say("Type your name first") return end
+      local msg = "Hello, " .. n .. "!"
+      if page.get("shout") then msg = msg:upper() end
+      page.set("hello", msg)
+    end
+    function add_todo()
+      local t = page.get("todo")
+      if t == "" then return end
+      page.add("todos", "item " .. string.format("%q", t))
+      page.set("todo", "")
+    end

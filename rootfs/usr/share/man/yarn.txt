@@ -1,0 +1,40 @@
+YARN(5)                    ScratchOS Manual
+
+    Yarn is the ScratchOS language for web pages (.yarn files).  Write
+    them in the Whisker IDE (Run shows the page), read them in the Browser.
+    The full guide is the page about:help.
+
+      page "My Site" theme=light       -- light dark paper ocean forest
+        style note color=dim pad=8
+        title "Welcome"
+        text "Hello, **world**! See [about](about.yarn)."
+        row
+          box
+            text "Left" .note
+          box
+            image ~/Pictures/cat.simg scale=2
+        input name "Your name" -> greet()
+        button "Greet" -> greet()
+        text "" #out
+        script
+          function greet()
+            page.set("out", "Hi, " .. page.get("name"))
+          end
+
+    One element per line; indent to put elements inside others.
+    TEXT     title heading subheading text quote code
+    LAYOUT   box row column center list item divider space
+    ACTIVE   link "x" -> page.yarn    button "x" -> code
+             input id "hint"          check id "label"
+    OTHER    image file.simg   style NAME attrs   script (Whisker code)
+    ATTRS    color= bg= border= align= width= pad= scale= style=
+             #id .style  bold big dim hidden numbered checked center
+    INLINE   **bold**  `code`  [label](target)
+    SCRIPTS  page.get/set/show/hide/toggle/attr/style/add/clear(id, ...)
+             page.go(url) page.back() page.reload()  say(message)
+             function onload() ... end runs when the page is shown
+
+    browser [page | folder | about:home]   open a page
+    browser --check page.yarn              list problems (IDE: Check syntax)
+    Browser keys: arrows / space scroll, Ctrl+L address, Ctrl+R reload.
+    Pages for the future ScratchOS network will use name:// addresses.

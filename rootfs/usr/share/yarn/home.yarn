@@ -1,0 +1,28 @@
+-- about:home - the browser's start page
+page "Start" theme=light
+  style tile pad=16
+  space
+  title "ScratchOS Browser" center
+  text "Pages written in **Yarn**, the ScratchOS page language." center dim
+  space
+  row
+    box .tile
+      subheading "Your site"
+      text "The pages in your Sites folder."
+      space
+      link "Open ~/Sites" -> ~/Sites
+    box .tile
+      subheading "Learn Yarn"
+      text "Every element, attribute and script call, on one page."
+      space
+      link "Yarn guide" -> about:help
+    box .tile
+      subheading "Your files"
+      text "Browse the folders on this computer."
+      space
+      link "Home folder" -> ~
+  space
+  box bg=card
+    text "Make a page: open the **Whisker IDE**, create `mypage.yarn` and press **Run** (Ctrl+Enter). Or type a path in the address bar above." dim
+  space
+  text "The ScratchOS network is not here yet. When it is, its pages will open here too." center dim

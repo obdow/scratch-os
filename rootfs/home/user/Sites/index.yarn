@@ -1,0 +1,39 @@
+-- index.yarn - the front page of your site.  Edit it in the Whisker IDE
+-- (Run shows it in the browser), or start your own page next to it.
+page "My Site" theme=light
+  style nav bg=card pad=10
+  style footer color=dim align=center
+
+  row .nav
+    link "Home" -> index.yarn
+    link "About" -> about.yarn
+    link "Gallery" -> gallery.yarn
+    link "Demo" -> demo.yarn
+
+  space
+  title "Hello from ScratchOS"
+  text "This site lives in **~/Sites**. Every page is a `.yarn` file - open one in the IDE to see how it is made."
+
+  row
+    box
+      subheading "About"
+      text "Who made this, and how."
+      link "Read more" -> about.yarn
+    box
+      subheading "Gallery"
+      text "Pictures from ~/Pictures, drawn in Paint."
+      link "Look" -> gallery.yarn
+    box
+      subheading "Demo"
+      text "Buttons, fields and scripts."
+      link "Try it" -> demo.yarn
+
+  space
+  heading "What's new"
+  list
+    item "The browser can open local pages"
+    item "Pages can run **Whisker** scripts"
+    item "Five themes: light, dark, paper, ocean and forest"
+  space
+  divider
+  text "Made with Yarn on ScratchOS" .footer

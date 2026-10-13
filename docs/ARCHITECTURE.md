@@ -48,11 +48,16 @@ tty_cursor_update()  blinking text cursor
 * Solid rectangles use 81 power-of-two rectangle costumes (1…256 px per side),
   so any fill takes at most 4 stamps. Lines use the pen.
 * **True colour.** Colour numbers from 256 up are `256 + 0xRRGGBB`. The pen
-  takes any RGB, so these are filled with 1 px pen strokes, one per row (or
-  per column for tall shapes), instead of costume stamps. A stroke is centred
-  on whole stage coordinates: a centre half a pixel off would land on a pixel
-  boundary and blend two half-covered rows. Text in a true colour falls back
-  to the nearest palette entry.
+  takes any RGB, so these are filled with 1 px pen strokes instead of
+  costume stamps: one stroke per row, or per column for tall shapes.
+  Measured in TurboWarp, a 1 px stroke covers exactly one pixel when it
+  runs through whole Scratch coordinates: x = column − 640,
+  y = 360 − row − 1. At half coordinates it straddles two pixels and
+  blends them. A stroke also leaves a faint 2–3% tail on the neighbouring
+  pixels, which builds up when a window redraws many times. So a fill side
+  that lies on the clip rectangle's edge gets its last pixel row or column
+  from stamps, in the nearest palette colour (`rgb_clipped`). Text in a
+  true colour also uses the nearest palette entry.
 * **Cells** (`ui.sbs`): a cell is a glyph and an attribute
   `fg + 256·bg + 65536·deco`. A deco is a thin pen-drawn detail over the cell:
   * 1 px borders;
@@ -202,7 +207,12 @@ so moving a window marks all its content dirty.
   to the window's visible rectangles, which are the content rectangle minus
   every rectangle above it, the menu bar and the dock. Uncovered regions are
   repainted by replaying the list with the same clipping (Liang–Barsky lines,
-  rectangle intersection, whole-glyph text). Colours `16…` are system UI
+  rectangle intersection, whole-glyph text). A glyph cannot be stamped in
+  part, so it is stamped only when every cell it touches is visible.
+  Another window's edge cuts the visible area into bands, so the test is
+  against all of the window's visible rectangles: a glyph straddling a
+  band boundary must still be drawn. Canvases that call `gui.track` also
+  get `move` events. Colours `16…` are system UI
   colours (`gui.color`), resolved for the current appearance when drawn.
 * **Images** (`src/image.sbs`) are heap tables (`w`, `h`, and pixels as raw
   RGB, -1 transparent). They are read and written in the `.simg` text format
@@ -219,6 +229,29 @@ so moving a window marks all its content dirty.
   modifier prefixes) to the IDE. Programs the IDE runs open ordinary desktop
   windows. The same `ide.sbs` builds the stand-alone `WhiskerIDE.sb3`
   (`IDE_HOSTED = 0`), where the IDE owns the whole stage.
+
+## Yarn and the Browser (`rootfs/lib/yarn.wsk`, `rootfs/bin/browser.wsk`)
+
+Both are Whisker programs; the kernel knows nothing about web pages.
+
+* `yarn.parse` turns a page into a tree of element tables. It reads one
+  line at a time: an indentation stack finds each line's parent, and a
+  tokenizer splits the line into strings, `key=value`, `#id`, `.style`,
+  switches and the `-> action`. `script` / `code` / paragraph blocks take
+  the more-indented lines below them as raw text.
+* `yarn.layout` walks the tree with a width and produces a flat list of
+  drawing operations (text runs, fills, boxes, pictures, form controls) and
+  hit rectangles. Text is word-wrapped on the fixed 8 px grid. Bold is
+  drawn twice, one pixel apart. Titles use the costumes at 200% (16×32).
+* `yarn.draw` replays the operations that intersect the viewport through
+  `gfx`. The browser draws its toolbar and status bar last, so they cover
+  anything that reaches past the page area.
+* Page scripts are compiled with `load()`, so they share the browser's
+  globals. The `page` API is made of browser functions working on its
+  top-level locals. An action that changes the page only marks it dirty;
+  the page is laid out again once the action returns.
+* `fetch` picks a handler by address scheme (`about:`, files). A future
+  network or database is one more handler.
 
 ## Scratch / TurboWarp quirks worked around
 

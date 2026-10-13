@@ -8,7 +8,8 @@ It has:
 - a Unix-like shell, preemptive multitasking, an in-memory file system and a
   capability-based permission system;
 - its own programming language, **Whisker**, compiled to bytecode and run on
-  a virtual machine.
+  a virtual machine;
+- its own web page language, **Yarn**, and a **Browser** to read the pages.
 
 All of it runs inside one Scratch project.
 
@@ -37,8 +38,8 @@ console; `startx` starts the desktop from there.)
     Monitor, Text Console, Restart, Shut Down.
   - The focused app's menus: About, Hide, Quit, plus File, Window and Help.
   - The date and time.
-- **Dock.** Finder, Terminal, Whisker IDE, TextEdit, Paint, Preview, Clock,
-  3D Cube, Snake, Matrix, Activity Monitor and System Settings.
+- **Dock.** Finder, Terminal, Whisker IDE, TextEdit, Paint, Preview, Browser,
+  Clock, 3D Cube, Snake, Matrix, Activity Monitor and System Settings.
   - Hover for the name; a dot marks running apps.
   - Click to open an app, or to bring it forward if it is already running.
 - **Windows.**
@@ -47,10 +48,12 @@ console; `startx` starts the desktop from there.)
   - Drag the title to move, and the bottom-right corner to resize.
   - The mouse wheel scrolls.
 - **Finder.**
-  - A sidebar (Home, Projects, Pictures, Examples, Applications, Documents…).
+  - A sidebar (Home, Projects, Pictures, Sites, Examples, Applications,
+    Documents…).
   - Back/forward, and Name/Size/Kind columns.
   - Double-click a `.wsk` or `.txt` file to open it in the Whisker IDE, or
-    a `.simg` picture to open it in Preview.
+    a `.simg` picture to open it in Preview, or a `.yarn` page to open it
+    in the Browser.
 - **Paint.** Pen, line, box, fill, circle and disc tools, and the 16 system
   colours plus your recent custom colours. **Colors…** (or `k`) opens a
   colour picker with a hex field, R/G/B sliders and a hue strip; any
@@ -61,6 +64,20 @@ console; `startx` starts the desktop from there.)
   through the folder, zoom (fit, buttons, wheel), drag to pan, rotate,
   flip, save, and Edit in Paint. A checkerboard shows through transparent
   pixels. `~/Pictures` comes with a few samples.
+- **Browser.** Reads web pages written in **Yarn** (see
+  [docs/YARN.md](docs/YARN.md)). It has back / forward / reload / home, an
+  address bar, link hover, scrolling, forms, and Source (open the page in
+  the IDE). For now it opens local files and folders. Other sources, such
+  as a future ScratchOS network, plug in as handlers for `name://`
+  addresses. `~/Sites` holds a sample site, and `about:help` is the Yarn
+  guide.
+- **Yarn.** One element per line, indented to nest:
+  `title "Hi"`, `text "**bold** and [links](about.yarn)"`, `row`, `box`,
+  `image cat.simg`, `button "Go" -> say("Hi!")`. It has five themes,
+  named styles, and Whisker `script` blocks that change the page through
+  `page.get/set/show/hide/add`. The IDE highlights `.yarn` files, Run
+  (Ctrl+Enter) shows the page in the Browser, and Check syntax lists the
+  page's problems.
 - **Whisker IDE.** The full IDE in a resizable window, with its editor,
   output panel, tree of your home folder, examples and docs. Programs it runs
   open their windows on the desktop. Open it from the dock, from Finder, or
@@ -89,7 +106,7 @@ user@scratchos:~$ startx                     # the desktop (from the text consol
 | Shell | pipes `\|`, redirection `> >> < 2>`, `;` `&&` `\|\|` `&`, quoting, `$VAR` `$?` `$$` `~`, history (↑/↓), line editing, Ctrl+C, job control (`jobs`, `fg`, `kill %n`), scripts (`sh file.sh`, `source`) |
 | Programs | `ls cat cp mv rm mkdir rmdir touch tree find grep wc head tail sort uniq rev tee seq yes basename dirname sleep date cal ps top kill free uname whoami hostname man more edit whisker calc cowsay fortune bench matrix snake hello cube` |
 | Desktop | macOS-style: menu bar with app menus and clock, dock with running indicators and tooltips, gradient wallpaper, windows with traffic lights (close, minimise, zoom), drag / resize / double-click zoom, permission and message dialogs, dark and light appearance |
-| GUI apps | Finder, Whisker IDE, Paint (with a hex / RGB colour picker), Preview (`.simg` pictures), Activity Monitor, Clock, 3D Cube (orbit it with the mouse), About, System Settings, plus terminal apps like TextEdit, Snake and Matrix |
+| GUI apps | Finder, Whisker IDE, Paint (with a hex / RGB colour picker), Preview (`.simg` pictures), Browser (Yarn web pages), Activity Monitor, Clock, 3D Cube (orbit it with the mouse), About, System Settings, plus terminal apps like TextEdit, Snake and Matrix |
 | Language | Whisker: Lua-like syntax, tables, functions, methods, `pcall`/`error`, multiple returns, `load`/`require`, 140+ built-in functions |
 | Permissions | programs ask before using `files`, `proc`, `gui` or `system` capabilities: (y)es / (n)o / (a)lways; policy in `/etc/caps` |
 
@@ -239,6 +256,7 @@ tools/assets.py     CP437 tables and costume helpers
 tools/ui_assets.py  JetBrains Mono glyph costumes and the colour palette
 tools/natives.py    the Whisker system-call table
 tools/simg.py       the .simg picture format: sample pictures, PNG converter
+rootfs/lib/yarn.wsk the Yarn page engine (parse, lay out, draw); /bin/browser.wsk uses it
 assets/font/        JetBrains Mono (OFL 1.1)
 test/               headless TurboWarp harness (Playwright) and regression test
 docs/               architecture, SBS and Whisker documentation

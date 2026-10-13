@@ -127,7 +127,9 @@ returns a window id; `close(win)`; `event(win)` (a table or nil);
 `waitevent(win)`; `size(win)`; `title(win, text)`; `active(win)`;
 `terminal([cmd])`; `color(name)`; `ide([path])` opens the Whisker IDE
 (optionally with a file); `launch(cmdline)` starts another desktop app, as
-the dock does (`gui.launch("preview " .. path)`). Events are tables with `type` set to `"key"` (with
+the dock does (`gui.launch("preview " .. path)`); `track(win [, on])` asks
+for `"move"` events (with `x`, `y`) while the pointer is over the window,
+for hover effects. Events are tables with `type` set to `"key"` (with
 `key`), `"mousedown"`, `"drag"` or `"mouseup"` (with `x`, `y` in window
 pixels), `"wheel"` (with `y` = notches, positive = down), `"resize"` (with
 `x`, `y` = new size), or `"close"`. `size(win)` is the drawing area below
@@ -149,7 +151,7 @@ system colour.
 `pixel(win, x, y, c)`, `line(win, x1, y1, x2, y2, c [, size])`,
 `rect(win, x, y, w, h, c)`, `fill(win, x, y, w, h, c)`,
 `circle(win, x, y, r, c)`, `disc(win, x, y, r, c)`,
-`text(win, x, y, s, fg [, bg])`, `poly(win, {x1, y1, x2, y2, ...}, c)` (filled convex polygon),
+`text(win, x, y, s, fg [, bg [, scale]])` (`scale` 2 draws 16×32 characters), `poly(win, {x1, y1, x2, y2, ...}, c)` (filled convex polygon),
 `image(win, img, x, y [, scale])` (draw a picture; transparent pixels are skipped).
 Wrap a frame's drawing in `gfx.batch()` ... `gfx.flush()` so it appears all at once
 (see `/bin/cube.wsk`).
@@ -181,6 +183,10 @@ image.save(os.getenv("HOME") .. "/Pictures/sun.simg", img)
 gfx.image(win, img, 10, 10, 4)          -- at 400%
 ```
 
+**yarn** (`require("yarn")`): the web page engine the Browser uses. It
+parses, lays out and draws Yarn pages in any window. See `man yarn` and
+the guide at `about:help`.
+
 **sys:** `version()`, `uptime()`, `mem()`, `hostname()`, `caps()`,
 `request(cap)`, `gc()`, `procs()`, `date()`, `shutdown()`, `reboot()`.
 
@@ -201,7 +207,7 @@ Sensitive calls need a capability:
 |---|---|
 | `files` | writing outside `/home` and `/tmp` |
 | `proc` | killing processes the program did not start |
-| `gui` | `gui.window`, `gui.terminal`, `gui.ide`, `gui.launch` |
+| `gui` | `gui.window`, `gui.terminal`, `gui.ide`, `gui.launch`, `gui.track` |
 | `system` | `sys.shutdown`, `sys.reboot` |
 
 The first use asks the user: (y)es, (n)o or (a)lways. Declare needs on any

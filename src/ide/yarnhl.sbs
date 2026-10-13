@@ -1,0 +1,161 @@
+// Yarn web pages (.yarn) in the IDE: syntax highlighting and auto-indent.
+//
+// Element names are keywords, strings are strings, key=value attributes and
+// switches are library colours, #ids and .styles numbers.  The code after
+// "->" and the lines of a `script` block are highlighted as Whisker.
+//
+// Lexer states (ls_state): 0 normal; 1000 + n inside a script block whose
+// line was indented n (its lines are indented more); 2000 + n a code block;
+// 3000 + n a text / quote paragraph block.
+
+list yarn_elems = ["page", "box", "row", "column", "center", "list", "item", "title", "heading",
+                   "subheading", "text", "quote", "code", "link", "button", "input", "check", "image",
+                   "divider", "space", "style", "script"];
+// elements whose next line is usually indented
+list yarn_nest = ["page", "box", "row", "column", "center", "list", "item", "script", "code"];
+list yarn_flags = ["big", "bold", "center", "right", "left", "hidden", "numbered", "checked", "dim"];
+list yh_fg;               // colours of the line before "->"
+list yh_tail;             // colours of the Whisker code after it
+
+proc yarn_hl_line(s, st) {
+    local n = len(s);
+    local ind = indent_of(s);
+    local blank = 0;
+    if (len(str_trim(s)) == 0) { blank = 1; }
+    if (st >= 1000) {
+        local bi = st % 1000;
+        local bk = floor(st / 1000);
+        if (blank == 1 || ind > bi) {
+            if (bk == 1) {
+                hl_line(s, 0);
+            } else {
+                clear(hl_code);
+                clear(hl_fg);
+                local bc = C_FG;
+                if (bk == 2) { bc = C_STR; }
+                for k = 1 to n {
+                    add(hl_code, ord(s[k]));
+                    add(hl_fg, bc);
+                }
+            }
+            return st;
+        }
+    }
+    clear(hl_code);
+    clear(hl_fg);
+    for k = 1 to n {
+        add(hl_code, ord(s[k]));
+        add(hl_fg, C_FG);
+    }
+    if (blank == 1) { return 0; }
+    local i = ind + 1;
+    if (hl_code[i] == 45 && i < n && hl_code[i + 1] == 45) {
+        for k = i to n { hl_fg[k] = C_COM; }
+        return 0;
+    }
+    local first = 1;
+    local kind = "";
+    local nstr = 0;
+    while (i <= n) {
+        local c = hl_code[i];
+        if (c == 32) {
+            i += 1;
+        } else if (c == 45 && i < n && hl_code[i + 1] == 62) {
+            // "->" and its action
+            hl_fg[i] = C_OP;
+            hl_fg[i + 1] = C_OP;
+            local a0 = i + 2;
+            if (kind == "link") {
+                for k = a0 to n { hl_fg[k] = C_STR; }
+            } else if (a0 <= n) {
+                clear(yh_fg);
+                for k = 1 to a0 - 1 { add(yh_fg, hl_fg[k]); }
+                hl_line(substr(s, a0, n), 0);
+                clear(yh_tail);
+                for k = 1 to len(hl_fg) { add(yh_tail, hl_fg[k]); }
+                clear(hl_code);
+                clear(hl_fg);
+                for k = 1 to n {
+                    add(hl_code, ord(s[k]));
+                    if (k < a0) { add(hl_fg, yh_fg[k]); } else { add(hl_fg, yh_tail[k - a0 + 1]); }
+                }
+            }
+            i = n + 1;
+        } else if (c == 34) {
+            // a string
+            if (first == 1) { kind = "text"; first = 0; }
+            nstr += 1;
+            hl_fg[i] = C_STR;
+            i += 1;
+            while (i <= n && hl_code[i] != 34) {
+                if (hl_code[i] == 92 && i < n) { hl_fg[i] = C_STR; i += 1; }
+                hl_fg[i] = C_STR;
+                i += 1;
+            }
+            if (i <= n) { hl_fg[i] = C_STR; i += 1; }
+        } else {
+            // a word: element, key=value, #id, .style, switch or argument
+            local j = i;
+            local w = "";
+            while (j <= n && hl_code[j] != 32) {
+                if (hl_code[j] == 61 && j < n && hl_code[j + 1] == 34) { break; }
+                w = w .. s[j];
+                j += 1;
+            }
+            if (first == 1) {
+                kind = str_lower(w);
+                first = 0;
+                local col = C_FG;
+                if (index(yarn_elems, kind) > 0) { col = C_KW; }
+                for k = i to j - 1 { hl_fg[k] = col; }
+            } else if (j <= n && hl_code[j] == 61) {
+                // key="quoted value"
+                for k = i to j - 1 { hl_fg[k] = C_LIB; }
+                hl_fg[j] = C_OP;
+                j += 1;
+                hl_fg[j] = C_STR;
+                j += 1;
+                while (j <= n && hl_code[j] != 34) { hl_fg[j] = C_STR; j += 1; }
+                if (j <= n) { hl_fg[j] = C_STR; j += 1; }
+            } else {
+                local eq = str_find(w, "=", 1);
+                if (eq > 1) {
+                    for k = i to i + eq - 2 { hl_fg[k] = C_LIB; }
+                    hl_fg[i + eq - 1] = C_OP;
+                    for k = i + eq to j - 1 { hl_fg[k] = C_NUM; }
+                } else if (w[1] == "#" || (w[1] == "." && len(w) > 1 && w[2] != "." && w[2] != "/")) {
+                    for k = i to j - 1 { hl_fg[k] = C_NUM; }
+                } else if (index(yarn_flags, w) > 0) {
+                    for k = i to j - 1 { hl_fg[k] = C_LIB; }
+                }
+            }
+            i = j;
+        }
+    }
+    if (kind == "script") { return 1000 + ind; }
+    if (kind == "code" && nstr == 0) { return 2000 + ind; }
+    if ((kind == "text" || kind == "quote") && nstr == 0) { return 3000 + ind; }
+    return 0;
+}
+
+// should the line after `s` be indented? (an element that holds others, or
+// Whisker code that opens a block inside a script)
+proc yarn_opens(s) {
+    local t = str_trim(s);
+    if (len(t) == 0) { return 0; }
+    local sp = str_find(t, " ", 1);
+    local w = t;
+    if (sp > 0) { w = substr(t, 1, sp - 1); }
+    if (index(yarn_nest, w) > 0) { return 1; }
+    if ((w == "text" || w == "quote") && sp == 0) { return 1; }
+    return opens_block(s);
+}
+
+// a new page
+proc yarn_template(name) {
+    return "-- " .. name .. " - a Yarn web page (Run shows it in the Browser)\n" ..
+           "page \"My page\" theme=light\n" ..
+           "  title \"Hello\"\n" ..
+           "  text \"Write **text**, add [links](index.yarn) and pictures.\"\n" ..
+           "  button \"Click me\" -> say(\"Hi!\")\n";
+}
