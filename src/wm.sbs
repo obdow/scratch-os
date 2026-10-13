@@ -83,6 +83,8 @@ list ev_type;
 list ev_x;
 list ev_y;
 list ev_key;
+list ev_mod;          // "shift" / "ctrl" held with a special key, else ""
+var ev_next_mod = "";
 
 list vrc_win;         // cached visible rectangles of canvas windows (px)
 list vrc_x;
@@ -100,6 +102,12 @@ list nr_h;
 
 var wm_need = 0;      // layout changed: recompose
 var wm_full = 0;      // force a full redraw
+var wall_img = 0;     // wallpaper picture (image table), 0: the gradient
+var wall_path = "";
+var wall_err = "";
+var wall_s = 1;       // its scale and offset on the screen (px)
+var wall_ox = 0;
+var wall_oy = 0;
 var wm_next_x = 20;   // cascade position for new windows
 var wm_next_y = 3;
 var dlg_kind = 0;     // 0 none, 1 permission request, 2 message, 3 settings
@@ -146,8 +154,8 @@ list wmi_cmd;
 //   icon: one or two characters drawn at double size on a coloured tile
 list dk_name = ["Finder", "Terminal", "Whisker IDE", "TextEdit", "Paint", "Preview", "Browser", "Clock", "3D Cube",
                 "Snake", "Matrix", "Activity Monitor", "System Settings"];
-list dk_cmd = ["files", "@term", "@ide", "@term edit", "paint", "preview", "browser", "clock", "cube",
-               "@term snake", "@term matrix", "taskmgr", "@settings"];
+list dk_cmd = ["files", "@term", "@ide", "textedit", "paint", "preview", "browser", "clock", "cube",
+               "@term snake", "@term matrix", "taskmgr", "settings"];
 list dk_icon = ["☺", ">_", "{}", "Aa", "♥", "☼▲", "@", "12", "♦", "~☼", "01", "▄█", "≡"];
 list dk_bgn = ["blue", "dark", "purple", "white", "orange", "blue", "white", "white", "dark", "green", "dark", "dark", "grey"];
 list dk_fgn = ["white", "white", "white", "dark", "white", "white", "blue", "dark", "blue", "white", "green", "green", "white"];
@@ -178,7 +186,7 @@ proc wm_init() {
         add(own, 0); add(ui_ch, 32); add(ui_at, 0);
         add(old_own, -9); add(old_ch, -9); add(old_at, -9);
     }
-    clear(ev_win); clear(ev_type); clear(ev_x); clear(ev_y); clear(ev_key);
+    clear(ev_win); clear(ev_type); clear(ev_x); clear(ev_y); clear(ev_key); clear(ev_mod);
     clear(vrc_win); clear(vrc_x); clear(vrc_y); clear(vrc_w); clear(vrc_h);
     // wallpaper: two stripes per cell row
     clear(wall_at);
@@ -211,6 +219,107 @@ proc wm_set_theme(n) {
     for t = 1 to MAX_TTY { if (tty_used[t] == 1) { tty_full[t] = 1; } }
     wm_full = 1;
     wm_need = 1;
+}
+
+// --- wallpaper ----------------------------------------------------------------------
+//
+// The desktop is the gradient (wall_at), or a picture: wall_img, scaled to
+// cover the screen.  Picture cells are marked -5 and drawn in horizontal
+// spans (wall_span), so runs of equal pixels across many cells become one
+// pen stroke per screen row.
+
+// set the wallpaper to a .simg file ("" = the gradient); 0 and wall_err on failure
+proc wm_set_wallpaper(path) {
+    wall_err = "";
+    if (len(path) == 0) {
+        if (wall_img > 0) { tb_pin[wall_img] = 0; }
+        wall_img = 0;
+        wall_path = "";
+        wm_full = 1;
+        wm_need = 1;
+        return 1;
+    }
+    local ino = fs_lookup(path, 1);
+    if (ino == 0 || fs_type[ino] == FT_DIR) { wall_err = "cannot open " .. path; return 0; }
+    img_err = "";
+    local h = img_decode(0, fs_data[ino]);
+    if (h == 0) { wall_err = img_err; return 0; }
+    // big pictures are thinned to about 20,000 pixels (the heap is shared)
+    local w = img_w(h);
+    local ht = img_h(h);
+    local f = 1;
+    while (floor(w / f) * floor(ht / f) > 20000) { f += 1; }
+    if (f > 1) {
+        local w2 = floor(w / f);
+        local h2 = floor(ht / f);
+        local t = img_new(0, w2, h2, -1);
+        local sb = tb_ab[h];
+        local db = tb_ab[t];
+        for y = 0 to h2 - 1 {
+            for x = 0 to w2 - 1 { HV[db + y * w2 + x + 1] = HV[sb + y * f * w + x * f + 1]; }
+        }
+        h = t;
+        w = w2;
+        ht = h2;
+    }
+    if (wall_img > 0) { tb_pin[wall_img] = 0; }
+    tb_pin[h] = 1;
+    wall_img = h;
+    wall_path = fs_path(ino);
+    // cover the screen, centred
+    wall_s = SCR_W / w;
+    if (SCR_H / ht > wall_s) { wall_s = SCR_H / ht; }
+    wall_ox = (SCR_W - w * wall_s) / 2;
+    wall_oy = (SCR_H - ht * wall_s) / 2;
+    wm_full = 1;
+    wm_need = 1;
+    return 1;
+}
+
+// draw the wallpaper picture under cells c0..c1 of screen row `row`
+proc wall_span(row, c0, c1) {
+    local x0 = c0 * 8;
+    local x1 = (c1 + 1) * 8;
+    local y0 = row * 16;
+    local y1 = y0 + 16;
+    local s = wall_s;
+    local w = img_w(wall_img);
+    local ht = img_h(wall_img);
+    local b = tb_ab[wall_img];
+    local iy0 = floor((y0 - wall_oy) / s);
+    local iy1 = floor((y1 - 1 - wall_oy) / s);
+    for iy = iy0 to iy1 {
+        if (iy >= 0 && iy < ht) {
+            local py0 = floor(wall_oy + iy * s);
+            local py1 = floor(wall_oy + (iy + 1) * s);
+            if (py0 < y0) { py0 = y0; }
+            if (py1 > y1) { py1 = y1; }
+            if (py1 > py0) {
+                local rb = b + iy * w;
+                local ix = floor((x0 - wall_ox) / s);
+                if (ix < 0) { ix = 0; }
+                local more = 1;
+                while (more == 1 && ix < w) {
+                    local px0 = floor(wall_ox + ix * s);
+                    if (px0 >= x1) {
+                        more = 0;
+                    } else {
+                        // a run of equal pixels, up to the span's end
+                        local c = HV[rb + ix + 1];
+                        local j = ix + 1;
+                        while (j < w && HV[rb + j + 1] == c && floor(wall_ox + j * s) < x1) { j += 1; }
+                        local a = px0;
+                        if (a < x0) { a = x0; }
+                        local e = floor(wall_ox + j * s);
+                        if (e > x1) { e = x1; }
+                        if (c < 0) { c = 0; }
+                        if (e > a) { gfx_rgb_fill(a, py0, e - a, py1 - py0, c); }
+                        ix = j;
+                    }
+                }
+            }
+        }
+    }
 }
 
 // --- starting / stopping the desktop ---------------------------------------------
@@ -304,7 +413,6 @@ proc wm_app_for(title) {
     local k = index(dk_name, title);
     if (k > 0) { return k; }
     if (title == "Files") { return 1; }
-    if (title == "Text Editor" || title == "edit") { return 4; }
     if (title == "Task Manager") { return 12; }
     if (title == "snake") { return 10; }
     if (title == "matrix") { return 11; }
@@ -403,7 +511,7 @@ proc wm_close(w) {
     // drop pending events
     local k = 1;
     while (k <= len(ev_win)) {
-        if (ev_win[k] == w) { del(ev_win, k); del(ev_type, k); del(ev_x, k); del(ev_y, k); del(ev_key, k); }
+        if (ev_win[k] == w) { del(ev_win, k); del(ev_type, k); del(ev_x, k); del(ev_y, k); del(ev_key, k); del(ev_mod, k); }
         else { k += 1; }
     }
     if (drag_win == w) { drag_mode = 0; }
@@ -492,12 +600,14 @@ proc wm_set_geom(w, x, y, cw, ch) {
 
 proc wm_event(w, type, x, y, key) {
     // keep the queue bounded
-    if (len(ev_win) > 200) { del(ev_win, 1); del(ev_type, 1); del(ev_x, 1); del(ev_y, 1); del(ev_key, 1); }
+    if (len(ev_win) > 200) { del(ev_win, 1); del(ev_type, 1); del(ev_x, 1); del(ev_y, 1); del(ev_key, 1); del(ev_mod, 1); }
     add(ev_win, w);
     add(ev_type, type);
     add(ev_x, x);
     add(ev_y, y);
     add(ev_key, key);
+    add(ev_mod, ev_next_mod);
+    ev_next_mod = "";
 }
 
 // --- composition --------------------------------------------------------------------
@@ -564,9 +674,11 @@ proc wm_compose() {
     local i = 1;
     for r = 0 to WM_ROWS - 1 {
         local wa = wall_at[r + 1];
+        local wc = 32;
+        if (wall_img > 0) { wc = -5; wa = 0; }
         repeat (WM_COLS) {
             own[i] = OWN_DESK;
-            ui_ch[i] = 32;
+            ui_ch[i] = wc;
             ui_at[i] = wa;
             i += 1;
         }
@@ -707,7 +819,7 @@ proc wm_menu_items(k) {
     if (k == 1) {
         wmi("About ScratchOS", "", "about");
         wmi("-", "", "");
-        wmi("System Settings...", "", "@settings");
+        wmi("System Settings...", "", "settings");
         if (theme == 0) { wmi("Light Appearance", "", "@light"); } else { wmi("Dark Appearance", "", "@dark"); }
         wmi("-", "", "");
         wmi("Activity Monitor", "", "taskmgr");
@@ -1099,13 +1211,6 @@ proc wm_compose_dialog() {
         wm_button(rx - 12, by, "Allow Once", 1);
         wm_button(rx - 27, by, "Always Allow", 0);
         wm_button(rx - 41, by, "Don't Allow", 0);
-    } else if (dlg_kind == 3) {
-        wm_button(rx - 6, by, "Done", 1);
-        local la = 0;
-        local da = 0;
-        if (theme == 1) { la = 1; } else { da = 1; }
-        wm_button(dlg_x + 7, dlg_y + 5, "Light", la);
-        wm_button(dlg_x + 15, dlg_y + 5, "Dark", da);
     } else {
         wm_button(rx - 4, by, "OK", 1);
     }
@@ -1141,16 +1246,32 @@ proc wm_redraw_dirty() {
             if (j == 0) { add(nr_x, o); add(nr_y, 1); } else { nr_y[j] = nr_y[j] + 1; }
         }
     }
+    // wallpaper picture cells are gathered into spans along each row
+    local sp_r = -1;
+    local sp_c0 = 0;
+    local sp_c1 = -2;
     for k = 1 to len(wm_dirty) {
         local i2 = wm_dirty[k];
         local o2 = own[i2];
-        if (o2 > 0 && o2 != OUT_WIN && ui_ch[i2] == -1 && win_kind[o2] == WK_CANVAS) {
+        if (ui_ch[i2] == -5) {
+            local wr = floor((i2 - 1) / WM_COLS);
+            local wcol = (i2 - 1) % WM_COLS;
+            if (wr == sp_r && wcol == sp_c1 + 1) {
+                sp_c1 = wcol;
+            } else {
+                if (sp_r >= 0) { wall_span(sp_r, sp_c0, sp_c1); }
+                sp_r = wr;
+                sp_c0 = wcol;
+                sp_c1 = wcol;
+            }
+        } else if (o2 > 0 && o2 != OUT_WIN && ui_ch[i2] == -1 && win_kind[o2] == WK_CANVAS) {
             local j2 = index(nr_x, o2);
             if (nr_y[j2] <= 6) { wm_draw_cell(i2); }
         } else {
             wm_draw_cell(i2);
         }
     }
+    if (sp_r >= 0) { wall_span(sp_r, sp_c0, sp_c1); }
     for k = 1 to len(nr_x) {
         if (nr_y[k] > 6) { canvas_repaint(nr_x[k]); }
     }
@@ -1183,6 +1304,10 @@ proc wm_draw_cell(i) {
     }
     if (c == -3) {
         tb_need = 1;
+        return;
+    }
+    if (c == -5) {
+        wall_span(row, col, col);
         return;
     }
     ui_cell(col * 8, row * 16, c, ui_at[i]);
@@ -1826,7 +1951,6 @@ proc wm_launch(cmd, label) {
     if (cmd == "@ide") { wm_open_ide(""); return; }
     if (cmd == "@ref") { wm_open_ide("/usr/share/doc/whisker/reference.txt"); return; }
     if (cmd == "@quick") { wm_open_ide("/usr/share/doc/whisker/quickstart.txt"); return; }
-    if (cmd == "@settings") { dlg_kind = 3; dlg_title = "System Settings"; dlg_l1 = "Appearance"; dlg_l2 = ""; dlg_l3 = ""; wm_need = 1; return; }
     if (cmd == "@light") { wm_set_theme(1); return; }
     if (cmd == "@dark") { wm_set_theme(0); return; }
     if (cmd == "@close") { if (top > 0) { wm_user_close(top); } return; }
@@ -1899,18 +2023,11 @@ proc wm_message(title, l1, l2, l3) {
 proc wm_dialog_click(cx, cy) {
     local by = dlg_y + dlg_h - 2;
     local rx = dlg_x + dlg_w - 2;
-    if (dlg_kind == 3 && cy == dlg_y + 5) {
-        if (cx >= dlg_x + 7 && cx < dlg_x + 14) { wm_set_theme(1); }
-        else if (cx >= dlg_x + 15 && cx < dlg_x + 21) { wm_set_theme(0); }
-        return;
-    }
     if (cy != by) { return; }
     if (dlg_kind == 1) {
         if (cx >= rx - 12 && cx < rx) { wm_dialog_answer("y"); }
         else if (cx >= rx - 27 && cx < rx - 13) { wm_dialog_answer("a"); }
         else if (cx >= rx - 41 && cx < rx - 28) { wm_dialog_answer("n"); }
-    } else if (dlg_kind == 3) {
-        if (cx >= rx - 6 && cx < rx) { dlg_kind = 0; wm_need = 1; }
     } else if (cx >= rx - 4 && cx < rx) {
         dlg_kind = 0;
         wm_need = 1;
@@ -2072,6 +2189,53 @@ proc nat_gui(id) {
                 if (vm_raised == 0) { wm_open_ide(ipath); }
             }
         }
+        case N_GUI_APPEARANCE: {
+            // gui.appearance(["light" | "dark"]) -> the current appearance
+            if (nat_argc >= 1 && nat_t(1) != TNIL) {
+                local an = str_lower(nat_str(1, "gui.appearance"));
+                if (vm_raised == 0) {
+                    if (an == "light") { if (theme != 1) { wm_set_theme(1); } }
+                    else if (an == "dark") { if (theme != 0) { wm_set_theme(0); } }
+                    else { vm_raise("gui.appearance: \"light\" or \"dark\""); }
+                }
+            }
+            if (vm_raised == 0) { if (theme == 1) { nat_rets("light"); } else { nat_rets("dark"); } }
+        }
+        case N_GUI_WALLPAPER: {
+            // gui.wallpaper([path | ""]) -> the current picture ("" = the gradient)
+            if (nat_argc >= 1 && nat_t(1) != TNIL) {
+                local wp = nat_str(1, "gui.wallpaper");
+                if (vm_raised == 0) {
+                    if (wm_set_wallpaper(wp) == 0) { nat_fail(wall_err); return; }
+                }
+            }
+            if (vm_raised == 0) { nat_rets(wall_path); }
+        }
+        case N_GUI_APPS: {
+            // the desktop's apps, as in Start
+            local at = table_new(p_pid[s]);
+            for k = 1 to len(dk_name) { table_append(at, dk_name[k], TSTR); }
+            nat_rett(at);
+        }
+        case N_GUI_PINNED: {
+            // gui.pinned(app [, on]) -> whether the app is pinned to the taskbar
+            local pa = index(dk_name, nat_str(1, "gui.pinned"));
+            if (vm_raised == 0) {
+                if (pa == 0) { nat_fail("no app called " .. nat_str(1, "gui.pinned")); return; }
+                if (nat_argc >= 2 && nat_t(2) != TNIL) {
+                    local on = vm_truthy(nat_v(2), nat_t(2));
+                    local pi = index(task_pins, pa);
+                    if (on == 1 && pi == 0) { add(task_pins, pa); wm_need = 1; }
+                    if (on == 0 && pi > 0) { del(task_pins, pi); wm_need = 1; }
+                }
+                if (index(task_pins, pa) > 0) { nat_retb(1); } else { nat_retb(0); }
+            }
+        }
+        case N_GUI_CLIPBOARD: {
+            // gui.clipboard([text]) -> the clipboard (shared with the Whisker IDE)
+            if (nat_argc >= 1 && nat_t(1) != TNIL) { clipboard = vm_tostr(nat_v(1), nat_t(1)); }
+            nat_rets(clipboard);
+        }
         case N_GUI_TRACK: {
             // gui.track(win [, on]): deliver "move" events while the pointer is over the window
             local tw2 = nat_win(1, "gui.track");
@@ -2140,7 +2304,8 @@ proc nat_gui(id) {
                     tset_n(e, "x", ev_x[k]);
                     tset_n(e, "y", ev_y[k]);
                     if (len(ev_key[k]) > 0) { tset_s(e, "key", ev_key[k]); }
-                    del(ev_win, k); del(ev_type, k); del(ev_x, k); del(ev_y, k); del(ev_key, k);
+                    if (len(ev_mod[k]) > 0) { tset_s(e, "mod", ev_mod[k]); }
+                    del(ev_win, k); del(ev_type, k); del(ev_x, k); del(ev_y, k); del(ev_key, k); del(ev_mod, k);
                     nat_rett(e);
                 } else if (id == N_GUI_WAITEVENT) {
                     nat_block(BLK_IO);

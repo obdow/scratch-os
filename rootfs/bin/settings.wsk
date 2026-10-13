@@ -1,0 +1,273 @@
+-- settings - System Settings
+--@caps gui
+-- Appearance (light / dark), Wallpaper (the gradient or any .simg picture:
+-- /usr/share/wallpapers and ~/Pictures), Taskbar (which apps are pinned) and
+-- About.  keys: up / down change section, q quit
+local W, H = 760, 480
+local win = gui.window("System Settings", W, H)
+W, H = gui.size(win)
+gui.track(win, true)
+
+local C = {}
+local function colours()
+  C = {
+    bg = gui.color("window"), side = gui.color("sidebar"), text = gui.color("text"),
+    dim = gui.color("dim"), accent = gui.color("accent"), ontext = gui.color("ontext"),
+    sel = gui.color("selection"), border = gui.color("border"), button = gui.color("button"),
+    hover = gui.color("hover"),
+  }
+end
+colours()
+
+local SECTIONS = {"Appearance", "Wallpaper", "Taskbar", "About"}
+local SIDE = 180
+local section = 1
+local hover = nil              -- key of the item under the pointer
+local hits = {}                -- clickable areas drawn this frame: {x, y, w, h, key}
+local status = ""
+
+local HOME = os.getenv("HOME") or "/home/user"
+local walls = nil              -- wallpaper choices: {name, path, thumb}
+local TW, TH = 64, 36          -- thumbnail size (drawn at 2x)
+
+-- --- wallpaper thumbnails -----------------------------------------------------------
+
+-- a small copy of the picture, cropped to 16:9 like the screen
+local function thumbnail(path)
+  local img = image.load(path)
+  if img == nil then return nil end
+  local w, h = image.size(img)
+  local s = math.min(w / TW, h / TH)       -- cover
+  local ox = (w - TW * s) / 2
+  local oy = (h - TH * s) / 2
+  local t = image.new(TW, TH, gfx.rgb(0, 0, 0))
+  for y = 0, TH - 1 do
+    local sy = math.floor(oy + (y + 0.5) * s)
+    for x = 0, TW - 1 do
+      local c = image.get(img, math.floor(ox + (x + 0.5) * s), sy)
+      if c and c >= 0 then image.set(t, x, y, c) end
+    end
+  end
+  return t
+end
+
+local function load_walls()
+  walls = {{name = "Gradient", path = ""}}
+  for _, dir in ipairs({"/usr/share/wallpapers", HOME .. "/Pictures"}) do
+    for _, n in ipairs(fs.list(dir) or {}) do
+      if n:endswith(".simg") then
+        local p = dir .. "/" .. n
+        walls[#walls + 1] = {name = n:sub(1, #n - 5), path = p, thumb = thumbnail(p)}
+      end
+    end
+  end
+end
+
+-- --- drawing ------------------------------------------------------------------------
+
+local function hit(x, y, w, h, key)
+  hits[#hits + 1] = {x = x, y = y, w = w, h = h, key = key}
+end
+
+local function heading(x, y, title, sub)
+  gfx.text(win, x, y, title, C.text, nil, 2)
+  if sub then gfx.text(win, x, y + 38, sub, C.dim) end
+end
+
+-- a mock window in the given appearance, for the Appearance tiles
+local function mock(x, y, light)
+  local bgc, bar, txt, side = gfx.hex("#1e1f22"), gfx.hex("#2b2d30"), gfx.hex("#dfe1e5"), gfx.hex("#2b2d30")
+  if light then
+    bgc, bar, txt, side = gfx.hex("#ffffff"), gfx.hex("#ececee"), gfx.hex("#1d1d1f"), gfx.hex("#f3f3f5")
+  end
+  gfx.fill(win, x, y, 180, 112, gfx.hex("#5b4bc4"))
+  gfx.fill(win, x + 20, y + 16, 140, 84, bgc)
+  gfx.fill(win, x + 20, y + 16, 140, 12, bar)
+  gfx.disc(win, x + 27, y + 22, 2, gfx.hex("#ff5f57"))
+  gfx.disc(win, x + 34, y + 22, 2, gfx.hex("#febc2e"))
+  gfx.disc(win, x + 41, y + 22, 2, gfx.hex("#28c840"))
+  gfx.fill(win, x + 20, y + 28, 40, 72, side)
+  for k = 0, 4 do gfx.fill(win, x + 68, y + 36 + k * 12, 70 - k * 8, 4, txt) end
+end
+
+local function draw_appearance(x0, y0)
+  heading(x0, y0, "Appearance", "How windows, menus and the taskbar look.")
+  local cur = gui.appearance()
+  for i, name in ipairs({"Light", "Dark"}) do
+    local x = x0 + (i - 1) * 210
+    local y = y0 + 70
+    local key = name:lower()
+    mock(x, y, key == "light")
+    local bc = C.border
+    if key == cur then bc = C.accent elseif hover == key then bc = C.dim end
+    gfx.rect(win, x - 3, y - 3, 186, 118, bc)
+    if key == cur then gfx.rect(win, x - 2, y - 2, 184, 116, bc) end
+    gfx.text(win, x + (180 - #name * 8) // 2, y + 124, name, key == cur and C.accent or C.text)
+    hit(x - 3, y - 3, 186, 146, key)
+  end
+end
+
+local function draw_gradient_thumb(x, y, w, h)
+  local stops = {gfx.hex("#1a1e8c"), gfx.hex("#7a32b0"), gfx.hex("#b83cb4"), gfx.hex("#d8607a"), gfx.hex("#e8906a")}
+  for k = 0, h - 1, 4 do
+    local t = k / h * (#stops - 1)
+    local i = math.floor(t)
+    local r1, g1, b1 = gfx.torgb(stops[i + 1])
+    local r2, g2, b2 = gfx.torgb(stops[math.min(#stops, i + 2)])
+    local f = t - i
+    gfx.fill(win, x, y + k, w, math.min(4, h - k), gfx.rgb(r1 + (r2 - r1) * f, g1 + (g2 - g1) * f, b1 + (b2 - b1) * f))
+  end
+end
+
+local function draw_wallpaper(x0, y0)
+  heading(x0, y0, "Wallpaper", "The desktop picture: the gradient, or any .simg in ~/Pictures.")
+  if walls == nil then
+    gfx.text(win, x0, y0 + 70, "Loading pictures...", C.dim)
+    return
+  end
+  local cur = gui.wallpaper()
+  local cols = math.max(1, (W - x0 - 16) // 150)
+  for i, wl in ipairs(walls) do
+    local x = x0 + ((i - 1) % cols) * 150
+    local y = y0 + 64 + ((i - 1) // cols) * 104
+    if y + 96 > H then break end
+    local tw, th = TW * 2, TH * 2
+    if wl.path == "" then draw_gradient_thumb(x, y, tw, th)
+    elseif wl.thumb then gfx.image(win, wl.thumb, x, y, 2)
+    else gfx.fill(win, x, y, tw, th, C.button) gfx.text(win, x + 8, y + 28, "unreadable", C.dim) end
+    local on = wl.path == cur
+    local bc = C.border
+    if on then bc = C.accent elseif hover == "w" .. i then bc = C.dim end
+    gfx.rect(win, x - 3, y - 3, tw + 6, th + 6, bc)
+    if on then gfx.rect(win, x - 2, y - 2, tw + 4, th + 4, bc) end
+    local label = wl.name
+    if #label > 16 then label = label:sub(1, 15) .. "»" end
+    gfx.text(win, x, y + th + 6, label, on and C.accent or C.text)
+    hit(x - 3, y - 3, tw + 6, th + 26, "w" .. i)
+  end
+end
+
+local function switch(x, y, on, hov)
+  local bg = C.button
+  if on then bg = C.accent end
+  gfx.fill(win, x, y, 36, 18, bg)
+  gfx.fill(win, x, y, 1, 1, C.bg) gfx.fill(win, x + 35, y, 1, 1, C.bg)
+  gfx.fill(win, x, y + 17, 1, 1, C.bg) gfx.fill(win, x + 35, y + 17, 1, 1, C.bg)
+  if hov then gfx.rect(win, x, y, 36, 18, C.dim) end
+  local kx = x + 3
+  if on then kx = x + 21 end
+  gfx.fill(win, kx, y + 3, 12, 12, on and C.ontext or C.dim)
+end
+
+local function draw_taskbar(x0, y0)
+  heading(x0, y0, "Taskbar", "Pinned apps stay on the taskbar, running or not.")
+  local apps = gui.apps()
+  for i, name in ipairs(apps) do
+    local y = y0 + 62 + (i - 1) * 24
+    if y + 20 > H - 8 then break end
+    if i % 2 == 0 then gfx.fill(win, x0 - 8, y - 3, W - x0 - 8, 24, C.hover) end
+    gfx.text(win, x0, y, name, C.text)
+    local on = gui.pinned(name)
+    local sx = W - 70
+    switch(sx, y - 1, on, hover == "p" .. i)
+    hit(x0 - 8, y - 3, W - x0 - 8, 24, "p" .. i)
+  end
+end
+
+local function draw_about(x0, y0)
+  gfx.text(win, x0, y0 + 10, "☺", C.accent, nil, 2)
+  gfx.text(win, x0 + 32, y0 + 10, "ScratchOS", C.text, nil, 2)
+  gfx.text(win, x0, y0 + 56, sys.version(), C.dim)
+  local m = sys.mem()
+  local rows = {
+    {"Screen", "1280 x 720, 160 x 45 cells"},
+    {"Memory", string.format("%d of %d heap cells, %d files", m.heap, m.heap_max, m.files)},
+    {"Processes", tostring(m.procs)},
+    {"Up for", string.format("%d min", math.floor(sys.uptime() / 60))},
+    {"Font", "JetBrains Mono (OFL 1.1)"},
+    {"Made in", "Scratch, drawn with the pen"},
+  }
+  for i, r in ipairs(rows) do
+    local y = y0 + 90 + (i - 1) * 22
+    gfx.text(win, x0, y, r[1], C.dim)
+    gfx.text(win, x0 + 100, y, r[2], C.text)
+  end
+end
+
+local function draw()
+  hits = {}
+  gfx.batch()
+  gfx.clear(win, C.bg)
+  -- sidebar
+  local side = SIDE
+  if W < 520 then side = 120 end
+  gfx.fill(win, 0, 0, side, H, C.side)
+  gfx.fill(win, side - 1, 0, 1, H, C.border)
+  for i, name in ipairs(SECTIONS) do
+    local y = 20 + (i - 1) * 28
+    if i == section then gfx.fill(win, 8, y - 4, side - 16, 24, C.accent)
+    elseif hover == "s" .. i then gfx.fill(win, 8, y - 4, side - 16, 24, C.hover) end
+    gfx.text(win, 20, y, name, i == section and C.ontext or C.text)
+    hit(8, y - 4, side - 16, 24, "s" .. i)
+  end
+  local x0, y0 = side + 28, 24
+  if section == 1 then draw_appearance(x0, y0)
+  elseif section == 2 then draw_wallpaper(x0, y0)
+  elseif section == 3 then draw_taskbar(x0, y0)
+  else draw_about(x0, y0) end
+  if status ~= "" then gfx.text(win, x0, H - 22, status, C.dim) end
+  gfx.flush()
+end
+
+local function hit_at(x, y)
+  for _, h in ipairs(hits) do
+    if x >= h.x and x < h.x + h.w and y >= h.y and y < h.y + h.h then return h.key end
+  end
+  return nil
+end
+
+local function open_section(i)
+  section = i
+  status = ""
+  if section == 2 and walls == nil then
+    draw()                       -- "Loading pictures..." first
+    load_walls()
+  end
+end
+
+local function click(key)
+  if key == nil then return end
+  local kind, n = key:sub(1, 1), tonumber(key:sub(2, #key))
+  if key == "light" or key == "dark" then
+    gui.appearance(key)
+    colours()
+  elseif kind == "s" and n then open_section(n)
+  elseif kind == "w" and n and walls[n] then
+    local ok, err = gui.wallpaper(walls[n].path)
+    if ok then status = "" else status = "Cannot use " .. walls[n].name .. ": " .. tostring(err) end
+  elseif kind == "p" and n then
+    local name = gui.apps()[n]
+    gui.pinned(name, not gui.pinned(name))
+  end
+end
+
+draw()
+local running = true
+while running do
+  local e = gui.waitevent(win)
+  local redraw = true
+  if e.type == "close" then running = false
+  elseif e.type == "mousedown" then click(hit_at(e.x, e.y))
+  elseif e.type == "move" then
+    local k = hit_at(e.x, e.y)
+    if k ~= hover then hover = k else redraw = false end
+  elseif e.type == "key" then
+    if e.key == "up arrow" and section > 1 then open_section(section - 1)
+    elseif e.key == "down arrow" and section < #SECTIONS then open_section(section + 1)
+    elseif e.key == "q" or e.key == "escape" then running = false
+    else redraw = false end
+  elseif e.type == "resize" then W, H = e.x, e.y
+  else redraw = false end
+  if redraw and running then draw() end
+end
+gui.close(win)

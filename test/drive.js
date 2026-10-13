@@ -72,7 +72,16 @@ async function main() {
       continue;
     }
     if (c === '@shot') { await shot(); continue; }
-    if (c.startsWith('@key=')) { await tap(c.slice(5)); continue; }
+    if (c.startsWith('@key=')) {
+      // "Shift+ArrowLeft": hold the modifiers while the key is tapped
+      const parts = c.slice(5).split('+');
+      const k = parts.pop();
+      for (const m of parts) await p.keyboard.down(m);
+      await h.sleep(40);
+      await tap(k);
+      for (const m of parts.reverse()) await p.keyboard.up(m);
+      continue;
+    }
     if (c.startsWith('@ctrl=')) {
       await p.keyboard.down('Control'); await h.sleep(30); await tap(c.slice(6)); await p.keyboard.up('Control'); await h.sleep(30);
       continue;

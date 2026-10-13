@@ -129,8 +129,14 @@ returns a window id; `close(win)`; `event(win)` (a table or nil);
 (optionally with a file); `launch(cmdline)` starts another desktop app, as
 Start does (`gui.launch("preview " .. path)`); `track(win [, on])` asks
 for `"move"` events (with `x`, `y`) while the pointer is over the window,
-for hover effects. Events are tables with `type` set to `"key"` (with
-`key`), `"mousedown"`, `"drag"` or `"mouseup"` (with `x`, `y` in window
+for hover effects; `appearance(["light" | "dark"])` gets or sets the
+appearance; `wallpaper([path])` gets or sets the desktop picture (a
+`.simg` file, or `""` for the gradient); `apps()` lists the desktop's apps
+and `pinned(app [, on])` gets or sets whether one is pinned to the taskbar;
+`clipboard([text])` gets or sets the clipboard (shared with the Whisker
+IDE). Events are tables with `type` set to `"key"` (with `key`, and `mod`
+= `"shift"` or `"ctrl"` when one was held with a special key such as an
+arrow), `"mousedown"`, `"drag"` or `"mouseup"` (with `x`, `y` in window
 pixels), `"wheel"` (with `y` = notches, positive = down), `"resize"` (with
 `x`, `y` = new size), or `"close"`. `size(win)` is the drawing area below
 the title bar.
@@ -207,7 +213,7 @@ Sensitive calls need a capability:
 |---|---|
 | `files` | writing outside `/home` and `/tmp` |
 | `proc` | killing processes the program did not start |
-| `gui` | `gui.window`, `gui.terminal`, `gui.ide`, `gui.launch`, `gui.track` |
+| `gui` | `gui.window`, `gui.terminal`, `gui.ide`, `gui.launch`, `gui.track`, `gui.appearance`, `gui.wallpaper`, `gui.pinned`, `gui.clipboard` |
 | `system` | `sys.shutdown`, `sys.reboot` |
 
 The first use asks the user: (y)es, (n)o or (a)lways. Declare needs on any

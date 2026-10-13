@@ -54,6 +54,9 @@ proc heap_init() {
     clear(tb_used); clear(tb_owner); clear(tb_mark); clear(tb_pin);
     gc_runs = 0;
     heap_live = 0;
+    // the wallpaper picture lived in the old heap
+    wall_img = 0;
+    wall_path = "";
 }
 
 proc heap_alloc(n) {

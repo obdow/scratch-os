@@ -184,7 +184,14 @@ desktop dialog. Programs can request capabilities at start with `--@caps`.
 
 A desktop on the cell grid:
 - **Menu bar** (row 0): the logo menu, the focused app's menus.
-- **Wallpaper**: two gradient stripes per cell row.
+- **Wallpaper**: two gradient stripes per cell row, or a `.simg` picture
+  (`gui.wallpaper`). A picture is scaled to cover the screen and thinned
+  to about 20,000 pixels, because it stays pinned in the shared heap.
+  Picture cells are marked `-5`. The redraw gathers consecutive dirty ones
+  along a row into a span (`wall_span`). Each picture row's run of equal
+  pixels inside the span is then one pen stroke per screen row, however
+  many cells it crosses, so a full repaint costs strokes per run, not per
+  cell.
 - **Windows**: a title row with the traffic lights and rounded top corners,
   over content that runs edge to edge.
 - **Taskbar** (the bottom two rows): Start, pinned apps (`task_pins`), then

@@ -63,9 +63,19 @@ console; `startx` starts the desktop from there.)
   - A sidebar (Home, Projects, Pictures, Sites, Examples, Applications,
     Documents…).
   - Back/forward, and Name/Size/Kind columns.
-  - Double-click a `.wsk` or `.txt` file to open it in the Whisker IDE, or
-    a `.simg` picture to open it in Preview, or a `.yarn` page to open it
-    in the Browser.
+  - **New File**, **New Folder**, **Rename** (or click a selected name
+    again) and **Delete**. Names are edited in place, and renaming a file
+    keeps its extension unless you change it.
+  - The layout adapts as the window narrows: the sidebar, then the
+    columns, then the toolbar buttons give way. The ≡ menu always has
+    every action.
+  - Double-click to open: `.wsk` in the Whisker IDE, `.simg` in Preview,
+    `.yarn` in the Browser, any other file in TextEdit.
+- **TextEdit.** A text editor with word wrap, two text sizes, mouse and
+  Shift+arrow selection, undo / redo, Find, and the clipboard (shared with
+  the IDE). It has Open / Save As panels, asks before discarding changes,
+  and shows line, column, words and characters. The terminal editor is
+  still there as `edit`.
 - **Paint.** Pen, line, box, fill, circle and disc tools, and the 16 system
   colours plus your recent custom colours. **Colors…** (or `k`) opens a
   colour picker with a hex field, R/G/B sliders and a hue strip; any
@@ -94,8 +104,13 @@ console; `startx` starts the desktop from there.)
   output panel, tree of your home folder, examples and docs. Programs it runs
   open their windows on the desktop. Open it from Start, from Finder, or
   with `ide [file]` in a terminal.
-- **System Settings.** Dark and light appearance. This recolours the menu
-  bar, taskbar, windows, terminals, the IDE and apps that use system colours.
+- **System Settings.** An app with four sections:
+  - **Appearance:** dark or light, for the menu bar, taskbar, windows,
+    terminals, the IDE and apps that use system colours.
+  - **Wallpaper:** the gradient, or any `.simg` picture (three come in
+    `/usr/share/wallpapers`, and everything in `~/Pictures` is listed).
+  - **Taskbar:** which apps are pinned.
+  - **About.**
 
 ## What you can do
 
@@ -118,7 +133,7 @@ user@scratchos:~$ startx                     # the desktop (from the text consol
 | Shell | pipes `\|`, redirection `> >> < 2>`, `;` `&&` `\|\|` `&`, quoting, `$VAR` `$?` `$$` `~`, history (↑/↓), line editing, Ctrl+C, job control (`jobs`, `fg`, `kill %n`), scripts (`sh file.sh`, `source`) |
 | Programs | `ls cat cp mv rm mkdir rmdir touch tree find grep wc head tail sort uniq rev tee seq yes basename dirname sleep date cal ps top kill free uname whoami hostname man more edit whisker calc cowsay fortune bench matrix snake hello cube` |
 | Desktop | menu bar with app menus, a Windows-style taskbar (Start menu, pinned and running apps, clock, show desktop), gradient wallpaper, windows with traffic lights (close, minimise, zoom), drag / resize / double-click zoom, permission and message dialogs, dark and light appearance |
-| GUI apps | Finder, Whisker IDE, Paint (with a hex / RGB colour picker), Preview (`.simg` pictures), Browser (Yarn web pages), Activity Monitor, Clock, 3D Cube (orbit it with the mouse), About, System Settings, plus terminal apps like TextEdit, Snake and Matrix |
+| GUI apps | Finder, Whisker IDE, Paint (with a hex / RGB colour picker), Preview (`.simg` pictures), Browser (Yarn web pages), TextEdit, Activity Monitor, Clock, 3D Cube (orbit it with the mouse), About, System Settings (appearance, picture wallpapers, taskbar), plus terminal apps like Snake and Matrix |
 | Language | Whisker: Lua-like syntax, tables, functions, methods, `pcall`/`error`, multiple returns, `load`/`require`, 140+ built-in functions |
 | Permissions | programs ask before using `files`, `proc`, `gui` or `system` capabilities: (y)es / (n)o / (a)lways; policy in `/etc/caps` |
 

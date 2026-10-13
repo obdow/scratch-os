@@ -473,7 +473,7 @@ proc open_file(path) {
     local kind = path_is_text(fs_path(ino));
     add(tab_kind, kind);
     // empty text files open in the editor (there is nothing to preview)
-    if (kind == 1 && len(fs_data[ino]) == 0) { add(tab_view, 0); } else { add(tab_view, kind); }
+    if (kind == 1 && len(fs_data[ino]) > 0) { add(tab_view, 1); } else { add(tab_view, 0); }
     add(tab_rtop, 1);
     local n = len(tab_path);
     cur_tab = 0;

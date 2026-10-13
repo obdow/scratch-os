@@ -389,11 +389,12 @@ def _shape_mask(code):
             dr.ellipse([CX4, cy - s * 0.3, CX4 + s, cy + s * 0.5], fill=255)
             dr.polygon([(CX4 - s, cy + s * 0.1), (CX4 + s, cy + s * 0.1), (CX4, cy - s)], fill=255)
             dr.polygon([(CX4, cy), (CX4 - s * 0.5, cy + s), (CX4 + s * 0.5, cy + s)], fill=255)
-    elif code in (16, 30, 31):
-        # small solid triangles: right, up, down
+    elif code in (16, 17, 30, 31):
+        # small solid triangles: right, left, up, down
         s = 3 * SS
         cx, cy = CX4, CY4 + SS // 2
         pts = {16: [(cx - s * 0.6, cy - s), (cx - s * 0.6, cy + s), (cx + s * 0.9, cy)],
+               17: [(cx + s * 0.6, cy - s), (cx + s * 0.6, cy + s), (cx - s * 0.9, cy)],
                30: [(cx - s, cy + s * 0.6), (cx + s, cy + s * 0.6), (cx, cy - s * 0.9)],
                31: [(cx - s, cy - s * 0.6), (cx + s, cy - s * 0.6), (cx, cy + s * 0.9)]}[code]
         dr.polygon(pts, fill=255)

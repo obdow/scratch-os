@@ -65,12 +65,16 @@ sprite Kernel {
         }
         local ev = event;
         // everything else ignores modifiers on special keys ("^enter", "+up arrow")
-        if (len(ev) > 2 && (ev[1] == "^" || ev[1] == "+")) { ev = substr(ev, 2, len(ev)); }
+        // (canvas windows get the modifier as the event's "mod")
+        if (len(ev) > 2 && (ev[1] == "^" || ev[1] == "+")) {
+            if (ev[1] == "^") { ev_next_mod = "ctrl"; } else { ev_next_mod = "shift"; }
+            ev = substr(ev, 2, len(ev));
+        }
         if (ev == "caps lock") { kb_caps = 1 - kb_caps; return; }
         local t = con;
         if (gui == 1) {
             t = wm_focus_tty();
-            if (t == 0) { wm_key(ev); return; }
+            if (t == 0) { wm_key(ev); ev_next_mod = ""; return; }
         }
         if (prompt_pid != 0 && prompt_gui == 0 && prompt_tty == t) {
             caps_key(ev);

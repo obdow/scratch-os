@@ -208,6 +208,102 @@ def spectrum():
     return w, h, rows, 'hue / saturation / value spectrum'
 
 
+# --- wallpapers (160 x 90: 8 x 8 screen pixels each at 1280 x 720) --------------------
+# Flat colour bands rather than noise: each row is a few long runs, which
+# the desktop draws as single pen strokes.
+
+def band(c0, c1, t, steps):
+    t = min(steps - 1, int(t * steps)) / (steps - 1)
+    return lerp(c0, c1, t)
+
+
+def aurora():
+    w, h = 160, 90
+    rows = []
+    for y in range(h):
+        rows.append([band((6, 10, 40), (24, 40, 92), y / h, 12)] * w)
+    # aurora ribbons
+    for x in range(w):
+        for k, (base, col) in enumerate([(26, (60, 220, 150)), (34, (40, 170, 160)), (20, (120, 230, 180))]):
+            yc = int(base + 7 * math.sin(x / 17 + k * 2) + 3 * math.sin(x / 7 + k))
+            for y in range(max(0, yc - 2 - k), yc + 2):
+                if 0 <= y < h:
+                    rows[y][x] = col
+    # stars
+    import random
+    rnd = random.Random(7)
+    for i in range(45):
+        x, y = rnd.randrange(w), rnd.randrange(40)
+        if rows[y][x] == band((6, 10, 40), (24, 40, 92), y / h, 12):
+            rows[y][x] = (230, 235, 255)
+    # mountains and a lake
+    for x in range(w):
+        top = int(62 - 10 * abs(math.sin(x / 21)) - 6 * abs(math.sin(x / 9 + 1)))
+        for y in range(top, 72):
+            rows[y][x] = (14, 18, 34)
+        for y in range(72, h):
+            rows[y][x] = band((18, 30, 70), (8, 12, 30), (y - 72) / 18, 4)
+            if (y - 72) % 3 == 1 and 40 < x < 120 and (x + y) % 9 < 5:
+                rows[y][x] = (50, 150, 130)
+    return w, h, rows, 'aurora over the mountains (wallpaper)'
+
+
+def dunes():
+    w, h = 160, 90
+    rows = []
+    for y in range(h):
+        rows.append([band((250, 214, 160), (238, 140, 90), y / 50, 8)] * w)
+    for x in range(w):
+        if (x - 118) ** 2 + 0 < 400:
+            pass
+    for y in range(h):
+        for x in range(w):
+            if (x - 118) ** 2 + (y - 22) ** 2 < 11 ** 2:
+                rows[y][x] = (255, 244, 214)
+    layers = [(48, (214, 132, 84), 0.045, 8), (60, (190, 104, 66), 0.06, 7), (74, (150, 76, 52), 0.05, 6)]
+    for base, colour, f, amp in layers:
+        for x in range(w):
+            top = int(base - amp * math.sin(x * f + base))
+            for y in range(top, h):
+                rows[y][x] = colour
+            # the lit side of each dune
+            if 0 <= top < h:
+                rows[top][x] = tuple(min(255, c + 40) for c in colour)
+    return w, h, rows, 'desert dunes at dusk (wallpaper)'
+
+
+def lake():
+    w, h = 160, 90
+    rows = []
+    sky = lambda y: band((120, 180, 235), (210, 232, 248), y / 45, 8)
+    for y in range(h):
+        rows.append([sky(y)] * w)
+    hills = [None] * w
+    for x in range(w):
+        top = int(40 - 14 * abs(math.sin(x / 26 + 0.5)) - 5 * math.sin(x / 8))
+        hills[x] = top
+        for y in range(top, 45):
+            rows[y][x] = (58, 112, 86) if y > top + 2 else (240, 246, 250)
+        # trees along the shore
+        if x % 4 == 0:
+            for y in range(38, 45):
+                rows[y][x] = (30, 70, 50)
+    # the lake mirrors the scene, darker, with ripples
+    for y in range(45, h):
+        src = 44 - (y - 45)
+        for x in range(w):
+            r, g, b = rows[max(0, src)][x]
+            c = (int(r * 0.7), int(g * 0.75), int(b * 0.85))
+            if (y - 45) % 4 == 3 and (x // 6 + y) % 3 == 0:
+                c = (200, 222, 240)
+            rows[y][x] = c
+    return w, h, rows, 'a mountain lake (wallpaper)'
+
+
+WALLPAPERS = {'aurora.simg': aurora, 'dunes.simg': dunes, 'lake.simg': lake}
+WALLPAPER_DIR = os.path.join(ROOT, 'rootfs', 'usr', 'share', 'wallpapers')
+
+
 SAMPLES = {'sunset.simg': sunset, 'cat.simg': cat, 'heart.simg': heart,
            'mountains.simg': mountains, 'spectrum.simg': spectrum}
 
@@ -232,9 +328,11 @@ if __name__ == '__main__':
             print('wrote', out, f'{w}x{h}')
         sys.exit(0)
     os.makedirs(PICTURES, exist_ok=True)
-    for name, fn in SAMPLES.items():
-        w, h, rows, note = fn()
-        text = encode(w, h, rows, note)
-        assert decode(text) == (w, h, rows)
-        open(os.path.join(PICTURES, name), 'w').write(text)
-        print(f'{name}: {w}x{h}, {len(text) // 1024} KiB')
+    os.makedirs(WALLPAPER_DIR, exist_ok=True)
+    for folder, table in ((PICTURES, SAMPLES), (WALLPAPER_DIR, WALLPAPERS)):
+        for name, fn in table.items():
+            w, h, rows, note = fn()
+            text = encode(w, h, rows, note)
+            assert decode(text) == (w, h, rows)
+            open(os.path.join(folder, name), 'w').write(text)
+            print(f'{name}: {w}x{h}, {len(text) // 1024} KiB')
