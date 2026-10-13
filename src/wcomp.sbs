@@ -107,7 +107,7 @@ list cnt_loop;
 list wkeywords = ["and", "break", "do", "else", "elseif", "end", "false", "for", "function", "if", "in",
                   "local", "nil", "not", "or", "repeat", "return", "then", "true", "until", "while", "continue"];
 list nat_names = data("nat_names");
-list nat_mods = ["string", "math", "table", "os", "io", "fs", "proc", "term", "gui", "gfx", "sys", "utf8"];
+list nat_mods = ["string", "math", "table", "os", "io", "fs", "proc", "term", "gui", "gfx", "sys", "utf8", "image"];
 
 var c_i = 1;             // current token index
 var c_fail = 0;

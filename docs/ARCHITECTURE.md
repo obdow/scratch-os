@@ -47,6 +47,12 @@ tty_cursor_update()  blinking text cursor
   * 90 wallpaper steps, all of one chroma, so the gradient has no banding.
 * Solid rectangles use 81 power-of-two rectangle costumes (1…256 px per side),
   so any fill takes at most 4 stamps. Lines use the pen.
+* **True colour.** Colour numbers from 256 up are `256 + 0xRRGGBB`. The pen
+  takes any RGB, so these are filled with 1 px pen strokes, one per row (or
+  per column for tall shapes), instead of costume stamps. A stroke is centred
+  on whole stage coordinates: a centre half a pixel off would land on a pixel
+  boundary and blend two half-covered rows. Text in a true colour falls back
+  to the nearest palette entry.
 * **Cells** (`ui.sbs`): a cell is a glyph and an attribute
   `fg + 256·bg + 65536·deco`. A deco is a thin pen-drawn detail over the cell:
   * 1 px borders;
@@ -198,6 +204,11 @@ so moving a window marks all its content dirty.
   repainted by replaying the list with the same clipping (Liang–Barsky lines,
   rectangle intersection, whole-glyph text). Colours `16…` are system UI
   colours (`gui.color`), resolved for the current appearance when drawn.
+* **Images** (`src/image.sbs`) are heap tables (`w`, `h`, and pixels as raw
+  RGB, -1 transparent). They are read and written in the `.simg` text format
+  (`docs/SIMG.md`). `gfx.image` adds display-list op 10, which pins the
+  image table until the window is cleared or closed. Replay draws each
+  row's runs of equal pixels as single pen strokes, clipped like any fill.
 * **The Whisker IDE** (`src/ide/`) is one window kind. The IDE has a
   variable size and screen origin (`IC`/`IR`, `ide_ox`/`ide_oy`). Hosted, it
   only *composes* its cells into its own buffer. `wm_compose()` copies them

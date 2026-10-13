@@ -126,7 +126,8 @@ Key names: single characters, `"enter" "backspace" "delete" "escape" "up arrow" 
 returns a window id; `close(win)`; `event(win)` (a table or nil);
 `waitevent(win)`; `size(win)`; `title(win, text)`; `active(win)`;
 `terminal([cmd])`; `color(name)`; `ide([path])` opens the Whisker IDE
-(optionally with a file). Events are tables with `type` set to `"key"` (with
+(optionally with a file); `launch(cmdline)` starts another desktop app, as
+the dock does (`gui.launch("preview " .. path)`). Events are tables with `type` set to `"key"` (with
 `key`), `"mousedown"`, `"drag"` or `"mouseup"` (with `x`, `y` in window
 pixels), `"wheel"` (with `y` = notches, positive = down), `"resize"` (with
 `x`, `y` = new size), or `"close"`. `size(win)` is the drawing area below
@@ -138,14 +139,47 @@ the appearance changes: `"window"`, `"sidebar"`, `"text"`, `"dim"`,
 `"accent"`, `"ontext"` (text on the accent), `"selection"`, `"hover"`,
 `"border"`, `"button"`, `"folder"`, `"red"`, `"yellow"`, `"green"`,
 `"error"`, and the fixed `"paper"` (near white) and `"ink"` (near black).
+Any other colour is a *true colour*: `gfx.rgb(r, g, b)` (0-255 each) or
+`gfx.hex("#ff8800")` (also `"#f80"` and `"ff8800"`; nil if invalid) return
+its number, and `gfx.torgb(c)` turns any colour back into `r, g, b, "#rrggbb"`.
+Shapes draw true colours exactly. Text in a true colour uses the nearest
+system colour.
 
 **gfx** (all take a window first; colours as above): `clear(win, c)`,
 `pixel(win, x, y, c)`, `line(win, x1, y1, x2, y2, c [, size])`,
 `rect(win, x, y, w, h, c)`, `fill(win, x, y, w, h, c)`,
 `circle(win, x, y, r, c)`, `disc(win, x, y, r, c)`,
-`text(win, x, y, s, fg [, bg])`, `poly(win, {x1, y1, x2, y2, ...}, c)` (filled convex polygon).
+`text(win, x, y, s, fg [, bg])`, `poly(win, {x1, y1, x2, y2, ...}, c)` (filled convex polygon),
+`image(win, img, x, y [, scale])` (draw a picture; transparent pixels are skipped).
 Wrap a frame's drawing in `gfx.batch()` ... `gfx.flush()` so it appears all at once
 (see `/bin/cube.wsk`).
+
+**image** (pictures, saved as `.simg` files; see `man simg`): an image is
+a table `{w = ..., h = ...}` whose array part holds the pixels row by row,
+each a raw `0xRRGGBB` value or -1 for transparent. Images hold at most
+65,536 pixels. Colour arguments take any `gfx` colour; pixels are 0-based.
+
+| Function | Returns / notes |
+|---|---|
+| `new(w, h [, c])` | an image filled with `c` (default transparent) |
+| `load(path)` / `save(path, img)` | image / true, or nil and an error |
+| `decode(text)` / `encode(img)` | the same, from and to `.simg` text |
+| `size(img)` | `w, h` |
+| `get(img, x, y)` / `set(img, x, y, c)` | colour number (-1 if transparent, nil outside) |
+| `fill(img, x, y, w, h, c)` / `rect(...)` | filled / outlined rectangle |
+| `line(img, x1, y1, x2, y2, c [, width])` | round brush |
+| `circle(img, x, y, r, c)` / `disc(...)` | outlined / filled circle |
+| `copy(img)` | a new image |
+| `rotate(img)` | a new image turned 90 degrees clockwise |
+| `flip(img [, "v"])` | mirrors in place, left-right (or top-bottom) |
+| `colors(img)` | number of distinct colours, and whether any pixel is transparent |
+
+```lua
+local img = image.new(32, 32, gfx.hex("#202840"))
+image.disc(img, 16, 16, 12, gfx.rgb(255, 200, 40))
+image.save(os.getenv("HOME") .. "/Pictures/sun.simg", img)
+gfx.image(win, img, 10, 10, 4)          -- at 400%
+```
 
 **sys:** `version()`, `uptime()`, `mem()`, `hostname()`, `caps()`,
 `request(cap)`, `gc()`, `procs()`, `date()`, `shutdown()`, `reboot()`.
@@ -167,7 +201,7 @@ Sensitive calls need a capability:
 |---|---|
 | `files` | writing outside `/home` and `/tmp` |
 | `proc` | killing processes the program did not start |
-| `gui` | `gui.window`, `gui.terminal`, `gui.ide` |
+| `gui` | `gui.window`, `gui.terminal`, `gui.ide`, `gui.launch` |
 | `system` | `sys.shutdown`, `sys.reboot` |
 
 The first use asks the user: (y)es, (n)o or (a)lways. Declare needs on any

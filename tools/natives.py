@@ -38,9 +38,13 @@ NATIVES = [
     'term.waitkey', 'term.cursor', 'term.put', 'term.write', 'term.getpos',
     # windows / graphics
     'gui.window', 'gui.close', 'gui.event', 'gui.waitevent', 'gui.size', 'gui.title',
-    'gui.active', 'gui.terminal', 'gui.color', 'gui.ide',
+    'gui.active', 'gui.terminal', 'gui.color', 'gui.ide', 'gui.launch',
     'gfx.clear', 'gfx.pixel', 'gfx.line', 'gfx.rect', 'gfx.fill', 'gfx.circle', 'gfx.text',
-    'gfx.batch', 'gfx.flush', 'gfx.disc', 'gfx.poly',
+    'gfx.batch', 'gfx.flush', 'gfx.disc', 'gfx.poly', 'gfx.rgb', 'gfx.hex', 'gfx.torgb', 'gfx.image',
+    # images and the .simg format (image.sbs)
+    'image.new', 'image.load', 'image.save', 'image.decode', 'image.encode', 'image.size',
+    'image.get', 'image.set', 'image.fill', 'image.rect', 'image.line', 'image.circle',
+    'image.disc', 'image.copy', 'image.rotate', 'image.flip', 'image.colors',
     # system
     'sys.version', 'sys.uptime', 'sys.mem', 'sys.shutdown', 'sys.reboot', 'sys.caps',
     'sys.hostname', 'sys.gc', 'sys.request', 'sys.procs', 'sys.date',

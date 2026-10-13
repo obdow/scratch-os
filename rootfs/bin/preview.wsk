@@ -1,0 +1,221 @@
+-- preview - Preview, the image viewer for .simg pictures
+--@caps gui files
+-- usage: preview [file.simg]      (no file: the first picture in ~/Pictures)
+-- toolbar: back / forward through the folder's pictures, zoom out / fit /
+-- zoom in, rotate, flip, Edit in Paint, Save.  Drag to pan, wheel zooms.
+-- keys: left / right, + / - / 0, r rotate, f flip, s save, e edit, q quit
+local W, H = 760, 512
+local win = gui.window("Preview", W, H)
+W, H = gui.size(win)
+local C = {
+  bg = gui.color("window"), bar = gui.color("sidebar"), text = gui.color("text"),
+  dim = gui.color("dim"), border = gui.color("border"), button = gui.color("button"),
+  accent = gui.color("accent"), ontext = gui.color("ontext"),
+  check1 = gfx.rgb(204, 204, 210), check2 = gfx.rgb(240, 240, 244),
+}
+local TOP, BOTTOM = 36, 22
+
+local path, img, err = nil, nil, nil
+local iw, ih, ncolours, transparent = 0, 0, 0, false
+local zoom, fit = 1, true
+local panx, pany = 0, 0
+local modified = false
+local status = ""
+local BUTTONS = {"-", "Fit", "+", "Rotate", "Flip", "Edit in Paint", "Save"}
+local bx = {}
+
+local function folder_of(p) return fs.dir(p) end
+
+-- the .simg files next to the current one, sorted
+local function siblings()
+  local dir = folder_of(path)
+  local out = {}
+  for _, n in ipairs(fs.list(dir) or {}) do
+    if n:endswith(".simg") then out[#out + 1] = dir .. "/" .. n end
+  end
+  table.sort(out)
+  return out
+end
+
+local function fit_zoom()
+  local aw, ah = W - 24, H - TOP - BOTTOM - 24
+  local z = math.min(aw / iw, ah / ih)
+  if z >= 1 then z = math.floor(z) end
+  return z
+end
+
+local function open(p)
+  path = p
+  img, err = image.load(p)
+  modified = false
+  panx, pany = 0, 0
+  if img then
+    iw, ih = image.size(img)
+    ncolours, transparent = image.colors(img)
+    fit = true
+    zoom = fit_zoom()
+    status = ""
+  else
+    status = "Cannot open: " .. tostring(err)
+  end
+  gui.title(win, fs.name(p))
+end
+
+local function draw()
+  gfx.batch()
+  gfx.clear(win, C.bg)
+  -- picture
+  if img then
+    if fit then zoom = fit_zoom() end
+    local dw, dh = math.floor(iw * zoom), math.floor(ih * zoom)
+    local x = (W - dw) // 2 + panx
+    local y = TOP + (H - TOP - BOTTOM - dh) // 2 + pany
+    if transparent then
+      -- a checkerboard shows through transparent pixels
+      local s = 8
+      for cy = 0, dh - 1, s do
+        for cx = 0, dw - 1, s do
+          local c = C.check1
+          if (cx // s + cy // s) % 2 == 0 then c = C.check2 end
+          gfx.fill(win, x + cx, y + cy, math.min(s, dw - cx), math.min(s, dh - cy), c)
+        end
+      end
+    end
+    gfx.image(win, img, x, y, zoom)
+  else
+    local msg = status
+    if msg == "" then msg = "No picture" end
+    gfx.text(win, (W - #msg * 8) // 2, H // 2, msg, C.dim)
+  end
+  -- toolbar
+  gfx.fill(win, 0, 0, W, TOP, C.bar)
+  gfx.fill(win, 0, TOP - 1, W, 1, C.border)
+  gfx.text(win, 12, 10, "◄", C.text)
+  gfx.text(win, 32, 10, "►", C.text)
+  local name = path and fs.name(path) or "Preview"
+  if modified then name = name .. " - Edited" end
+  gfx.text(win, 56, 10, name, C.text)
+  local x2 = W - 8
+  for i = #BUTTONS, 1, -1 do
+    local b = " " .. BUTTONS[i] .. " "
+    x2 = x2 - #b * 8
+    bx[i] = x2
+    local bg, fg = C.button, C.text
+    if BUTTONS[i] == "Fit" and fit then bg, fg = C.accent, C.ontext end
+    gfx.fill(win, x2, 9, #b * 8, 18, bg)
+    gfx.text(win, x2, 10, b, fg)
+    x2 = x2 - 6
+  end
+  -- status bar
+  gfx.fill(win, 0, H - BOTTOM, W, BOTTOM, C.bar)
+  gfx.fill(win, 0, H - BOTTOM, W, 1, C.border)
+  local info = status
+  if img and info == "" then
+    info = string.format("%d x %d pixels   %d colours   %d%%", iw, ih, ncolours, math.floor(zoom * 100 + 0.5))
+    if transparent then info = info .. "   transparency" end
+  end
+  gfx.text(win, 12, H - BOTTOM + 3, info, C.dim)
+  gfx.flush()
+end
+
+local function step(d)
+  if path == nil then return end
+  local list = siblings()
+  local k = 1
+  for i, p in ipairs(list) do if p == path then k = i end end
+  k = k + d
+  if k < 1 then k = #list end
+  if k > #list then k = 1 end
+  if list[k] then open(list[k]) end
+end
+
+local function set_zoom(z)
+  fit = false
+  zoom = math.max(0.25, math.min(32, z))
+end
+
+local function zoom_in()
+  if zoom < 1 then set_zoom(zoom * 2) else set_zoom(math.floor(zoom) + 1) end
+end
+
+local function zoom_out()
+  if zoom <= 1 then set_zoom(zoom / 2) else set_zoom(math.ceil(zoom) - 1) end
+end
+
+local function save()
+  if img == nil then return end
+  local ok, e = image.save(path, img)
+  if ok then modified = false status = "Saved " .. fs.name(path) else status = "Error: " .. tostring(e) end
+end
+
+local function action(i)
+  if i == 1 then zoom_out()
+  elseif i == 2 then fit = true panx, pany = 0, 0
+  elseif i == 3 then zoom_in()
+  elseif i == 4 and img then img = image.rotate(img) iw, ih = image.size(img) modified = true
+  elseif i == 5 and img then image.flip(img) modified = true
+  elseif i == 6 and path then
+    if modified then save() end
+    gui.launch("paint " .. path)
+  elseif i == 7 then save() end
+end
+
+-- start
+local start = arg[1]
+if start == nil then
+  local pics = os.getenv("HOME") .. "/Pictures"
+  for _, n in ipairs(fs.list(pics) or {}) do
+    if start == nil and n:endswith(".simg") then start = pics .. "/" .. n end
+  end
+end
+if start then open(fs.abs(start)) end
+draw()
+
+local running = true
+local dragx, dragy = nil, nil
+while running do
+  local e = gui.waitevent(win)
+  local redraw = true
+  if e.type == "close" then running = false
+  elseif e.type == "mousedown" then
+    if e.y < TOP then
+      if e.x < 26 then step(-1)
+      elseif e.x < 46 then step(1)
+      else
+        for i, b in ipairs(BUTTONS) do
+          if bx[i] and e.x >= bx[i] and e.x < bx[i] + (#b + 2) * 8 then action(i) end
+        end
+      end
+    else
+      dragx, dragy = e.x, e.y
+      redraw = false
+    end
+  elseif e.type == "drag" and dragx then
+    panx, pany = panx + e.x - dragx, pany + e.y - dragy
+    dragx, dragy = e.x, e.y
+  elseif e.type == "mouseup" then
+    dragx = nil
+    redraw = false
+  elseif e.type == "wheel" then
+    if e.y < 0 then zoom_in() else zoom_out() end
+  elseif e.type == "key" then
+    local k = e.key
+    if k == "left arrow" then step(-1)
+    elseif k == "right arrow" then step(1)
+    elseif k == "+" or k == "=" then zoom_in()
+    elseif k == "-" then zoom_out()
+    elseif k == "0" then fit = true panx, pany = 0, 0
+    elseif k == "r" then action(4)
+    elseif k == "f" then action(5)
+    elseif k == "e" then action(6)
+    elseif k == "s" then save()
+    elseif k == "q" or k == "escape" then running = false
+    else redraw = false end
+  elseif e.type == "resize" then
+    W, H = e.x, e.y
+  else
+    redraw = false
+  end
+  if redraw and running then draw() end
+end
+gui.close(win)

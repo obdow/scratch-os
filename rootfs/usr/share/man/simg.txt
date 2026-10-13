@@ -1,0 +1,30 @@
+SIMG(5)                    ScratchOS Manual
+
+    .simg is the ScratchOS picture format, a palette with run-length
+    encoded rows, stored as text:
+
+      SIMG 1
+      # a comment
+      size 13 11                 width height (at most 65536 pixels)
+      palette 3
+      - #f0473e #ffa096          "-" is transparent
+      pixels
+      2*0 3*1 3*0 3*1 2*0        one line per row; count*index
+      ...
+      end
+
+    Apps:
+      preview [file.simg]      view pictures (arrows: previous / next,
+                               +/-/0 zoom, r rotate, f flip, e edit, s save)
+      paint                    draw; Save writes ~/Pictures/drawing.simg,
+                               Open loads a picture to paint over,
+                               Colors... (or k) opens the hex / RGB picker
+    Finder opens .simg files in Preview.
+
+    Programs use the image library:
+      local img = image.load("/home/user/Pictures/cat.simg")
+      local w, h = image.size(img)
+      gfx.image(win, img, 0, 0, 4)            -- drawn at 400%
+      image.set(img, 0, 0, gfx.hex("#ff8800"))
+      image.save("/home/user/Pictures/cat2.simg", img)
+    See man whisker and /usr/share/doc/whisker for the full list.

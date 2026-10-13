@@ -135,11 +135,63 @@ proc gfx_cell(col, row, code, fg, bg) {
     }
 }
 
-// Pen line in screen coordinates with palette colour and size.
+// Fill a rectangle with an exact RGB colour (0..16777215) using pen strokes:
+// one 1-pixel stroke per row (or column, whichever is fewer).  Pen strokes
+// take any colour, which costume stamps (palette + effects) cannot.
+proc gfx_rgb_fill(x, y, w, h, rgb) {
+    if (w < 1 || h < 1) { return; }
+    pen_color(rgb);
+    gfx_pen_col = -2;
+    if (gfx_pen_size != 1) { gfx_pen_size = 1; pen_size(1); }
+    if (w >= h) {
+        local xa = x - HALF_W;
+        local xb = x + w - 1 - HALF_W;
+        for r = 0 to h - 1 {
+            local py = HALF_H - (y + r);
+            goto(xa, py);
+            pen_down();
+            goto(xb, py);
+            pen_up();
+        }
+    } else {
+        local ya = HALF_H - y;
+        local yb = HALF_H - (y + h - 1);
+        for c = 0 to w - 1 {
+            local px = x + c - HALF_W;
+            goto(px, ya);
+            pen_down();
+            goto(px, yb);
+            pen_up();
+        }
+    }
+    gfx_stamps += 1;
+}
+
+// palette index whose colour is nearest to an RGB value (for text, which is
+// stamped from costumes)
+proc gfx_nearest(rgb) {
+    local r = floor(rgb / 65536);
+    local g = floor(rgb / 256) % 256;
+    local b = rgb % 256;
+    local best = 0;
+    local bd = 999999;
+    for i = 1 to len(pal_rgb) {
+        local p = pal_rgb[i];
+        local dr = floor(p / 65536) - r;
+        local dg = floor(p / 256) % 256 - g;
+        local db = p % 256 - b;
+        local d = dr * dr * 3 + dg * dg * 4 + db * db * 2;
+        if (d < bd) { bd = d; best = i - 1; }
+    }
+    return best;
+}
+
+// Pen line in screen coordinates with a palette colour, or a true colour
+// (256 + RGB), and a size.
 proc gfx_line(x1, y1, x2, y2, c, sz) {
     if (c != gfx_pen_col) {
         gfx_pen_col = c;
-        pen_color(pal_rgb[c + 1]);
+        if (c >= 256) { pen_color(c - 256); } else { pen_color(pal_rgb[c + 1]); }
     }
     if (sz != gfx_pen_size) {
         gfx_pen_size = sz;

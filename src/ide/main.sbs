@@ -29,6 +29,7 @@ sprite Kernel {
     include "../natives.sbs";
     include "../natives_sys.sbs";
     include "../caps.sbs";
+    include "../image.sbs";
     include "../wm.sbs";
     include "ide.sbs";
     include "textview.sbs";        // native rendering of text files

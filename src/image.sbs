@@ -1,0 +1,563 @@
+// ===========================================================================
+// image.sbs - images and the ScratchOS image format, .simg
+// (included inside sprite Kernel)
+//
+// An image is a Whisker table: fields w and h, and the pixels in its array
+// part, row by row (pixel x, y is element y * w + x + 1).  A pixel is a raw
+// RGB integer (0 .. 16777215) or -1 for transparent.  The image.* natives
+// take and return *colour codes* (as gfx.* does): 0..15 terminal colours,
+// 16.. system colours, 256 + RGB true colours (gfx.rgb / gfx.hex), -1
+// transparent.
+//
+// The .simg format is text, so files stay readable in the editor:
+//
+//     SIMG 1
+//     # comment lines are allowed anywhere before "pixels"
+//     size 4 2
+//     palette 3
+//     #1e1f22 #ff5f57 -          (n colours, "-" = transparent, any line breaks)
+//     pixels
+//     3*1 2                      (one line per row: "count*index" or "index",
+//     4*0                         0-based palette indices, separated by spaces)
+//     end
+//
+// Images are drawn on windows with pen strokes, so every RGB colour is
+// exact (see gfx_rgb_fill): one 1-pixel stroke per screen row of each run
+// of equal pixels.
+// ===========================================================================
+
+const IMG_MAX = 65536;            // pixels per image
+
+list hex_digits = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f"];
+list ic_cols;                     // encoder: palette colours
+var img_err = "";
+
+proc imin(a, b) {
+    if (a < b) { return a; }
+    return b;
+}
+
+proc imax(a, b) {
+    if (a > b) { return a; }
+    return b;
+}
+
+// --- storage -------------------------------------------------------------------
+
+proc img_w(h) {
+    table_get(h, "w", TSTR);
+    return hv_r;
+}
+
+proc img_h(h) {
+    table_get(h, "h", TSTR);
+    return hv_r;
+}
+
+// 1 when table h looks like an image
+proc img_ok(h) {
+    table_get(h, "w", TSTR);
+    if (ht_r != TNUM) { return 0; }
+    local w = hv_r;
+    table_get(h, "h", TSTR);
+    if (ht_r != TNUM) { return 0; }
+    if (tb_an[h] < w * hv_r) { return 0; }
+    return 1;
+}
+
+// a new image table of w x h pixels, all rgb (raw, -1 transparent)
+proc img_new(owner, w, ht, rgb) {
+    local h = table_new(owner);
+    tset_n(h, "w", w);
+    tset_n(h, "h", ht);
+    local n = w * ht;
+    table_grow_arr(h, n);
+    local b = tb_ab[h];
+    for i = 1 to n {
+        HV[b + i] = rgb;
+        HT[b + i] = TNUM;
+    }
+    tb_an[h] = n;
+    return h;
+}
+
+// colour code (gfx) -> raw RGB, -1 transparent
+proc img_rgb(c) {
+    if (c < 0) { return -1; }
+    if (c >= 256) { return floor(c - 256) % 16777216; }
+    if (c >= 16) { return pal_rgb[c + theme * UI_SLOTS + 1]; }
+    return pal_rgb[floor(c) % 16 + 1];
+}
+
+// raw RGB -> colour code
+proc img_code(rgb) {
+    if (rgb < 0) { return -1; }
+    return rgb + 256;
+}
+
+// --- drawing into images ------------------------------------------------------------
+
+proc img_set(h, w, ht, x, y, rgb) {
+    local px = floor(x);
+    local py = floor(y);
+    if (px < 0 || py < 0 || px >= w || py >= ht) { return; }
+    HV[tb_ab[h] + py * w + px + 1] = rgb;
+}
+
+proc img_fill(h, x, y, rw, rh, rgb) {
+    local w = img_w(h);
+    local ht = img_h(h);
+    local x0 = imax(0, floor(x));
+    local y0 = imax(0, floor(y));
+    local x1 = imin(w, floor(x + rw));
+    local y1 = imin(ht, floor(y + rh));
+    local b = tb_ab[h];
+    for py = y0 to y1 - 1 {
+        local row = b + py * w + 1;
+        for px = x0 to x1 - 1 { HV[row + px] = rgb; }
+    }
+}
+
+// a line `size` pixels thick (round brush)
+proc img_line(h, xa, ya, xb, yb, rgb, size) {
+    local w = img_w(h);
+    local ht = img_h(h);
+    local dx = xb - xa;
+    local dy = yb - ya;
+    local steps = imax(abs(dx), abs(dy));
+    if (steps < 1) { steps = 1; }
+    local r = (size - 1) / 2;
+    for k = 0 to steps {
+        local cx = xa + dx * k / steps;
+        local cy = ya + dy * k / steps;
+        if (size <= 1) { img_set(h, w, ht, round(cx), round(cy), rgb); }
+        else { img_disc_wh(h, w, ht, cx, cy, r, rgb); }
+    }
+}
+
+proc img_disc_wh(h, w, ht, cx, cy, r, rgb) {
+    local b = tb_ab[h];
+    for dy = floor(0 - r) to ceil(r) {
+        local py = round(cy + dy);
+        if (py >= 0 && py < ht) {
+            local hw = floor(sqrt(imax(0, r * r - dy * dy)) + 0.5);
+            local x0 = imax(0, round(cx) - hw);
+            local x1 = imin(w - 1, round(cx) + hw);
+            for px = x0 to x1 { HV[b + py * w + px + 1] = rgb; }
+        }
+    }
+}
+
+proc img_circle(h, cx, cy, r, rgb) {
+    local w = img_w(h);
+    local ht = img_h(h);
+    local segs = imax(16, round(r * 4));
+    for k = 0 to segs {
+        local a = k * 360 / segs;
+        img_set(h, w, ht, round(cx + r * cos(a)), round(cy + r * sin(a)), rgb);
+    }
+}
+
+// rotate 90 degrees clockwise: a new image
+proc img_rotate(owner, h) {
+    local w = img_w(h);
+    local ht = img_h(h);
+    local n = img_new(owner, ht, w, -1);
+    local sb = tb_ab[h];
+    local nb = tb_ab[n];
+    for y = 0 to ht - 1 {
+        for x = 0 to w - 1 {
+            // (x, y) -> (ht - 1 - y, x) in an ht-wide image
+            HV[nb + x * ht + (ht - 1 - y) + 1] = HV[sb + y * w + x + 1];
+        }
+    }
+    return n;
+}
+
+proc img_flip(h, vertical) {
+    local w = img_w(h);
+    local ht = img_h(h);
+    local b = tb_ab[h];
+    if (vertical == 1) {
+        for y = 0 to floor(ht / 2) - 1 {
+            for x = 0 to w - 1 {
+                local i = b + y * w + x + 1;
+                local j = b + (ht - 1 - y) * w + x + 1;
+                local t = HV[i];
+                HV[i] = HV[j];
+                HV[j] = t;
+            }
+        }
+    } else {
+        for y = 0 to ht - 1 {
+            for x = 0 to floor(w / 2) - 1 {
+                local i2 = b + y * w + x + 1;
+                local j2 = b + y * w + (w - 1 - x) + 1;
+                local t2 = HV[i2];
+                HV[i2] = HV[j2];
+                HV[j2] = t2;
+            }
+        }
+    }
+}
+
+proc img_copy(owner, h) {
+    local w = img_w(h);
+    local ht = img_h(h);
+    local n = img_new(owner, w, ht, -1);
+    local sb = tb_ab[h];
+    local nb = tb_ab[n];
+    for i = 1 to w * ht { HV[nb + i] = HV[sb + i]; }
+    return n;
+}
+
+// --- the .simg format ---------------------------------------------------------------
+
+proc hex2(n) {
+    return hex_digits[floor(n / 16) + 1] .. hex_digits[n % 16 + 1];
+}
+
+proc hex6(rgb) {
+    return "#" .. hex2(floor(rgb / 65536)) .. hex2(floor(rgb / 256) % 256) .. hex2(rgb % 256);
+}
+
+// "#rrggbb" / "rrggbb" / "#rgb" -> RGB, or -1
+proc parse_hex(s0) {
+    local s = s0;
+    if (len(s) > 0 && s[1] == "#") { s = substr(s, 2, len(s)); }
+    if (len(s) == 3) { s = s[1] .. s[1] .. s[2] .. s[2] .. s[3] .. s[3]; }
+    if (len(s) != 6) { return -1; }
+    local v = 0;
+    for i = 1 to 6 {
+        local d = index(hex_digits, s[i]);
+        if (d == 0) { return -1; }
+        v = v * 16 + d - 1;
+    }
+    return v;
+}
+
+proc img_encode(h) {
+    local w = img_w(h);
+    local ht = img_h(h);
+    local b = tb_ab[h];
+    clear(ic_cols);
+    // palette, in order of first use
+    for i = 1 to w * ht {
+        local c = HV[b + i];
+        if (index(ic_cols, c) == 0) { add(ic_cols, c); }
+    }
+    local out = "SIMG 1\nsize " .. w .. " " .. ht .. "\npalette " .. len(ic_cols) .. "\n";
+    local line = "";
+    for k = 1 to len(ic_cols) {
+        local c2 = ic_cols[k];
+        if (c2 < 0) { line = line .. "- "; } else { line = line .. hex6(c2) .. " "; }
+        if (k % 8 == 0) { out = out .. line .. "\n"; line = ""; }
+    }
+    if (len(line) > 0) { out = out .. line .. "\n"; }
+    out = out .. "pixels\n";
+    for y = 0 to ht - 1 {
+        local row = "";
+        local x = 0;
+        local rb = b + y * w;
+        while (x < w) {
+            local c3 = HV[rb + x + 1];
+            local n = 1;
+            while (x + n < w && HV[rb + x + n + 1] == c3) { n += 1; }
+            local idx = index(ic_cols, c3) - 1;
+            if (n == 1) { row = row .. idx .. " "; } else { row = row .. n .. "*" .. idx .. " "; }
+            x += n;
+        }
+        out = out .. row .. "\n";
+    }
+    return out .. "end\n";
+}
+
+list dl_lines;     // decoder: the file's lines
+list dc_pal;       // decoder: palette (raw RGB)
+
+// decode .simg text into a new image table (0 on error, img_err says why)
+proc img_decode(owner, text) {
+    clear(dl_lines);
+    local start = 1;
+    local n = len(text);
+    for i = 1 to n {
+        if (text[i] == "\n") {
+            add(dl_lines, str_trim(substr(text, start, i - 1)));
+            start = i + 1;
+        }
+    }
+    if (start <= n) { add(dl_lines, str_trim(substr(text, start, n))); }
+    if (len(dl_lines) == 0 || substr(dl_lines[1], 1, 4) != "SIMG") { img_err = "not a .simg image"; return 0; }
+    local w = 0;
+    local ht = 0;
+    local npal = -1;
+    clear(dc_pal);
+    local k = 2;
+    // header: size, palette, then the palette entries
+    while (k <= len(dl_lines)) {
+        local l = dl_lines[k];
+        k += 1;
+        if (len(l) == 0 || l[1] == "#" && npal < 0) {
+            // blank or comment
+        } else if (substr(l, 1, 5) == "size ") {
+            local sp = str_find(l, " ", 6);
+            w = substr(l, 6, sp - 1) * 1;
+            ht = substr(l, sp + 1, len(l)) * 1;
+        } else if (substr(l, 1, 8) == "palette ") {
+            npal = substr(l, 9, len(l)) * 1;
+        } else if (l == "pixels") {
+            break;
+        } else if (npal >= 0) {
+            // palette entries
+            local tok = "";
+            for j = 1 to len(l) + 1 {
+                local ch = " ";
+                if (j <= len(l)) { ch = l[j]; }
+                if (ch == " ") {
+                    if (len(tok) > 0) {
+                        if (tok == "-") { add(dc_pal, -1); }
+                        else {
+                            local v = parse_hex(tok);
+                            if (v < 0) { img_err = "bad colour " .. tok; return 0; }
+                            add(dc_pal, v);
+                        }
+                        tok = "";
+                    }
+                } else { tok = tok .. ch; }
+            }
+        }
+    }
+    if (w < 1 || ht < 1) { img_err = "missing size"; return 0; }
+    if (w * ht > IMG_MAX) { img_err = "image too large (" .. w .. "x" .. ht .. ")"; return 0; }
+    if (len(dc_pal) != npal) { img_err = "palette has " .. len(dc_pal) .. " colours, expected " .. npal; return 0; }
+    local h = img_new(owner, w, ht, -1);
+    local b = tb_ab[h];
+    for y = 0 to ht - 1 {
+        if (k > len(dl_lines)) { img_err = "missing rows"; return h; }
+        local row = dl_lines[k];
+        k += 1;
+        local x = 0;
+        local num = "";
+        local cnt = 1;
+        for j = 1 to len(row) + 1 {
+            local ch2 = " ";
+            if (j <= len(row)) { ch2 = row[j]; }
+            if (ch2 == "*") {
+                cnt = num * 1;
+                num = "";
+            } else if (ch2 == " ") {
+                if (len(num) > 0) {
+                    local c = dc_pal[num * 1 + 1];
+                    repeat (cnt) {
+                        if (x < w) { HV[b + y * w + x + 1] = c; }
+                        x += 1;
+                    }
+                    num = "";
+                    cnt = 1;
+                }
+            } else { num = num .. ch2; }
+        }
+    }
+    return h;
+}
+
+// --- drawing images on windows ------------------------------------------------------
+
+// draw image table h with its top-left at screen pixel (sx, sy), `scale`
+// screen pixels per image pixel (any positive number), clipped to cl_*
+proc img_draw(h, sx, sy, scale) {
+    if (h < 1 || h > len(tb_used)) { return; }
+    if (tb_used[h] == 0) { return; }
+    if (img_ok(h) == 0) { return; }
+    local w = img_w(h);
+    local ht = img_h(h);
+    local b = tb_ab[h];
+    for y = 0 to ht - 1 {
+        local ry0 = floor(sy + y * scale);
+        local ry1 = floor(sy + (y + 1) * scale);
+        if (ry0 < cl_y0) { ry0 = cl_y0; }
+        if (ry1 > cl_y1) { ry1 = cl_y1; }
+        if (ry1 > ry0) {
+            local x = 0;
+            local rb = b + y * w;
+            while (x < w) {
+                local c = HV[rb + x + 1];
+                local n = 1;
+                while (x + n < w && HV[rb + x + n + 1] == c) { n += 1; }
+                if (c >= 0) {
+                    local rx0 = floor(sx + x * scale);
+                    local rx1 = floor(sx + (x + n) * scale);
+                    if (rx0 < cl_x0) { rx0 = cl_x0; }
+                    if (rx1 > cl_x1) { rx1 = cl_x1; }
+                    if (rx1 > rx0) { gfx_rgb_fill(rx0, ry0, rx1 - rx0, ry1 - ry0, c); }
+                }
+                x += n;
+            }
+        }
+    }
+}
+
+// --- image.* natives ----------------------------------------------------------------
+
+proc nat_img_arg(i, fname) {
+    local h = nat_table(i, fname);
+    if (vm_raised == 1) { return 0; }
+    if (img_ok(h) == 0) { vm_raise("bad argument #" .. i .. " to '" .. fname .. "' (not an image)"); return 0; }
+    return h;
+}
+
+proc nat_image(id) {
+    local s = vm_slot;
+    local me = p_pid[s];
+    switch (id) {
+        case N_IMAGE_NEW: {
+            local w = floor(nat_num(1, "image.new"));
+            local ht = floor(nat_num(2, "image.new"));
+            local c = img_rgb(nat_optnum(3, -1, "image.new"));
+            if (vm_raised == 0) {
+                if (w < 1 || ht < 1 || w * ht > IMG_MAX) { vm_raise("image.new: size must be 1.." .. IMG_MAX .. " pixels"); }
+                else { nat_rett(img_new(me, w, ht, c)); }
+            }
+        }
+        case N_IMAGE_LOAD, N_IMAGE_DECODE: {
+            local text = "";
+            if (id == N_IMAGE_LOAD) {
+                local ino = nat_path(1, "image.load");
+                if (vm_raised == 0) {
+                    if (ino == 0) { nat_fail(fs_err); return; }
+                    if (fs_type[ino] == FT_DIR) { nat_fail("is a directory"); return; }
+                    text = fs_data[ino];
+                }
+            } else {
+                text = nat_str(1, "image.decode");
+            }
+            if (vm_raised == 0) {
+                img_err = "";
+                local h = img_decode(me, text);
+                if (h == 0) { nat_fail(img_err); } else { nat_rett(h); }
+            }
+        }
+        case N_IMAGE_SAVE: {
+            local path = nat_str(1, "image.save");
+            local h2 = nat_img_arg(2, "image.save");
+            if (vm_raised == 0) {
+                local cwd = p_cwd[s];
+                local ino2 = fs_lookup(path, cwd);
+                local target = ino2;
+                if (ino2 == 0) { target = fs_lookup_parent(path, cwd); }
+                if (target == 0) { nat_fail(fs_err); }
+                else if (ino2 > 0 && fs_type[ino2] == FT_DIR) { nat_fail("is a directory"); }
+                else if (nat_fs_cap(target) == 1) {
+                    if (ino2 == 0) { ino2 = fs_create(path, FT_FILE, cwd); }
+                    if (ino2 == 0) { nat_fail(fs_err); }
+                    else {
+                        fs_data[ino2] = img_encode(h2);
+                        fs_mtime[ino2] = fs_now();
+                        nat_retb(1);
+                    }
+                }
+            }
+        }
+        case N_IMAGE_ENCODE: {
+            local h3 = nat_img_arg(1, "image.encode");
+            if (vm_raised == 0) { nat_rets(img_encode(h3)); }
+        }
+        case N_IMAGE_SIZE: {
+            local h4 = nat_img_arg(1, "image.size");
+            if (vm_raised == 0) { nat_retn(img_w(h4)); nat_retn(img_h(h4)); }
+        }
+        case N_IMAGE_GET: {
+            local h5 = nat_img_arg(1, "image.get");
+            local x = floor(nat_num(2, "image.get"));
+            local y = floor(nat_num(3, "image.get"));
+            if (vm_raised == 0) {
+                local w5 = img_w(h5);
+                if (x < 0 || y < 0 || x >= w5 || y >= img_h(h5)) { nat_retnil(); }
+                else { nat_retn(img_code(HV[tb_ab[h5] + y * w5 + x + 1])); }
+            }
+        }
+        case N_IMAGE_SET: {
+            local h6 = nat_img_arg(1, "image.set");
+            local x6 = nat_num(2, "image.set");
+            local y6 = nat_num(3, "image.set");
+            local c6 = img_rgb(nat_num(4, "image.set"));
+            if (vm_raised == 0) { img_set(h6, img_w(h6), img_h(h6), x6, y6, c6); }
+        }
+        case N_IMAGE_FILL: {
+            local h7 = nat_img_arg(1, "image.fill");
+            local x7 = nat_num(2, "image.fill");
+            local y7 = nat_num(3, "image.fill");
+            local w7 = nat_num(4, "image.fill");
+            local ht7 = nat_num(5, "image.fill");
+            local c7 = img_rgb(nat_num(6, "image.fill"));
+            if (vm_raised == 0) { img_fill(h7, x7, y7, w7, ht7, c7); }
+        }
+        case N_IMAGE_RECT: {
+            local h8 = nat_img_arg(1, "image.rect");
+            local x8 = nat_num(2, "image.rect");
+            local y8 = nat_num(3, "image.rect");
+            local w8 = nat_num(4, "image.rect");
+            local ht8 = nat_num(5, "image.rect");
+            local c8 = img_rgb(nat_num(6, "image.rect"));
+            if (vm_raised == 0) {
+                img_fill(h8, x8, y8, w8, 1, c8);
+                img_fill(h8, x8, y8 + ht8 - 1, w8, 1, c8);
+                img_fill(h8, x8, y8, 1, ht8, c8);
+                img_fill(h8, x8 + w8 - 1, y8, 1, ht8, c8);
+            }
+        }
+        case N_IMAGE_LINE: {
+            local h9 = nat_img_arg(1, "image.line");
+            local xa = nat_num(2, "image.line");
+            local ya = nat_num(3, "image.line");
+            local xb = nat_num(4, "image.line");
+            local yb = nat_num(5, "image.line");
+            local c9 = img_rgb(nat_num(6, "image.line"));
+            local sz = nat_optnum(7, 1, "image.line");
+            if (vm_raised == 0) { img_line(h9, xa, ya, xb, yb, c9, sz); }
+        }
+        case N_IMAGE_CIRCLE, N_IMAGE_DISC: {
+            local h10 = nat_img_arg(1, "image.circle");
+            local cx = nat_num(2, "image.circle");
+            local cy = nat_num(3, "image.circle");
+            local r = nat_num(4, "image.circle");
+            local c10 = img_rgb(nat_num(5, "image.circle"));
+            if (vm_raised == 0) {
+                if (id == N_IMAGE_DISC) { img_disc_wh(h10, img_w(h10), img_h(h10), cx, cy, r, c10); }
+                else { img_circle(h10, cx, cy, r, c10); }
+            }
+        }
+        case N_IMAGE_COPY: {
+            local h11 = nat_img_arg(1, "image.copy");
+            if (vm_raised == 0) { nat_rett(img_copy(me, h11)); }
+        }
+        case N_IMAGE_ROTATE: {
+            local h12 = nat_img_arg(1, "image.rotate");
+            if (vm_raised == 0) { nat_rett(img_rotate(me, h12)); }
+        }
+        case N_IMAGE_FLIP: {
+            local h13 = nat_img_arg(1, "image.flip");
+            local dir = "h";
+            if (nat_argc >= 2) { dir = nat_str(2, "image.flip"); }
+            if (vm_raised == 0) {
+                if (dir == "v" || dir == "vertical") { img_flip(h13, 1); } else { img_flip(h13, 0); }
+            }
+        }
+        case N_IMAGE_COLORS: {
+            // number of distinct colours, and whether any pixel is transparent
+            local h14 = nat_img_arg(1, "image.colors");
+            if (vm_raised == 0) {
+                clear(ic_cols);
+                local b14 = tb_ab[h14];
+                for i = 1 to img_w(h14) * img_h(h14) {
+                    if (index(ic_cols, HV[b14 + i]) == 0) { add(ic_cols, HV[b14 + i]); }
+                }
+                nat_retn(len(ic_cols));
+                local tr = 0;
+                if (index(ic_cols, -1) > 0) { tr = 1; }
+                nat_retb(tr);
+            }
+        }
+        default: { vm_raise("native " .. nat_names[id] .. " not implemented"); }
+    }
+}

@@ -1,48 +1,185 @@
--- paint - a small paint program
---@caps gui
+-- paint - Paint, drawing with true colours, saved as .simg pictures
+--@caps gui files
+-- usage: paint [file.simg]
 -- tools: pencil, line, rectangle, filled rectangle, circle, disc, eraser
--- keys: c clears, s saves to ~/drawing.pic, o opens it, q quits
-local W, H = 640, 432
+-- colours: the system colours, recent colours and Colors... (a hex / RGB /
+-- hue colour picker).  Open / Save read and write .simg pictures (see
+-- `man simg`); a picture you open is the background you draw on.
+-- keys: c clears, s saves, o opens, k colour picker, q quits
+local W, H = 720, 480
 local win = gui.window("Paint", W, H)
 W, H = gui.size(win)
 local TOP = 28                 -- toolbar height
-local PAL = 28                 -- palette height
+local PAL = 36                 -- palette bar height
 local C = {
   bar = gui.color("sidebar"), text = gui.color("text"), dim = gui.color("dim"),
   accent = gui.color("accent"), ontext = gui.color("ontext"), button = gui.color("button"),
-  border = gui.color("border"), paper = gui.color("paper"),
+  border = gui.color("border"), paper = gui.color("paper"), popup = gui.color("window"),
 }
 local tool = "pencil"
 local colour = gui.color("ink")
 local size = 1
-local shapes = {}              -- saved drawing: {kind, x1, y1, x2, y2, colour, size}
+local shapes = {}              -- the drawing: {kind, x1, y1, x2, y2, colour, size}
+local recent = {}              -- custom colours used recently (newest first)
 local px, py = nil, nil        -- previous point while dragging
 local sx, sy = nil, nil        -- drag start for shapes
 local tools = {"pencil", "line", "rect", "fill", "circle", "disc", "eraser", "size", "clear"}
 local labels = {"Pen", "Line", "Box", "Fill", "Circ", "Disc", "Eras", "1px", "Clr"}
+local FILEBTN = {"Open", "Save"}
+local fbx = {}
+local path = nil               -- the picture being edited
+local bg = nil                 -- its image (drawn under the shapes)
+local scale = 2                -- canvas pixels per picture pixel
+local status = ""
+
+-- --- the colour picker ------------------------------------------------------------
+local picker = false
+local pr, pg, pb = 0, 0, 0     -- picker colour
+local hexbuf = ""              -- the hex field while typing
+local PW, PH = 316, 236
+local pkx, pky = 0, 0          -- picker position in the window
+local slider = nil             -- slider being dragged: "r", "g", "b" or "hue"
+
+local function canvas_h() return H - TOP - PAL end
+
+local function hex_of(r, g, b)
+  local _, _, _, h = gfx.torgb(gfx.rgb(r, g, b))
+  return h
+end
+
+-- HSV (h 0..360) -> RGB 0..255
+local function hsv(h, s, v)
+  local c = v * s
+  local hp = (h % 360) / 60
+  local x = c * (1 - math.abs(hp % 2 - 1))
+  local r, g, b = 0, 0, 0
+  if hp < 1 then r, g = c, x elseif hp < 2 then r, g = x, c elseif hp < 3 then g, b = c, x
+  elseif hp < 4 then g, b = x, c elseif hp < 5 then r, b = x, c else r, b = c, x end
+  local m = v - c
+  return math.floor((r + m) * 255 + 0.5), math.floor((g + m) * 255 + 0.5), math.floor((b + m) * 255 + 0.5)
+end
+
+local function sat_val(r, g, b)
+  local mx = math.max(r, g, b) / 255
+  local mn = math.min(r, g, b) / 255
+  local s = 0
+  if mx > 0 then s = (mx - mn) / mx end
+  return s, mx
+end
+
+local function draw_picker()
+  pkx = (W - PW) // 2
+  pky = TOP + (canvas_h() - PH) // 2
+  local x, y = pkx, pky
+  gfx.fill(win, x - 1, y - 1, PW + 2, PH + 2, C.border)
+  gfx.fill(win, x, y, PW, PH, C.popup)
+  gfx.text(win, x + 12, y + 8, "Colors", C.text)
+  -- preview swatch and hex field
+  local cur = gfx.rgb(pr, pg, pb)
+  gfx.fill(win, x + 12, y + 32, 64, 64, C.border)
+  gfx.fill(win, x + 13, y + 33, 62, 62, cur)
+  gfx.text(win, x + 92, y + 34, "Hex", C.dim)
+  gfx.fill(win, x + 92, y + 52, 96, 20, C.button)
+  local shown = hexbuf
+  if shown == "" then shown = hex_of(pr, pg, pb) end
+  gfx.text(win, x + 96, y + 54, shown, C.text)
+  gfx.fill(win, x + 96 + #shown * 8, y + 55, 2, 14, C.accent)
+  gfx.text(win, x + 92, y + 78, "type a hex colour", C.dim)
+  -- R, G, B sliders (gradients of the channel, the others fixed)
+  local names = {"R", "G", "B"}
+  local vals = {pr, pg, pb}
+  for k = 1, 3 do
+    local sy2 = y + 104 + (k - 1) * 26
+    gfx.text(win, x + 12, sy2, names[k], C.dim)
+    for seg = 0, 31 do
+      local v = math.floor(seg * 255 / 31)
+      local r, g, b = pr, pg, pb
+      if k == 1 then r = v elseif k == 2 then g = v else b = v end
+      gfx.fill(win, x + 32 + seg * 7, sy2 + 3, 7, 10, gfx.rgb(r, g, b))
+    end
+    local hx = x + 32 + math.floor(vals[k] * 223 / 255)
+    gfx.fill(win, hx - 2, sy2, 5, 16, C.text)
+    gfx.fill(win, hx - 1, sy2 + 1, 3, 14, C.popup)
+    gfx.text(win, x + 268, sy2, string.format("%3d", vals[k]), C.text)
+  end
+  -- hue strip
+  local hy = y + 182
+  gfx.text(win, x + 12, hy, "H", C.dim)
+  for seg = 0, 31 do
+    local r, g, b = hsv(seg * 360 / 32, 1, 1)
+    gfx.fill(win, x + 32 + seg * 7, hy + 3, 7, 10, gfx.rgb(r, g, b))
+  end
+  -- buttons
+  gfx.fill(win, x + PW - 150, y + PH - 30, 64, 20, C.button)
+  gfx.text(win, x + PW - 142, y + PH - 28, "Cancel", C.text)
+  gfx.fill(win, x + PW - 76, y + PH - 30, 64, 20, C.accent)
+  gfx.text(win, x + PW - 56, y + PH - 28, "OK", C.ontext)
+end
+
+local function open_picker()
+  local r, g, b = gfx.torgb(colour)
+  pr, pg, pb = r, g, b
+  hexbuf = ""
+  picker = true
+  gfx.batch()
+  draw_picker()
+  gfx.flush()
+end
+
+-- --- drawing ------------------------------------------------------------------------
 
 local function toolbar()
   gfx.fill(win, 0, 0, W, TOP, C.bar)
   gfx.fill(win, 0, TOP - 1, W, 1, C.border)
   for i, t in ipairs(tools) do
     local x = (i - 1) * 48 + 8
-    local bg, fg = C.button, C.text
-    if t == tool then bg, fg = C.accent, C.ontext end
-    gfx.fill(win, x, 5, 44, 18, bg)
+    local b, f = C.button, C.text
+    if t == tool then b, f = C.accent, C.ontext end
+    gfx.fill(win, x, 5, 44, 18, b)
     local lbl = labels[i]
     if t == "size" then lbl = size .. "px" end
-    gfx.text(win, x + 22 - #lbl * 4, 6, lbl, fg)
+    gfx.text(win, x + 22 - #lbl * 4, 6, lbl, f)
+  end
+  local x2 = W - 8
+  for i = #FILEBTN, 1, -1 do
+    local b = " " .. FILEBTN[i] .. " "
+    x2 = x2 - #b * 8
+    fbx[i] = x2
+    gfx.fill(win, x2, 5, #b * 8, 18, C.button)
+    gfx.text(win, x2, 6, b, C.text)
+    x2 = x2 - 6
   end
 end
 
 local function palette()
-  gfx.fill(win, 0, H - PAL, W, PAL, C.bar)
-  gfx.fill(win, 0, H - PAL, W, 1, C.border)
+  local y = H - PAL
+  gfx.fill(win, 0, y, W, PAL, C.bar)
+  gfx.fill(win, 0, y, W, 1, C.border)
+  -- current colour
+  gfx.fill(win, 8, y + 5, 26, 26, C.border)
+  gfx.fill(win, 9, y + 6, 24, 24, colour)
+  -- the 16 system colours
   for c = 0, 15 do
-    gfx.fill(win, c * 24 + 10, H - PAL + 6, 20, PAL - 12, c)
-    if c == colour then gfx.rect(win, c * 24 + 8, H - PAL + 4, 24, PAL - 8, C.accent) end
+    gfx.fill(win, 44 + c * 20, y + 9, 16, 18, c)
+    if c == colour then gfx.rect(win, 42 + c * 20, y + 7, 20, 22, C.accent) end
   end
-  gfx.text(win, W - 200, H - PAL + 6, "s save  o open  q quit", C.dim)
+  -- recent custom colours
+  for i = 1, 6 do
+    local x = 376 + (i - 1) * 20
+    gfx.fill(win, x, y + 9, 16, 18, C.border)
+    if recent[i] then
+      gfx.fill(win, x + 1, y + 10, 14, 16, recent[i])
+      if recent[i] == colour then gfx.rect(win, x - 2, y + 7, 20, 22, C.accent) end
+    end
+  end
+  gfx.fill(win, 504, y + 8, 80, 20, C.button)
+  gfx.text(win, 508, y + 10, "Colors...", C.text)
+  local info = status
+  if info == "" then
+    local _, _, _, h = gfx.torgb(colour)
+    info = h
+  end
+  gfx.text(win, 596, y + 10, info:sub(1, (W - 600) // 8), C.dim)
 end
 
 local function draw_shape(s)
@@ -60,10 +197,14 @@ local function draw_shape(s)
 end
 
 local function redraw_all()
+  gfx.batch()
   gfx.clear(win, C.paper)
+  if bg then gfx.image(win, bg, 0, TOP, scale) end
   for _, s in ipairs(shapes) do draw_shape(s) end
   toolbar()
   palette()
+  if picker then draw_picker() end
+  gfx.flush()
 end
 
 local function add(kind, x1, y1, x2, y2)
@@ -73,44 +214,202 @@ local function add(kind, x1, y1, x2, y2)
   local s = {kind, x1, y1, x2, y2, c, sz}
   shapes[#shapes + 1] = s
   draw_shape(s)
+  -- a shape reaching past the canvas would paint over the bars: repaint them
+  local r = sz
+  if kind == "circle" or kind == "disc" then
+    r = math.sqrt((x2 - x1) ^ 2 + (y2 - y1) ^ 2) + 1
+    x2, y2 = x1, y1
+  end
+  if math.min(y1, y2) - r < TOP or math.max(y1, y2) + r >= TOP + canvas_h() then
+    gfx.batch()
+    toolbar()
+    palette()
+    gfx.flush()
+  end
+end
+
+local function use_colour(c)
+  colour = c
+  if c >= 256 then
+    -- remember custom colours
+    local keep = {c}
+    for _, r in ipairs(recent) do if r ~= c and #keep < 6 then keep[#keep + 1] = r end end
+    recent = keep
+  end
+  gfx.batch()
+  palette()
+  gfx.flush()
+end
+
+-- --- pictures -------------------------------------------------------------------------
+
+-- the picture size for the current canvas (at most 65536 pixels)
+local function picture_size()
+  local cw, ch = W, canvas_h()
+  local s = 2
+  while (cw // s) * (ch // s) > 65536 do s = s + 1 end
+  return cw // s, ch // s, s
+end
+
+-- render the drawing into an image
+local function rasterize()
+  local iw, ih, s = picture_size()
+  if bg then s = scale end
+  local img
+  if bg then img = image.copy(bg) else img = image.new(iw, ih, C.paper) end
+  for _, sh in ipairs(shapes) do
+    local k, x1, y1, x2, y2, c, sz = sh[1], sh[2] / s, (sh[3] - TOP) / s, sh[4] / s, (sh[5] - TOP) / s, sh[6], sh[7]
+    local w = math.max(1, math.floor(sz / s + 0.5))
+    if k == "line" then image.line(img, x1, y1, x2, y2, c, w)
+    elseif k == "rect" or k == "fill" then
+      local rx, ry = math.min(x1, x2), math.min(y1, y2)
+      local rw, rh = math.abs(x2 - x1) + 1, math.abs(y2 - y1) + 1
+      if k == "rect" then image.rect(img, rx, ry, rw, rh, c) else image.fill(img, rx, ry, rw, rh, c) end
+    elseif k == "circle" or k == "disc" then
+      local r = math.sqrt((x2 - x1) ^ 2 + (y2 - y1) ^ 2)
+      if k == "circle" then image.circle(img, x1, y1, r, c) else image.disc(img, x1, y1, r, c) end
+    end
+  end
+  return img
+end
+
+local function new_path()
+  local dir = os.getenv("HOME") .. "/Pictures"
+  if not fs.isdir(dir) then fs.mkdir(dir) end
+  local p = dir .. "/drawing.simg"
+  local n = 2
+  while fs.exists(p) do p = dir .. "/drawing-" .. n .. ".simg" n = n + 1 end
+  return p
 end
 
 local function save()
-  local out = {}
-  for _, s in ipairs(shapes) do out[#out + 1] = table.concat(s, " ") end
-  fs.write(os.getenv("HOME") .. "/drawing.pic", table.concat(out, "\n"))
-  gui.title(win, "Paint - saved")
-end
-
-local function open()
-  local data = fs.read(os.getenv("HOME") .. "/drawing.pic")
-  if data == nil then return end
-  shapes = {}
-  for _, line in ipairs(string.lines(data)) do
-    local p = string.split(line, " ")
-    if #p == 7 then
-      shapes[#shapes + 1] = {p[1], tonumber(p[2]), tonumber(p[3]), tonumber(p[4]), tonumber(p[5]), tonumber(p[6]), tonumber(p[7])}
-    end
+  status = "Saving..."
+  gfx.batch() palette() gfx.flush()
+  local img = rasterize()
+  if path == nil then path = new_path() end
+  local ok, err = image.save(path, img)
+  if ok then
+    status = "Saved"
+    gui.title(win, "Paint - " .. fs.name(path))
+  else
+    status = "Error: " .. tostring(err)
   end
-  redraw_all()
-  gui.title(win, "Paint - drawing.pic")
+  gfx.batch() palette() gfx.flush()
 end
 
+local function open(p)
+  local img, err = image.load(p)
+  if img == nil then status = "Cannot open: " .. tostring(err) return end
+  local iw, ih = image.size(img)
+  bg = img
+  path = p
+  -- show it as large as fits, in whole pixels
+  scale = math.max(1, math.min(W // iw, canvas_h() // ih))
+  shapes = {}
+  status = string.format("%s, %d x %d", fs.name(p), iw, ih)
+  gui.title(win, "Paint - " .. fs.name(p))
+end
+
+-- Open: the next picture in ~/Pictures after the current one
+local function open_next()
+  local dir = os.getenv("HOME") .. "/Pictures"
+  local list = {}
+  for _, n in ipairs(fs.list(dir) or {}) do
+    if n:endswith(".simg") then list[#list + 1] = dir .. "/" .. n end
+  end
+  table.sort(list)
+  if #list == 0 then status = "No pictures in ~/Pictures" return end
+  local k = 1
+  for i, p in ipairs(list) do if p == path then k = i % #list + 1 end end
+  open(list[k])
+end
+
+-- --- picker input -------------------------------------------------------------------
+
+local function picker_close(ok)
+  picker = false
+  if ok then use_colour(gfx.rgb(pr, pg, pb)) end
+  redraw_all()
+end
+
+local function picker_slider(x, y)
+  local v = math.max(0, math.min(255, math.floor((x - pkx - 32) * 255 / 223 + 0.5)))
+  if slider == "r" then pr = v elseif slider == "g" then pg = v elseif slider == "b" then pb = v
+  elseif slider == "hue" then
+    local h = math.max(0, math.min(359, (x - pkx - 32) * 360 / 224))
+    local s, val = sat_val(pr, pg, pb)
+    if s < 0.05 or val < 0.05 then s, val = 1, 1 end
+    pr, pg, pb = hsv(h, s, val)
+  end
+  hexbuf = ""
+  gfx.batch() draw_picker() gfx.flush()
+end
+
+local function picker_mouse(x, y)
+  local rx, ry = x - pkx, y - pky
+  if ry >= PH - 30 and ry < PH - 10 then
+    if rx >= PW - 150 and rx < PW - 86 then picker_close(false) return end
+    if rx >= PW - 76 and rx < PW - 12 then picker_close(true) return end
+  end
+  if rx >= 24 and rx < 264 then
+    if ry >= 104 and ry < 120 then slider = "r"
+    elseif ry >= 130 and ry < 146 then slider = "g"
+    elseif ry >= 156 and ry < 172 then slider = "b"
+    elseif ry >= 182 and ry < 198 then slider = "hue" end
+    if slider then picker_slider(x, y) end
+  end
+end
+
+local function picker_key(k)
+  if k == "enter" then
+    if hexbuf ~= "" then
+      local c = gfx.hex(hexbuf)
+      if c then pr, pg, pb = gfx.torgb(c) end
+    end
+    picker_close(true)
+    return
+  elseif k == "escape" then picker_close(false) return
+  elseif k == "backspace" then hexbuf = hexbuf:sub(1, #hexbuf - 1)
+  elseif #k == 1 and string.contains("0123456789abcdefABCDEF#", k) and #hexbuf < 7 then
+    hexbuf = hexbuf .. k:lower()
+    -- a complete hex colour applies at once
+    local c = gfx.hex(hexbuf)
+    if c and (#hexbuf == 6 or #hexbuf == 7) then pr, pg, pb = gfx.torgb(c) end
+  end
+  gfx.batch() draw_picker() gfx.flush()
+end
+
+-- --- main loop ----------------------------------------------------------------------
+
+if arg[1] then open(fs.abs(arg[1])) end
 redraw_all()
 local running = true
 while running do
   local e = gui.waitevent(win)
   if e.type == "close" then running = false
+  elseif picker then
+    if e.type == "mousedown" then picker_mouse(e.x, e.y)
+    elseif e.type == "drag" and slider then picker_slider(e.x, e.y)
+    elseif e.type == "mouseup" then slider = nil
+    elseif e.type == "key" then picker_key(e.key) end
   elseif e.type == "mousedown" then
     if e.y < TOP then
-      local i = (e.x - 8) // 48 + 1
-      local t = tools[i]
-      if t == "clear" then shapes = {} redraw_all()
-      elseif t == "size" then size = size % 4 + 1 toolbar()
-      elseif t then tool = t toolbar() end
+      if fbx[1] and e.x >= fbx[1] then
+        if e.x < fbx[2] then open_next() redraw_all() else save() end
+      else
+        local i = (e.x - 8) // 48 + 1
+        local t = tools[i]
+        if t == "clear" then shapes = {} redraw_all()
+        elseif t == "size" then size = size % 4 + 1 toolbar()
+        elseif t then tool = t toolbar() end
+      end
     elseif e.y >= H - PAL then
-      local c = (e.x - 10) // 24
-      if c >= 0 and c <= 15 then colour = c palette() end
+      local x = e.x
+      if x >= 44 and x < 44 + 16 * 20 then use_colour((x - 44) // 20)
+      elseif x >= 376 and x < 496 then
+        local r = recent[(x - 376) // 20 + 1]
+        if r then use_colour(r) end
+      elseif x >= 504 and x < 584 then open_picker() end
     else
       px, py = e.x, e.y
       sx, sy = e.x, e.y
@@ -129,7 +428,8 @@ while running do
   elseif e.type == "key" then
     if e.key == "c" then shapes = {} redraw_all()
     elseif e.key == "s" then save()
-    elseif e.key == "o" then open()
+    elseif e.key == "o" then open_next() redraw_all()
+    elseif e.key == "k" then open_picker()
     elseif e.key == "q" or e.key == "escape" then running = false end
   elseif e.type == "resize" then
     W, H = e.x, e.y

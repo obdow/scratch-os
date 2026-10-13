@@ -32,6 +32,7 @@ sprite Kernel {
     include "natives.sbs";
     include "natives_sys.sbs";
     include "caps.sbs";
+    include "image.sbs";
     include "wm.sbs";
     include "ide/ide.sbs";          // the Whisker IDE, as a desktop app
     include "ide/textview.sbs";

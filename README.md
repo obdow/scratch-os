@@ -37,8 +37,8 @@ console; `startx` starts the desktop from there.)
     Monitor, Text Console, Restart, Shut Down.
   - The focused app's menus: About, Hide, Quit, plus File, Window and Help.
   - The date and time.
-- **Dock.** Finder, Terminal, Whisker IDE, TextEdit, Paint, Clock, 3D Cube,
-  Snake, Matrix, Activity Monitor and System Settings.
+- **Dock.** Finder, Terminal, Whisker IDE, TextEdit, Paint, Preview, Clock,
+  3D Cube, Snake, Matrix, Activity Monitor and System Settings.
   - Hover for the name; a dot marks running apps.
   - Click to open an app, or to bring it forward if it is already running.
 - **Windows.**
@@ -47,9 +47,20 @@ console; `startx` starts the desktop from there.)
   - Drag the title to move, and the bottom-right corner to resize.
   - The mouse wheel scrolls.
 - **Finder.**
-  - A sidebar (Home, Projects, Examples, Applications, Documents…).
+  - A sidebar (Home, Projects, Pictures, Examples, Applications, Documents…).
   - Back/forward, and Name/Size/Kind columns.
-  - Double-click a `.wsk` or `.txt` file to open it in the Whisker IDE.
+  - Double-click a `.wsk` or `.txt` file to open it in the Whisker IDE, or
+    a `.simg` picture to open it in Preview.
+- **Paint.** Pen, line, box, fill, circle and disc tools, and the 16 system
+  colours plus your recent custom colours. **Colors…** (or `k`) opens a
+  colour picker with a hex field, R/G/B sliders and a hue strip; any
+  24-bit colour works. Save writes a `.simg` picture to `~/Pictures`, and
+  Open loads one to paint over.
+- **Preview.** The picture viewer, for ScratchOS's own image format
+  `.simg` (see [docs/SIMG.md](docs/SIMG.md)). It has previous / next
+  through the folder, zoom (fit, buttons, wheel), drag to pan, rotate,
+  flip, save, and Edit in Paint. A checkerboard shows through transparent
+  pixels. `~/Pictures` comes with a few samples.
 - **Whisker IDE.** The full IDE in a resizable window, with its editor,
   output panel, tree of your home folder, examples and docs. Programs it runs
   open their windows on the desktop. Open it from the dock, from Finder, or
@@ -78,7 +89,7 @@ user@scratchos:~$ startx                     # the desktop (from the text consol
 | Shell | pipes `\|`, redirection `> >> < 2>`, `;` `&&` `\|\|` `&`, quoting, `$VAR` `$?` `$$` `~`, history (↑/↓), line editing, Ctrl+C, job control (`jobs`, `fg`, `kill %n`), scripts (`sh file.sh`, `source`) |
 | Programs | `ls cat cp mv rm mkdir rmdir touch tree find grep wc head tail sort uniq rev tee seq yes basename dirname sleep date cal ps top kill free uname whoami hostname man more edit whisker calc cowsay fortune bench matrix snake hello cube` |
 | Desktop | macOS-style: menu bar with app menus and clock, dock with running indicators and tooltips, gradient wallpaper, windows with traffic lights (close, minimise, zoom), drag / resize / double-click zoom, permission and message dialogs, dark and light appearance |
-| GUI apps | Finder, Whisker IDE, Paint, Activity Monitor, Clock, 3D Cube (orbit it with the mouse), About, System Settings, plus terminal apps like TextEdit, Snake and Matrix |
+| GUI apps | Finder, Whisker IDE, Paint (with a hex / RGB colour picker), Preview (`.simg` pictures), Activity Monitor, Clock, 3D Cube (orbit it with the mouse), About, System Settings, plus terminal apps like TextEdit, Snake and Matrix |
 | Language | Whisker: Lua-like syntax, tables, functions, methods, `pcall`/`error`, multiple returns, `load`/`require`, 140+ built-in functions |
 | Permissions | programs ask before using `files`, `proc`, `gui` or `system` capabilities: (y)es / (n)o / (a)lways; policy in `/etc/caps` |
 
@@ -227,6 +238,7 @@ tools/sbc.py        SBS -> Scratch 3 compiler
 tools/assets.py     CP437 tables and costume helpers
 tools/ui_assets.py  JetBrains Mono glyph costumes and the colour palette
 tools/natives.py    the Whisker system-call table
+tools/simg.py       the .simg picture format: sample pictures, PNG converter
 assets/font/        JetBrains Mono (OFL 1.1)
 test/               headless TurboWarp harness (Playwright) and regression test
 docs/               architecture, SBS and Whisker documentation
