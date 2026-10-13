@@ -155,7 +155,7 @@ pages are local files. Pages from a network will need a sandbox.
 
 ## The browser
 
-`browser [address]` (also in the dock and in Finder) opens:
+`browser [address]` (also in Start and in Finder) opens:
 
 * `about:home` (the start page) and `about:help` (the guide). These are
   Yarn files in `/usr/share/yarn`.

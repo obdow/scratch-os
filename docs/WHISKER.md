@@ -127,7 +127,7 @@ returns a window id; `close(win)`; `event(win)` (a table or nil);
 `waitevent(win)`; `size(win)`; `title(win, text)`; `active(win)`;
 `terminal([cmd])`; `color(name)`; `ide([path])` opens the Whisker IDE
 (optionally with a file); `launch(cmdline)` starts another desktop app, as
-the dock does (`gui.launch("preview " .. path)`); `track(win [, on])` asks
+Start does (`gui.launch("preview " .. path)`); `track(win [, on])` asks
 for `"move"` events (with `x`, `y`) while the pointer is over the window,
 for hover effects. Events are tables with `type` set to `"key"` (with
 `key`), `"mousedown"`, `"drag"` or `"mouseup"` (with `x`, `y` in window

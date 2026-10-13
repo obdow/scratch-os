@@ -4,18 +4,18 @@
 // A macOS-style desktop on the 8x16 character grid (160 x 45 cells at 720p):
 //   row 0            menu bar: logo menu, the focused app's menus, the clock
 //   rows 1..         wallpaper and windows
-//   the dock         a floating panel of app tiles at the bottom
+//   rows 43..44      the taskbar: Start, app buttons, clock (Windows style)
 //
 // Windows have a title row with the traffic lights (close / minimise /
 // zoom) and rounded top corners; their content runs edge to edge below it.
 //
 // The screen is described by:
 //   own[i]          who owns cell i: 0 desktop, -1 menu bar, -2 drop-down
-//                   menu, -3 dialog, -4 dock, a window id, or OUT_WIN for
+//                   menu, -3 dialog, -4 taskbar, a window id, or OUT_WIN for
 //                   the IDE's Output panel
 //   ui_ch / ui_at   glyph + attribute (ui.sbs) for every cell that is not
 //                   window content; ui_ch = -1 marks content drawn by a tty
-//                   or a canvas, -3 a dock icon tile
+//                   or a canvas, -3 a taskbar cell
 // wm_compose() rebuilds these, compares them with the previous frame and
 // redraws only the cells that changed.
 //
@@ -29,7 +29,10 @@
 
 const WM_COLS = SCR_COLS;
 const WM_ROWS = SCR_ROWS;
-const DOCK_TOP = SCR_ROWS - 4;   // the dock's four rows
+const TASK_TOP = SCR_ROWS - 2;   // the taskbar's two rows
+const TB_BTN = 6;                // taskbar button width (cells); Start is one too
+const TB_CLOCK_W = 12;           // the taskbar clock's width (cells)
+const TB_STARTMENU = 6;          // menu_open value of the Start menu
 const MAX_WIN = 16;
 const WK_TERM = 1;
 const WK_CANVAS = 2;
@@ -148,9 +151,16 @@ list dk_cmd = ["files", "@term", "@ide", "@term edit", "paint", "preview", "brow
 list dk_icon = ["☺", ">_", "{}", "Aa", "♥", "☼▲", "@", "12", "♦", "~☼", "01", "▄█", "≡"];
 list dk_bgn = ["blue", "dark", "purple", "white", "orange", "blue", "white", "white", "dark", "green", "dark", "dark", "grey"];
 list dk_fgn = ["white", "white", "white", "dark", "white", "white", "blue", "dark", "blue", "white", "green", "green", "white"];
-var dk_x0 = 0;        // dock panel columns
-var dk_x1 = 0;
-var dk_hover = 0;     // icon under the pointer (tooltip)
+var dk_hover = 0;     // taskbar item under the pointer (tooltip): button, -1 Start, -2 show desktop
+list task_pins;          // pinned apps (indices into dk_*), in taskbar order
+list tbi_app;         // taskbar buttons: the app, or 0 for a window of no app ...
+list tbi_win;         // ... and then that window
+list sd_wins;         // windows that "show desktop" minimised
+var tb_clock_x = 0;   // first column of the clock
+var tb_need = 0;      // a taskbar cell changed: repaint the bar
+var tip_x0 = 0;       // the tooltip's columns
+var tip_x1 = 0;
+var menu_top = 1;     // row of the open menu's top border
 
 proc wm_init() {
     clear(win_used); clear(win_x); clear(win_y); clear(win_w); clear(win_h); clear(win_title);
@@ -182,6 +192,11 @@ proc wm_init() {
     drag_mode = 0;
     ide_win = 0;
     dk_hover = 0;
+    // Finder and Activity Monitor start pinned
+    if (len(task_pins) == 0) {
+        add(task_pins, index(dk_name, "Finder"));
+        add(task_pins, index(dk_name, "Activity Monitor"));
+    }
 }
 
 proc wm_owner_at(cx, cy) {
@@ -248,7 +263,7 @@ proc wm_new_window(title, kind, x, y, cw, ch, pid) {
     if (ww < 16) { ww = 16; }
     if (hh < 3) { hh = 3; }
     if (ww > WM_COLS) { ww = WM_COLS; }
-    if (hh > DOCK_TOP - 1) { hh = DOCK_TOP - 1; }
+    if (hh > TASK_TOP - 1) { hh = TASK_TOP - 1; }
     local px = x;
     local py = y;
     if (px < 0) {
@@ -260,7 +275,7 @@ proc wm_new_window(title, kind, x, y, cw, ch, pid) {
         if (wm_next_y > 12) { wm_next_y = 3; }
     }
     if (px + ww > WM_COLS) { px = WM_COLS - ww; }
-    if (py + hh > DOCK_TOP) { py = DOCK_TOP - hh; }
+    if (py + hh > TASK_TOP) { py = TASK_TOP - hh; }
     if (px < 0) { px = 0; }
     if (py < 1) { py = 1; }
     win_used[w] = 1;
@@ -443,7 +458,7 @@ proc wm_toggle_max(w) {
     if (win_max[w] == 0) {
         win_sx[w] = win_x[w]; win_sy[w] = win_y[w]; win_sw[w] = win_w[w]; win_sh[w] = win_h[w];
         win_max[w] = 1;
-        wm_set_geom(w, 0, 1, WM_COLS, DOCK_TOP - 1);
+        wm_set_geom(w, 0, 1, WM_COLS, TASK_TOP - 1);
     } else {
         win_max[w] = 0;
         wm_set_geom(w, win_sx[w], win_sy[w], win_sw[w], win_sh[w]);
@@ -562,10 +577,10 @@ proc wm_compose() {
         local w = wz[k];
         if (win_min[w] == 0) { wm_compose_window(w, w == top); }
     }
-    wm_compose_dock();
+    wm_compose_taskbar();
     wm_compose_bar();
     if (menu_open > 0) { wm_compose_menu(); }
-    if (dk_hover > 0 && menu_open == 0 && dlg_kind == 0) { wm_compose_tip(); }
+    if (dk_hover != 0 && menu_open == 0 && dlg_kind == 0) { wm_compose_tip(); }
     if (dlg_kind != 0) { wm_compose_dialog(); }
     wm_cache_vis();
 }
@@ -678,17 +693,7 @@ proc wm_compose_bar() {
     if (menu_open != 2) {
         for c = mb_x[2] + 1 to mb_x[2] + mb_w[2] - 2 { ui_at[c + 1] = C_HEADER + AB * C_MENUBAR; }
     }
-    // the clock
-    clock_last = pad_left_char(now("hour"), 2, "0") .. ":" .. pad_left_char(now("minute"), 2, "0");
-    local clk = wm_day_name(now("dayofweek")) .. " " .. now("date") .. " " .. wm_month_name(now("month")) .. "  " .. clock_last;
-    ui_text(WM_COLS - len(clk) - 2, 0, clk, at, OWN_BAR);
 }
-
-list day_names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-list month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-
-proc wm_day_name(d) { return day_names[d]; }
-proc wm_month_name(m) { return month_names[m]; }
 
 // items of menu k into wmi_*
 proc wmi(label, key, cmd) {
@@ -714,6 +719,14 @@ proc wm_menu_items(k) {
         local app = wm_app_name();
         wmi("About " .. app, "", "about");
         wmi("-", "", "");
+        local top = wm_top();
+        local ak = index(dk_name, app);
+        if (top > 0 && win_app[top] > 0) { ak = win_app[top]; }
+        if (ak > 0) {
+            if (index(task_pins, ak) > 0) { wmi("Unpin from Taskbar", "", "@pin" .. ak); }
+            else { wmi("Pin to Taskbar", "", "@pin" .. ak); }
+            wmi("-", "", "");
+        }
         wmi("Hide " .. app, "", "@min");
         wmi("Quit " .. app, "", "@close");
     } else if (k == 3) {
@@ -734,6 +747,17 @@ proc wm_menu_items(k) {
             }
         }
         if (len(wmi_lbl) == 3) { wmi("No windows", "", "-"); }
+    } else if (k == TB_STARTMENU) {
+        // Start: every app, with Pin / Unpin on the right, then the system
+        for a = 1 to len(dk_name) {
+            local pk = "Pin";
+            if (index(task_pins, a) > 0) { pk = "Unpin"; }
+            wmi(dk_name[a], pk, "@app" .. a);
+        }
+        wmi("-", "", "");
+        wmi("Text Console", "", "@exit");
+        wmi("Restart...", "", "@reboot");
+        wmi("Shut Down...", "", "@halt");
     } else {
         wmi("ScratchOS Help", "", "@term man scratchos");
         wmi("Whisker Reference", "", "@ref");
@@ -748,14 +772,22 @@ proc wm_compose_menu() {
         local lw = len(wmi_lbl[k]) + len(wmi_key[k]) + 5;
         if (lw > w) { w = lw; }
     }
-    local x0 = mb_x[menu_open];
+    local n = len(wmi_lbl);
+    local x0 = 0;
+    menu_top = 1;
+    if (menu_open == TB_STARTMENU) {
+        // Start opens upwards from the taskbar
+        w = 30;
+        menu_top = TASK_TOP - n - 2;
+    } else {
+        x0 = mb_x[menu_open];
+    }
     if (x0 + w + 1 > WM_COLS) { x0 = WM_COLS - w - 1; }
     menu_x0 = x0;
     menu_x1 = x0 + w + 1;
-    local n = len(wmi_lbl);
-    ui_box(x0, 1, x0 + w + 1, n + 2, C_TEXT + AB * C_POPUP, OWN_MENU);
+    ui_box(x0, menu_top, x0 + w + 1, menu_top + n + 1, C_TEXT + AB * C_POPUP, OWN_MENU);
     for k = 1 to n {
-        local r = k + 1;
+        local r = menu_top + k;
         if (wmi_lbl[k] == "-") {
             for c = x0 + 2 to x0 + w - 1 { ui_set(c, r, 196, C_POPBD + AB * C_POPUP, OWN_MENU); }
         } else {
@@ -765,7 +797,9 @@ proc wm_compose_menu() {
             if (wmi_cmd[k] == "-") { fg = C_DIM; }
             for c = x0 + 1 to x0 + w { ui_set(c, r, 32, fg + AB * bg, OWN_MENU); }
             ui_text(x0 + 2, r, wmi_lbl[k], fg + AB * bg, OWN_MENU);
-            ui_text(x0 + w - len(wmi_key[k]), r, wmi_key[k], C_DIM + AB * bg, OWN_MENU);
+            local kf = C_DIM;
+            if (k == menu_sel) { kf = fg; }
+            ui_text(x0 + w - len(wmi_key[k]), r, wmi_key[k], kf + AB * bg, OWN_MENU);
         }
     }
 }
@@ -778,7 +812,13 @@ proc wm_bar_hit(cx) {
     return 0;
 }
 
-// --- dock ---------------------------------------------------------------------------
+// --- taskbar ------------------------------------------------------------------------
+//
+// A Windows-style taskbar across the bottom two rows:
+//   Start | pinned apps, then running apps, then other windows | clock | show desktop
+// Its cells are all marked -3 with a signature of what they show; when any
+// of them changes, the whole bar is repainted pixel by pixel (wm_draw_taskbar).
+// The apps (dk_* lists) are the desktop's registry: Start lists them all.
 
 proc wm_named_col(n) {
     if (n == "blue") { return C_ICBLUE; }
@@ -792,92 +832,242 @@ proc wm_named_col(n) {
     return C_ICDARK;
 }
 
-// 1 when dock item k has a window open
-proc wm_app_running(k) {
-    for w = 1 to MAX_WIN {
-        if (win_used[w] == 1 && win_app[w] == k) { return 1; }
+// the app's front-most window (minimised ones too), 0 none
+proc wm_app_window(k) {
+    local best = 0;
+    for i = 1 to len(wz) {
+        if (win_app[wz[i]] == k) { best = wz[i]; }
     }
+    return best;
+}
+
+proc tb_add(app, w) {
+    add(tbi_app, app);
+    add(tbi_win, w);
+}
+
+// the window a taskbar button stands for (0: a pinned app that is not running)
+proc tb_button_win(j) {
+    if (tbi_app[j] > 0) { return wm_app_window(tbi_app[j]); }
+    return tbi_win[j];
+}
+
+// button state: 1 hover, 2 its window is in front, 4 running
+proc tb_state(j) {
+    local st = 0;
+    if (dk_hover == j) { st += 1; }
+    local w = tb_button_win(j);
+    if (w > 0) {
+        st += 4;
+        if (w == wm_top()) { st += 2; }
+    }
+    return st;
+}
+
+proc wm_compose_taskbar() {
+    clear(tbi_app);
+    clear(tbi_win);
+    for i = 1 to len(task_pins) { tb_add(task_pins[i], 0); }
+    // running apps that are not pinned, then windows that belong to no app
+    for w = 1 to MAX_WIN {
+        if (win_used[w] == 1) {
+            local a = win_app[w];
+            if (a > 0) {
+                if (index(tbi_app, a) == 0) { tb_add(a, 0); }
+            } else {
+                tb_add(0, w);
+            }
+        }
+    }
+    clock_last = pad_left_char(now("hour"), 2, "0") .. ":" .. pad_left_char(now("minute"), 2, "0");
+    tb_clock_x = WM_COLS - 1 - TB_CLOCK_W;
+    // the cells: a signature of what each shows, so changes get redrawn
+    local nb = len(tbi_app);
+    for c = 0 to WM_COLS - 1 {
+        local sig = 1;
+        if (c < TB_BTN) {
+            sig = 2;
+            if (dk_hover == -1) { sig += 1; }
+            if (menu_open == TB_STARTMENU) { sig += 2; }
+        } else if (c == WM_COLS - 1) {
+            sig = 6;
+            if (dk_hover == -2) { sig += 1; }
+        } else if (c >= tb_clock_x) {
+            sig = 8 + now("minute") + 60 * now("hour") + 1440 * now("date");
+        } else {
+            local j = floor((c - TB_BTN) / TB_BTN) + 1;
+            if (j <= nb) {
+                local id = tbi_app[j];
+                if (id == 0) { id = 100 + tbi_win[j]; }
+                sig = 100000 + j * 10000 + id * 10 + tb_state(j);
+            }
+        }
+        for r = TASK_TOP to WM_ROWS - 1 { ui_set(c, r, -3, sig, OWN_DOCK); }
+    }
+}
+
+// paint the whole taskbar
+proc wm_draw_taskbar() {
+    local y = TASK_TOP * 16;
+    local h = (WM_ROWS - TASK_TOP) * 16;
+    gfx_fill(0, y, WM_COLS * 8, h, C_DOCK);
+    gfx_fill(0, y, WM_COLS * 8, 1, C_DOCKBD);
+    // Start
+    local sfg = C_DOCKTXT;
+    if (dk_hover == -1 || menu_open == TB_STARTMENU) { gfx_fill(0, y + 1, TB_BTN * 8, h - 1, C_HOVER); }
+    if (menu_open == TB_STARTMENU) { sfg = C_ACCENT; }
+    gfx_glyph2(16, y, G_LOGO, sfg);
+    // app buttons
+    for j = 1 to len(tbi_app) {
+        local px = (TB_BTN + (j - 1) * TB_BTN) * 8;
+        if (px + TB_BTN * 8 > tb_clock_x * 8) { return; }
+        local st = tb_state(j);
+        local bg = C_DOCK;
+        if (st % 2 == 1 || floor(st / 2) % 2 == 1) {
+            bg = C_HOVER;
+            gfx_fill(px, y + 1, TB_BTN * 8, h - 1, bg);
+        }
+        local a = tbi_app[j];
+        local icon = "";
+        local tc = C_ICGREY;
+        local fg = C_ICWHITE;
+        if (a > 0) {
+            icon = dk_icon[a];
+            tc = wm_named_col(dk_bgn[a]);
+            fg = wm_named_col(dk_fgn[a]);
+        } else {
+            icon = str_upper(substr(win_title[tbi_win[j]], 1, 1));
+        }
+        // a 24 x 24 tile with rounded corners, the icon at normal size
+        local tx = px + 12;
+        local ty = y + 4;
+        gfx_fill(tx, ty, 24, 24, tc);
+        gfx_fill(tx, ty, 2, 1, bg); gfx_fill(tx, ty, 1, 2, bg);
+        gfx_fill(tx + 22, ty, 2, 1, bg); gfx_fill(tx + 23, ty, 1, 2, bg);
+        gfx_fill(tx, ty + 23, 2, 1, bg); gfx_fill(tx, ty + 22, 1, 2, bg);
+        gfx_fill(tx + 22, ty + 23, 2, 1, bg); gfx_fill(tx + 23, ty + 22, 1, 2, bg);
+        local n = len(icon);
+        local gx = tx + floor((24 - n * 8) / 2);
+        for k = 1 to n { gfx_glyph(gx + (k - 1) * 8, ty + 4, ord(letter(icon, k)), fg); }
+        // running: an accent line under the button, wider for the front window
+        if (st >= 4) {
+            if (floor(st / 2) % 2 == 1) { gfx_fill(px + 4, y + h - 3, TB_BTN * 8 - 8, 2, C_ACCENT); }
+            else { gfx_fill(px + 14, y + h - 3, TB_BTN * 8 - 28, 2, C_ACCENT); }
+        }
+    }
+    // clock: time over date
+    local d = pad_left_char(now("date"), 2, "0") .. "/" .. pad_left_char(now("month"), 2, "0") .. "/" .. now("year");
+    local cx = tb_clock_x * 8;
+    local cw = TB_CLOCK_W * 8;
+    tb_text(cx + floor((cw - len(clock_last) * 8) / 2), y, clock_last, C_DOCKTXT);
+    tb_text(cx + floor((cw - len(d) * 8) / 2), y + 16, d, C_DOCKTXT);
+    // show desktop
+    local sx = (WM_COLS - 1) * 8;
+    if (dk_hover == -2) { gfx_fill(sx, y + 1, 8, h - 1, C_HOVER); }
+    gfx_fill(sx, y + 6, 1, h - 12, C_DOCKBD);
+}
+
+proc tb_text(x, y, s, fg) {
+    for k = 1 to len(s) {
+        local c = ord(s[k]);
+        if (c != 32) { gfx_glyph(x + (k - 1) * 8, y, c, fg); }
+    }
+}
+
+// taskbar item under screen cell (cx, cy): a button number, -1 Start,
+// -2 show desktop, 0 nothing
+proc wm_dock_hit(cx, cy) {
+    if (cy < TASK_TOP) { return 0; }
+    if (cx < TB_BTN) { return -1; }
+    if (cx == WM_COLS - 1) { return -2; }
+    if (cx >= tb_clock_x) { return 0; }
+    local j = floor((cx - TB_BTN) / TB_BTN) + 1;
+    if (j <= len(tbi_app)) { return j; }
     return 0;
 }
 
-proc wm_compose_dock() {
-    local n = len(dk_name);
-    local dw = n * 5 + 1;
-    dk_x0 = floor((WM_COLS - dw) / 2);
-    dk_x1 = dk_x0 + dw - 1;
-    local y0 = DOCK_TOP;
-    local y1 = DOCK_TOP + 3;
-    // rounded corners show what is behind them
-    local c_tl = ui_bg_at(dk_x0, y0);
-    local c_tr = ui_bg_at(dk_x1, y0);
-    local c_bl = ui_bg_at(dk_x0, y1);
-    local c_br = ui_bg_at(dk_x1, y1);
-    for r = y0 to y1 {
-        for c = dk_x0 to dk_x1 { ui_set(c, r, 32, C_DOCKTXT + AB * C_DOCK, OWN_DOCK); }
-    }
-    ui_deco_at(dk_x0, y0, D_RC + 0 * 256 + c_tl);
-    ui_deco_at(dk_x1, y0, D_RC + 1 * 256 + c_tr);
-    ui_deco_at(dk_x0, y1, D_RC + 2 * 256 + c_bl);
-    ui_deco_at(dk_x1, y1, D_RC + 3 * 256 + c_br);
-    for k = 1 to n {
-        local tx = dk_x0 + 1 + (k - 1) * 5;
-        // icon tiles: cell position p = 0..7 (4 wide, 2 high)
-        for p = 0 to 7 {
-            ui_set(tx + p % 4, y0 + 1 + floor(p / 4), -3, k * 8 + p, OWN_DOCK);
-        }
-        if (wm_app_running(k) == 1) { ui_deco_at(tx + 1, y1, D_DOT); }
-    }
-}
-
-// draw cell p (0..7) of dock icon k at screen cell (col, row)
-proc wm_dock_cell(col, row, k, p) {
-    local bg = wm_named_col(dk_bgn[k]);
-    local x = col * 8;
-    local y = row * 16;
-    gfx_fill(x, y, 8, 16, bg);
-    // rounded tile corners
-    if (p == 0) { ui_corner(x, y, 0, C_DOCK); }
-    if (p == 3) { ui_corner(x, y, 1, C_DOCK); }
-    if (p == 4) { ui_corner(x, y, 2, C_DOCK); }
-    if (p == 7) { ui_corner(x, y, 3, C_DOCK); }
-    // the double-size glyphs cover 2 x 2 cells; restamp the one over this
-    // cell when all four of its cells are visible
-    local icon = dk_icon[k];
-    local fg = wm_named_col(dk_fgn[k]);
-    local tx = col - p % 4;
-    local ty = row - floor(p / 4);
-    local gx = 0;
-    local gi = 1;
-    if (len(icon) == 1) { gx = 1; }
-    else if (p % 4 >= 2) { gx = 2; gi = 2; }
-    if (len(icon) == 1 && (p % 4 == 0 || p % 4 == 3)) { return; }
-    if (wm_owner_at(tx + gx, ty) == OWN_DOCK && wm_owner_at(tx + gx + 1, ty) == OWN_DOCK
-        && wm_owner_at(tx + gx, ty + 1) == OWN_DOCK && wm_owner_at(tx + gx + 1, ty + 1) == OWN_DOCK) {
-        gfx_glyph2((tx + gx) * 8, ty * 16, ord(letter(icon, gi)), fg);
-    }
-}
-
-// dock item under screen cell (cx, cy), 0 none
-proc wm_dock_hit(cx, cy) {
-    if (cy < DOCK_TOP + 1 || cy > DOCK_TOP + 2 || cx <= dk_x0 || cx >= dk_x1) { return 0; }
-    local k = floor((cx - dk_x0 - 1) / 5) + 1;
-    if ((cx - dk_x0 - 1) % 5 == 4 || k > len(dk_name)) { return 0; }
-    return k;
+// the name shown over a taskbar item
+proc tb_name(h) {
+    if (h == -1) { return "Start"; }
+    if (h == -2) { return "Show desktop"; }
+    if (tbi_app[h] > 0) { return dk_name[tbi_app[h]]; }
+    return win_title[tbi_win[h]];
 }
 
 proc wm_compose_tip() {
-    local name = dk_name[dk_hover];
-    local tx = dk_x0 + 1 + (dk_hover - 1) * 5;
-    local x0 = tx + 2 - floor((len(name) + 2) / 2);
-    ui_box(x0, DOCK_TOP - 1, x0 + len(name) + 1, DOCK_TOP - 1, C_TEXT + AB * C_POPUP, OWN_MENU);
-    ui_text(x0 + 1, DOCK_TOP - 1, name, C_TEXT + AB * C_POPUP, OWN_MENU);
+    local name = tb_name(dk_hover);
+    local cx = 3;
+    if (dk_hover == -2) { cx = WM_COLS - 1; }
+    if (dk_hover > 0) { cx = TB_BTN + (dk_hover - 1) * TB_BTN + 3; }
+    local x0 = cx - floor((len(name) + 2) / 2);
+    if (x0 < 0) { x0 = 0; }
+    if (x0 + len(name) + 1 > WM_COLS - 1) { x0 = WM_COLS - len(name) - 2; }
+    local r = TASK_TOP - 1;
+    tip_x0 = x0;
+    tip_x1 = x0 + len(name) + 1;
+    ui_box(x0, r, tip_x1, r, C_TEXT + AB * C_POPUP, OWN_MENU);
+    ui_text(x0 + 1, r, name, C_TEXT + AB * C_POPUP, OWN_MENU);
     // keep the box borders on the text cells
-    for c = x0 to x0 + len(name) + 1 {
+    for c = x0 to tip_x1 {
         local d = D_POP + D_TOP + D_BOTTOM;
         if (c == x0) { d += D_LEFTB; }
-        if (c == x0 + len(name) + 1) { d += D_RIGHT; }
-        ui_deco_at(c, DOCK_TOP - 1, d);
+        if (c == tip_x1) { d += D_RIGHT; }
+        ui_deco_at(c, r, d);
     }
+}
+
+// a taskbar item was clicked
+proc wm_dock_click(h) {
+    if (h == -1) {
+        if (menu_open == TB_STARTMENU) { menu_open = 0; } else { menu_open = TB_STARTMENU; menu_sel = 0; }
+        dk_hover = 0;
+        wm_need = 1;
+        return;
+    }
+    if (h == -2) { wm_show_desktop(); return; }
+    local w = tb_button_win(h);
+    if (w == 0) {
+        wm_launch(dk_cmd[tbi_app[h]], dk_name[tbi_app[h]]);
+        return;
+    }
+    // like Windows: the front window minimises, any other comes forward
+    if (w == wm_top()) { win_min[w] = 1; wm_need = 1; return; }
+    win_min[w] = 0;
+    wm_raise(w);
+}
+
+// open app k from Start: bring its window forward, or start it
+proc wm_open_app(k) {
+    local w = wm_app_window(k);
+    if (w > 0) { win_min[w] = 0; wm_raise(w); return; }
+    wm_launch(dk_cmd[k], dk_name[k]);
+}
+
+proc wm_toggle_pin(k) {
+    local i = index(task_pins, k);
+    if (i > 0) { del(task_pins, i); } else { add(task_pins, k); }
+    wm_need = 1;
+}
+
+// minimise every window; again brings the same ones back
+proc wm_show_desktop() {
+    local any = 0;
+    for w = 1 to MAX_WIN {
+        if (win_used[w] == 1 && win_min[w] == 0) { any = 1; }
+    }
+    if (any == 1) {
+        clear(sd_wins);
+        for w = 1 to MAX_WIN {
+            if (win_used[w] == 1 && win_min[w] == 0) { win_min[w] = 1; add(sd_wins, w); }
+        }
+    } else {
+        for k = 1 to len(sd_wins) {
+            local w2 = sd_wins[k];
+            if (win_used[w2] == 1) { win_min[w2] = 0; }
+        }
+        clear(sd_wins);
+    }
+    wm_need = 1;
 }
 
 // --- dialogs ------------------------------------------------------------------------
@@ -966,6 +1156,10 @@ proc wm_redraw_dirty() {
     }
     clear(nr_x);
     clear(nr_y);
+    if (tb_need == 1) {
+        tb_need = 0;
+        wm_draw_taskbar();
+    }
 }
 
 // draw one screen cell from the composed layers
@@ -988,8 +1182,7 @@ proc wm_draw_cell(i) {
         return;
     }
     if (c == -3) {
-        local a = ui_at[i];
-        wm_dock_cell(col, row, floor(a / 8), a % 8);
+        tb_need = 1;
         return;
     }
     ui_cell(col * 8, row * 16, c, ui_at[i]);
@@ -1009,7 +1202,7 @@ proc wm_cache_vis() {
             add(vr_h, (win_h[w] - 1) * 16);
             // never draw over the menu bar or the dock, or off screen
             rects_subtract(-4000, -4000, 12000, 4016);
-            rects_subtract(dk_x0 * 8, DOCK_TOP * 16, (dk_x1 - dk_x0 + 1) * 8, 64);
+            rects_subtract(-4000, TASK_TOP * 16, 12000, 4000);
             rects_subtract(-4000, WM_ROWS * 16, 12000, 4000);
             rects_subtract(-4000, -4000, 4000, 12000);
             rects_subtract(WM_COLS * 8, -4000, 4000, 12000);
@@ -1019,7 +1212,7 @@ proc wm_cache_vis() {
                 if (win_min[o] == 0) { rects_subtract(win_x[o] * 8, win_y[o] * 16, win_w[o] * 8, win_h[o] * 16); }
             }
             if (menu_open > 0) { rects_subtract(menu_x0 * 8, 16, (menu_x1 - menu_x0 + 1) * 8, (len(wmi_lbl) + 2) * 16); }
-            if (dk_hover > 0) { rects_subtract(0, (DOCK_TOP - 1) * 16, WM_COLS * 8, 16); }
+            if (dk_hover != 0 && menu_open == 0) { rects_subtract(tip_x0 * 8, (TASK_TOP - 1) * 16, (tip_x1 - tip_x0 + 1) * 8, 16); }
             if (dlg_kind != 0) { rects_subtract(dlg_x * 8, dlg_y * 16, dlg_w * 8, dlg_h * 16); }
             for q = 1 to len(vr_x) {
                 add(vrc_win, w); add(vrc_x, vr_x[q]); add(vrc_y, vr_y[q]); add(vrc_w, vr_w[q]); add(vrc_h, vr_h[q]);
@@ -1468,13 +1661,13 @@ proc wm_mouse() {
 proc wm_hover(cx, cy) {
     if (menu_open > 0) {
         local sel = 0;
-        if (cx > menu_x0 && cx < menu_x1 && cy >= 2 && cy < len(wmi_lbl) + 2) {
-            sel = cy - 1;
+        if (cx > menu_x0 && cx < menu_x1 && cy > menu_top && cy <= menu_top + len(wmi_lbl)) {
+            sel = cy - menu_top;
             if (wmi_lbl[sel] == "-" || wmi_cmd[sel] == "-") { sel = 0; }
         }
         if (sel != menu_sel) { menu_sel = sel; wm_need = 1; }
         // sliding along the menu bar switches menus
-        if (cy == 0) {
+        if (cy == 0 && menu_open != TB_STARTMENU) {
             local k = wm_bar_hit(cx);
             if (k > 0 && k != menu_open) { menu_open = k; menu_sel = 0; wm_need = 1; }
         }
@@ -1494,15 +1687,23 @@ proc wm_press(cx, cy) {
         return;
     }
     if (menu_open > 0) {
-        if (o == OWN_MENU && cy >= 2) {
-            local k = cy - 1;
-            if (k >= 1 && k <= len(wmi_lbl)) { wm_menu_pick(k); }
+        if (o == OWN_MENU && cy > menu_top) {
+            local k = cy - menu_top;
+            if (k >= 1 && k <= len(wmi_lbl)) {
+                // Start: the Pin / Unpin column pins instead of opening
+                if (menu_open == TB_STARTMENU && cx >= menu_x1 - 7 && substr(wmi_cmd[k], 1, 4) == "@app") {
+                    wm_toggle_pin(substr(wmi_cmd[k], 5, len(wmi_cmd[k])) * 1);
+                } else {
+                    wm_menu_pick(k);
+                }
+            }
             return;
         }
         local was = menu_open;
         menu_open = 0;
         wm_need = 1;
         if (cy == 0 && wm_bar_hit(cx) == was) { return; }
+        if (was == TB_STARTMENU && wm_dock_hit(cx, cy) == -1) { return; }
     }
     if (o == OWN_BAR) {
         local k2 = wm_bar_hit(cx);
@@ -1511,7 +1712,7 @@ proc wm_press(cx, cy) {
     }
     if (o == OWN_DOCK) {
         local d = wm_dock_hit(cx, cy);
-        if (d > 0) { wm_dock_click(d); }
+        if (d != 0) { wm_dock_click(d); }
         return;
     }
     if (o > 0) {
@@ -1559,7 +1760,7 @@ proc wm_drag(cx, cy) {
         local nx = cx - drag_dx;
         local ny = cy - drag_dy;
         if (ny < 1) { ny = 1; }
-        if (ny > WM_ROWS - 2) { ny = WM_ROWS - 2; }
+        if (ny > TASK_TOP - 1) { ny = TASK_TOP - 1; }
         if (nx < 8 - win_w[w]) { nx = 8 - win_w[w]; }
         if (nx > WM_COLS - 8) { nx = WM_COLS - 8; }
         if (nx != win_x[w] || ny != win_y[w]) {
@@ -1575,7 +1776,7 @@ proc wm_drag(cx, cy) {
         if (nw < minw) { nw = minw; }
         if (nh < minh) { nh = minh; }
         if (win_x[w] + nw > WM_COLS) { nw = WM_COLS - win_x[w]; }
-        if (win_y[w] + nh > WM_ROWS) { nh = WM_ROWS - win_y[w]; }
+        if (win_y[w] + nh > TASK_TOP) { nh = TASK_TOP - win_y[w]; }
         if (nw != win_w[w] || nh != win_h[w]) {
             win_max[w] = 0;
             wm_set_geom(w, win_x[w], win_y[w], nw, nh);
@@ -1615,16 +1816,6 @@ proc wm_menu_pick(k) {
     wm_launch(cmd, wmi_lbl[k]);
 }
 
-// a dock icon was clicked: bring the app forward, or start it
-proc wm_dock_click(k) {
-    local best = 0;
-    for i = 1 to len(wz) {
-        if (win_app[wz[i]] == k) { best = wz[i]; }
-    }
-    if (best > 0) { wm_raise(best); return; }
-    wm_launch(dk_cmd[k], dk_name[k]);
-}
-
 // launch a desktop command: "@term [cmd]", "@ide", "@settings", window
 // actions, power actions, or a GUI program
 proc wm_launch(cmd, label) {
@@ -1641,6 +1832,8 @@ proc wm_launch(cmd, label) {
     if (cmd == "@close") { if (top > 0) { wm_user_close(top); } return; }
     if (cmd == "@min") { if (top > 0) { win_min[top] = 1; wm_need = 1; } return; }
     if (cmd == "@zoom") { if (top > 0) { wm_toggle_max(top); } return; }
+    if (substr(cmd, 1, 4) == "@app") { wm_open_app(substr(cmd, 5, len(cmd)) * 1); return; }
+    if (substr(cmd, 1, 4) == "@pin") { wm_toggle_pin(substr(cmd, 5, len(cmd)) * 1); return; }
     if (substr(cmd, 1, 4) == "@win") {
         local w = substr(cmd, 5, len(cmd)) * 1;
         if (w > 0 && win_used[w] == 1) { wm_raise(w); }

@@ -8,7 +8,7 @@ SCRATCHOS(7)               ScratchOS Manual
     * preemptive multitasking of Whisker bytecode programs
     * in-memory file system rebuilt from the boot image every start
     * Unix-like shell with pipes, redirection and background jobs
-    * a macOS-style desktop: menu bar, dock, windows with traffic lights,
+    * a desktop: menu bar, a Windows-style taskbar and Start menu, windows,
       Finder, Terminal, the Whisker IDE, light and dark appearance
     * capability-based permissions with interactive prompts
     * Paint, Preview and the .simg picture format (man simg)

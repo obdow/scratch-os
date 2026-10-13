@@ -3,7 +3,8 @@
 An operating system built in Scratch, with a macOS-style desktop at 720p.
 It has:
 - a boot screen;
-- a menu bar, a dock and windows with traffic-light buttons;
+- a menu bar, a Windows-style taskbar with a Start menu, and windows with
+  traffic-light buttons;
 - Finder, Terminal and the **Whisker IDE**;
 - a Unix-like shell, preemptive multitasking, an in-memory file system and a
   capability-based permission system;
@@ -30,18 +31,29 @@ instead of `ask` blocks.
 ## The desktop
 
 ScratchOS boots to the desktop: a cat logo, a progress bar, then the menu
-bar, the wallpaper and the dock. (Hold Esc while it boots for the text
+bar, the wallpaper and the taskbar. (Hold Esc while it boots for the text
 console; `startx` starts the desktop from there.)
 
 - **Menu bar.**
   - The cat menu: About, System Settings, Light/Dark appearance, Activity
     Monitor, Text Console, Restart, Shut Down.
-  - The focused app's menus: About, Hide, Quit, plus File, Window and Help.
-  - The date and time.
-- **Dock.** Finder, Terminal, Whisker IDE, TextEdit, Paint, Preview, Browser,
-  Clock, 3D Cube, Snake, Matrix, Activity Monitor and System Settings.
-  - Hover for the name; a dot marks running apps.
-  - Click to open an app, or to bring it forward if it is already running.
+  - The focused app's menus: About, Pin to / Unpin from Taskbar, Hide,
+    Quit, plus File, Window and Help.
+- **Taskbar.** A full-width bar along the bottom, like Windows 10:
+  - **Start** (the cat, bottom left) lists every app: Finder, Terminal,
+    Whisker IDE, TextEdit, Paint, Preview, Browser, Clock, 3D Cube, Snake,
+    Matrix, Activity Monitor and System Settings. It also has Text Console,
+    Restart and Shut Down.
+  - **Pinned apps** come first. Finder and Activity Monitor are pinned at
+    first. Click **Pin** / **Unpin** next to an app in Start, or use the
+    app's menu in the menu bar.
+  - **Running apps** follow, and so does any other window. An accent line
+    marks a running app, and a wider one the window in front. Click a button
+    to bring its window forward; click the front window's button to
+    minimise it.
+  - The time and date are on the right. The thin strip at the far right
+    shows the desktop (click again to bring the windows back). Hover over
+    anything for its name.
 - **Windows.**
   - Red closes, yellow minimises, green zooms.
   - Double-click the title bar to zoom.
@@ -80,10 +92,10 @@ console; `startx` starts the desktop from there.)
   page's problems.
 - **Whisker IDE.** The full IDE in a resizable window, with its editor,
   output panel, tree of your home folder, examples and docs. Programs it runs
-  open their windows on the desktop. Open it from the dock, from Finder, or
+  open their windows on the desktop. Open it from Start, from Finder, or
   with `ide [file]` in a terminal.
 - **System Settings.** Dark and light appearance. This recolours the menu
-  bar, dock, windows, terminals, the IDE and apps that use system colours.
+  bar, taskbar, windows, terminals, the IDE and apps that use system colours.
 
 ## What you can do
 
@@ -105,7 +117,7 @@ user@scratchos:~$ startx                     # the desktop (from the text consol
 | Boot | logo and progress bar while the kernel starts (fs, scheduler, VM, capabilities, window manager), `init` (pid 1) running `/etc/rc`; Esc during boot gives the text console with the kernel log and motd |
 | Shell | pipes `\|`, redirection `> >> < 2>`, `;` `&&` `\|\|` `&`, quoting, `$VAR` `$?` `$$` `~`, history (↑/↓), line editing, Ctrl+C, job control (`jobs`, `fg`, `kill %n`), scripts (`sh file.sh`, `source`) |
 | Programs | `ls cat cp mv rm mkdir rmdir touch tree find grep wc head tail sort uniq rev tee seq yes basename dirname sleep date cal ps top kill free uname whoami hostname man more edit whisker calc cowsay fortune bench matrix snake hello cube` |
-| Desktop | macOS-style: menu bar with app menus and clock, dock with running indicators and tooltips, gradient wallpaper, windows with traffic lights (close, minimise, zoom), drag / resize / double-click zoom, permission and message dialogs, dark and light appearance |
+| Desktop | menu bar with app menus, a Windows-style taskbar (Start menu, pinned and running apps, clock, show desktop), gradient wallpaper, windows with traffic lights (close, minimise, zoom), drag / resize / double-click zoom, permission and message dialogs, dark and light appearance |
 | GUI apps | Finder, Whisker IDE, Paint (with a hex / RGB colour picker), Preview (`.simg` pictures), Browser (Yarn web pages), Activity Monitor, Clock, 3D Cube (orbit it with the mouse), About, System Settings, plus terminal apps like TextEdit, Snake and Matrix |
 | Language | Whisker: Lua-like syntax, tables, functions, methods, `pcall`/`error`, multiple returns, `load`/`require`, 140+ built-in functions |
 | Permissions | programs ask before using `files`, `proc`, `gui` or `system` capabilities: (y)es / (n)o / (a)lways; policy in `/etc/caps` |
@@ -245,7 +257,7 @@ in the Scratch/TurboWarp editor, about 23,000 blocks in total.
 build.py            build entry point -> ScratchOS.sb3 (--ide -> WhiskerIDE.sb3)
 src/*.sbs           the kernel (Kernel sprite) and keyboard (Keyboard sprite)
 src/ui.sbs          the shared modern look: cell attributes, decorations, themes
-src/wm.sbs          the macOS-style desktop (menu bar, dock, windows, dialogs)
+src/wm.sbs          the desktop (menu bar, taskbar, Start, windows, dialogs)
 src/ide/            the Whisker IDE (an app in ScratchOS, or a project of its own)
 ide/rootfs/         the IDE's files (/projects, /examples, /docs, /lib); inside
                     ScratchOS they appear in ~/examples, ~/projects and

@@ -82,6 +82,7 @@ var C_MENUBAR = 0;
 var C_MENUTXT = 0;
 var C_DOCK = 0;
 var C_DOCKTXT = 0;
+var C_DOCKBD = 0;
 var C_TLRED = 0;
 var C_TLYEL = 0;
 var C_TLGRN = 0;
@@ -114,7 +115,7 @@ proc ui_theme(n) {
     C_HOVER = U_HOVER + o; C_POPBD = U_POPBD + o;
     C_FG = U_EDFG + o; C_OP = U_EDFG + o; C_KW = U_KW + o; C_STR = U_STR + o; C_NUM = U_NUM + o;
     C_COM = U_COM + o; C_LIB = U_LIB + o;
-    C_MENUBAR = U_MENUBAR + o; C_MENUTXT = U_MENUTXT + o; C_DOCK = U_DOCK + o;
+    C_MENUBAR = U_MENUBAR + o; C_MENUTXT = U_MENUTXT + o; C_DOCK = U_DOCK + o; C_DOCKBD = U_DOCKBD + o;
     C_DOCKTXT = U_DOCKTXT + o; C_TLRED = U_TLRED + o; C_TLYEL = U_TLYEL + o; C_TLGRN = U_TLGRN + o;
     C_TLOFF = U_TLOFF + o; C_TITLE = U_TITLE + o; C_TITLEIN = U_TITLEIN + o; C_TITLETXT = U_TITLETXT + o;
     C_TITLEDIM = U_TITLEDIM + o; C_WINBD = U_WINBD + o; C_SHADOW = U_SHADOW + o;

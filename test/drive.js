@@ -8,6 +8,7 @@
 //   @shot       screenshot  @ctrl=c      ctrl+key
 //   @click=x,y  mouse click at stage coords (0..stage width, 0..stage height)
 //   @drag=x1,y1,x2,y2   @move=x1,y1,x2,y2   @wheel=x,y,dy
+//   @var=Sprite:name    print a variable or list
 // Options: --scale=N renders the stage N times larger, --hq uses the
 // high-quality pen (as the Whisker IDE's TurboWarp settings request).
 const fs = require('fs');
@@ -65,6 +66,11 @@ async function main() {
   await shot();
   for (const c of cmds) {
     if (c.startsWith('@sleep=')) { await h.sleep(+c.slice(7)); continue; }
+    if (c.startsWith('@var=')) {
+      const [spr, name] = c.slice(5).split(':');
+      console.log(`${spr}:${name} =`, JSON.stringify(await h.read(spr, name)));
+      continue;
+    }
     if (c === '@shot') { await shot(); continue; }
     if (c.startsWith('@key=')) { await tap(c.slice(5)); continue; }
     if (c.startsWith('@ctrl=')) {

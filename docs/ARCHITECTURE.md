@@ -11,7 +11,7 @@ run-without-screen-refresh custom block:
 
 ```
 input_poll()      drain the keyboard queue, route keys (tty / window / dialog)
-wm_tick()         mouse, menus, dock, window dragging, the IDE   (desktop only)
+wm_tick()         mouse, menus, taskbar, window dragging, the IDE (desktop only)
 sched_run(ms)     run processes for a time budget
 wm_update()       recompose and redraw changed screen cells     (desktop only)
 tty_render()      draw dirty terminal cells
@@ -66,8 +66,8 @@ tty_cursor_update()  blinking text cursor
   * rounded corners, painted in whatever colour is behind them;
   * the wallpaper's second stripe, two per cell row.
 
-  Dock icons are glyphs stamped at 200% size, which is the costumes' native
-  resolution.
+  The Start button's cat is a glyph stamped at 200% size, which is the
+  costumes' native resolution.
 * **Filtering.** The pen layer has a fixed size (no high-quality pen, which
   would blur already-drawn content when the window is resized). So the 2×
   glyphs must be linearly filtered to average down cleanly. At exactly 100%
@@ -182,20 +182,26 @@ desktop dialog. Programs can request capabilities at start with `--@caps`.
 
 ## Desktop (`src/wm.sbs`)
 
-A macOS-style desktop on the cell grid:
-- **Menu bar** (row 0): the logo menu, the focused app's menus, the clock.
+A desktop on the cell grid:
+- **Menu bar** (row 0): the logo menu, the focused app's menus.
 - **Wallpaper**: two gradient stripes per cell row.
 - **Windows**: a title row with the traffic lights and rounded top corners,
   over content that runs edge to edge.
-- **Dock**: a floating panel of 4×2-cell icon tiles at the bottom, with
-  tooltips and running dots.
+- **Taskbar** (the bottom two rows): Start, pinned apps (`task_pins`), then
+  running apps and other windows, the clock, and show desktop. Its cells
+  are marked `-3`, with an attribute that is a signature of what the cell
+  shows (button, app, hover / front / running state, the minute). When any
+  of them changes, the whole bar is repainted in one pass at pixel level
+  (`wm_draw_taskbar`), so the icon tiles and accent lines need not fit the
+  cell grid. Start is a menu (`TB_STARTMENU`) that opens upwards from the
+  taskbar.
 
 `wm_compose()` builds:
 
-* `own[]`, the owner of every cell (desktop, menu bar, menu, dialog, dock, a
+* `own[]`, the owner of every cell (desktop, menu bar, menu, dialog, taskbar, a
   window, or `OUT_WIN` for the IDE's Output panel)
 * `ui_ch[]`/`ui_at[]`, the glyph and attribute of every non-content cell
-  (`-1` marks content drawn by a tty or a canvas, `-3` a dock icon cell)
+  (`-1` marks content drawn by a tty or a canvas, `-3` a taskbar cell)
 
 `wm_diff()` compares these with the previous frame and redraws only changed
 cells. Content cells encode their window-relative position in the attribute,
@@ -205,7 +211,7 @@ so moving a window marks all its content dirty.
 * **Canvas windows** (graphics programs) keep a retained display list of
   primitives in a pinned heap table. New primitives draw immediately, clipped
   to the window's visible rectangles, which are the content rectangle minus
-  every rectangle above it, the menu bar and the dock. Uncovered regions are
+  every rectangle above it, the menu bar and the taskbar. Uncovered regions are
   repainted by replaying the list with the same clipping (Liang–Barsky lines,
   rectangle intersection, whole-glyph text). A glyph cannot be stamped in
   part, so it is stamped only when every cell it touches is visible.
