@@ -1,0 +1,12 @@
+// cloud.sbs - the cloud variables ScratchOS networks through (see net.sbs).
+// They are shared by everyone running the project and by the ScratchOS
+// server; Scratch allows ten.  Shown as "☁ heartbeat", "☁ up1" ...
+global cloud heartbeat;     // the server: "1" time max-packet clients version
+global cloud up1;           // computers -> server
+global cloud up2;
+global cloud up3;
+global cloud up4;
+global cloud down1;         // server -> computers
+global cloud down2;
+global cloud down3;
+global cloud down4;

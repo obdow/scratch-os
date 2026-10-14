@@ -1,0 +1,10 @@
+page "About the network" theme=ocean
+  link "< Front page" -> index.yarn
+  title "How it works"
+  text "ScratchOS has no internet access of its own. Everyone running the project shares ten cloud variables, and so does the ScratchOS server. Computers write requests to four of them and the server answers in four others, a few digits at a time."
+  list
+    item "Text travels as digits: two for each character"
+    item "Big files are split into chunks, and every chunk is acknowledged"
+    item "Anything lost is sent again"
+    item "Each computer may make about 15 requests a minute"
+  quote "Cloud variables are shared and anonymous: do not put secrets on the network."

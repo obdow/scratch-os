@@ -13,6 +13,8 @@ include "../kbd.sbs";
 
 global list ide_export;      // File > Export / Import go through this list monitor
 
+include "../cloud.sbs";
+
 sprite Kernel {
     costumes "ide_glyphs";
     include "../gfx.sbs";
@@ -30,6 +32,7 @@ sprite Kernel {
     include "../natives_sys.sbs";
     include "../caps.sbs";
     include "../image.sbs";
+    include "../net.sbs";
     include "../wm.sbs";
     include "ide.sbs";
     include "textview.sbs";        // native rendering of text files

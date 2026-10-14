@@ -34,20 +34,25 @@ async function launch(sb3Path, opts = {}) {
   </style></head><body><div id="project"></div></body></html>`);
   await page.addScriptTag({ path: SCAFFOLDING });
   const b64 = fs.readFileSync(sb3Path).toString('base64');
-  await page.evaluate(async ({ b64, hq }) => {
+  await page.evaluate(async ({ b64, hq, cloud }) => {
     const bin = atob(b64);
     const buf = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
     const s = new Scaffolding.Scaffolding();
     s.width = 480; s.height = 360;
     s.setup();
+    if (cloud) {
+      // cloud variables through a cloud server (the ScratchOS network)
+      s.setUsername(cloud.user || 'player' + Math.floor(Math.random() * 1e6));
+      s.addCloudProvider(new Scaffolding.Cloud.WebSocketProvider(cloud.host, cloud.project));
+    }
     s.appendTo(document.getElementById('project'));
     window.scaffolding = s;
     window.vm = s.vm;
     await s.loadProject(buf.buffer);
     if (hq) s.renderer.setUseHighQualityRender(true);
     s.start();
-  }, { b64, hq: !!opts.hq });
+  }, { b64, hq: !!opts.hq, cloud: opts.cloud || null });
 
   // projects can set a custom stage size (TurboWarp config): fit the page to it
   const stage = await page.evaluate(() => ({ w: vm.runtime.stageWidth, h: vm.runtime.stageHeight }));

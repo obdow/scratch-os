@@ -16,6 +16,8 @@ include "kbd.sbs";
 
 global list ide_export;      // the IDE's File > Export / Import list monitor
 
+include "cloud.sbs";
+
 sprite Kernel {
     costumes "os_glyphs";
     include "gfx.sbs";
@@ -33,6 +35,7 @@ sprite Kernel {
     include "natives_sys.sbs";
     include "caps.sbs";
     include "image.sbs";
+    include "net.sbs";            // networking over cloud variables
     include "wm.sbs";
     include "ide/ide.sbs";          // the Whisker IDE, as a desktop app
     include "ide/textview.sbs";
@@ -118,12 +121,14 @@ sprite Kernel {
         input_poll();
         if (gui == 1) {
             wm_tick();
+            net_tick();
             sched_run(8);
             if (wm_need == 1) { wm_update(); }
             tty_render();
             tty_cursor_update();
         } else {
             wheel = 0;
+            net_tick();
             sched_run(10);
             tty_render();
             tty_cursor_update();

@@ -5,6 +5,7 @@ CAPS(7)                    ScratchOS Manual
       proc     kill processes a program did not start
       gui      open windows on the desktop
       system   shut down or restart
+      net      use the ScratchOS network (see man net)
 
     The first time a program needs one, ScratchOS asks:
       (y)es for this run, (n)o, (a)lways (remembered in /etc/caps)

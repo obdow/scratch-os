@@ -1,0 +1,556 @@
+// ===========================================================================
+// net.sbs - networking over cloud variables (included inside sprite Kernel)
+//
+// Everyone running the project shares its cloud variables, and so does the
+// ScratchOS server (server/scratchos-server.js), which joins as one more
+// client.  The variables (declared in cloud.sbs):
+//   heartbeat   the server's heartbeat: "1" time(10) max-packet(5) clients(3) version(2)
+//   up1 .. up4      computer -> server packets
+//   down1 .. down4  server -> computer packets
+// A packet is all digits (cloud variables hold numbers):
+//   "1" type(2) id(6) msg(4) seq(3) total(3) payload...
+//   id: this computer (random, chosen at boot); msg: the request; seq / total:
+//   the chunk; payload: text, 2 digits a character (see net_enc).
+// Types:   10 ping   20 get   21 put   22 list   31 ack     (computer)
+//          11 pong   30 data  31 ack   32 done   40 error  41 wait  (server)
+//
+// The server sees every write to up*, even two at the same moment, because
+// each one is a separate message to it.  A computer only sees the latest
+// value of down* each frame, so the server spaces its writes to each down
+// variable, and anything missed is sent again: requests are resent until
+// answered, uploads go back to the last acknowledged chunk (go-back-N, 4 in
+// flight), downloads are acknowledged as they arrive.
+//
+// Rate limits on this side: one cloud write per NET_GAP, a token bucket of
+// requests, an upload budget, size caps, NET_MAXREQ requests at once, and
+// "wait" (41) answers from the server are obeyed.  The server has its own,
+// stricter limits per computer and overall.
+// ===========================================================================
+
+const NET_SLOTS = 4;
+const NET_HEAD = 19;          // header digits
+const NET_GAP = 0.11;         // seconds between cloud writes (Scratch allows ~10 a second)
+const NET_MAXREQ = 3;         // requests in flight
+const NET_WINDOW = 4;         // upload chunks in flight
+const NET_TIMEOUT = 2.5;      // seconds without progress before resending
+const NET_TRIES = 6;
+const NET_BURST = 6;          // request tokens ...
+const NET_TOKEN_S = 4;        // ... one more every 4 seconds (15 a minute)
+const NET_UP_MAX = 8192;      // characters in one upload
+const NET_UP_BUDGET = 16384;  // upload characters a minute
+const NET_DOWN_MAX = 65536;   // characters in one download
+const NET_STALE = 12;         // seconds without a heartbeat: the server is gone
+
+const RQ_SEND = 1;
+const RQ_WAIT = 2;
+const RQ_DONE = 3;
+const RQ_FAIL = 4;
+
+var net_id = 0;
+var net_msgc = 0;
+var net_last_tx = 0;
+var net_hb_seen = "";
+var net_hb_at = 0;
+var net_hb_count = 0;
+var net_srv_time = 0;
+var net_pkt = 256;            // packet length limit (the server announces its own)
+var net_srv_clients = 0;
+var net_latency = -1;
+var net_tokens = NET_BURST;
+var net_tok_t = 0;
+var net_up_avail = NET_UP_BUDGET;
+var net_hold = 0;             // the server asked us to wait until then
+var net_sent = 0;             // packets written (for the status page)
+var net_recv = 0;
+list net_rx_last;             // last value seen in each rx variable ("p" .. value)
+list net_q;                   // packets waiting for their turn ...
+list net_q_rq;                // ... and the request each belongs to
+
+// requests (fixed slots)
+list rq_used;
+list rq_pid;
+list rq_kind;
+list rq_msg;
+list rq_state;
+list rq_up;                   // the request's payload, encoded
+list rq_upn;                  // its chunks
+list rq_p;                    // payload digits per chunk
+list rq_base;                 // chunks the server has acknowledged
+list rq_next;                 // next chunk to send
+list rq_down;                 // response payload, encoded
+list rq_got;                  // response chunks received
+list rq_total;
+list rq_t;                    // last progress (or when to resume)
+list rq_wait;                 // current timeout
+list rq_tries;
+list rq_t0;
+list rq_err;
+list rq_ackt;                 // when we last sent an ack
+
+proc net_init() {
+    net_id = random(100000, 999999);
+    net_msgc = random(0, 9999);
+    net_last_tx = 0;
+    net_hb_seen = "p" .. heartbeat;
+    net_hb_at = 0;
+    net_hb_count = 0;
+    net_latency = -1;
+    net_tokens = NET_BURST;
+    net_tok_t = now_secs();
+    net_up_avail = NET_UP_BUDGET;
+    net_hold = 0;
+    net_sent = 0;
+    net_recv = 0;
+    clear(net_q);
+    clear(net_q_rq);
+    clear(net_rx_last);
+    add(net_rx_last, "p" .. down1);
+    add(net_rx_last, "p" .. down2);
+    add(net_rx_last, "p" .. down3);
+    add(net_rx_last, "p" .. down4);
+    clear(rq_used); clear(rq_pid); clear(rq_kind); clear(rq_msg); clear(rq_state); clear(rq_up);
+    clear(rq_upn); clear(rq_p); clear(rq_base); clear(rq_next); clear(rq_down); clear(rq_got);
+    clear(rq_total); clear(rq_t); clear(rq_wait); clear(rq_tries); clear(rq_t0); clear(rq_err); clear(rq_ackt);
+    repeat (NET_MAXREQ) {
+        add(rq_used, 0); add(rq_pid, 0); add(rq_kind, 0); add(rq_msg, 0); add(rq_state, 0); add(rq_up, "");
+        add(rq_upn, 0); add(rq_p, 0); add(rq_base, 0); add(rq_next, 0); add(rq_down, ""); add(rq_got, 0);
+        add(rq_total, 0); add(rq_t, 0); add(rq_wait, 0); add(rq_tries, 0); add(rq_t0, 0); add(rq_err, ""); add(rq_ackt, 0);
+    }
+}
+
+// --- text <-> digits -------------------------------------------------------------------
+// printable ASCII is 01..95 (code - 31), a newline 96, anything else "98" + its
+// 3-digit code page 437 code
+
+proc net_enc(s) {
+    local out = "";
+    for i = 1 to len(s) {
+        local c = ord(s[i]);
+        if (c >= 32 && c <= 126) { out = out .. pad_left_char(c - 31, 2, "0"); }
+        else if (c == 10) { out = out .. "96"; }
+        else { out = out .. "98" .. pad_left_char(c, 3, "0"); }
+    }
+    return out;
+}
+
+proc net_dec(d) {
+    local out = "";
+    local n = len(d);
+    local i = 1;
+    while (i < n) {
+        local c = substr(d, i, i + 1) * 1;
+        if (c >= 1 && c <= 95) {
+            out = out .. chr(c + 31);
+            i += 2;
+        } else if (c == 96) {
+            out = out .. "\n";
+            i += 2;
+        } else if (c == 98) {
+            out = out .. chr(substr(d, i + 2, i + 4) * 1);
+            i += 5;
+        } else {
+            i += 2;
+        }
+    }
+    return out;
+}
+
+// --- the connection ----------------------------------------------------------------------
+
+// 1 online, 2 a cloud connection but no server answering, 0 no cloud data at all
+proc net_state() {
+    if (net_hb_at == 0) {
+        if (net_hb_count == 0 && len(heartbeat) < 2) { return 0; }
+        return 2;
+    }
+    local age_local = now_secs() - net_hb_at;
+    if (age_local > NET_STALE) { return 2; }
+    // a heartbeat seen when joining can be old: trust it once it has changed
+    // while we watched, or when its time is close to ours
+    local unix = (days2000() + 10957) * 86400;
+    if (net_hb_count >= 2 || abs(unix - net_srv_time) < 120) { return 1; }
+    return 2;
+}
+
+proc net_poll_hb(now) {
+    local key = "p" .. heartbeat;
+    if (key == net_hb_seen) { return; }
+    net_hb_seen = key;
+    local v = "" .. heartbeat;
+    if (len(v) < 19 || v[1] != "1") { return; }
+    net_hb_at = now;
+    net_hb_count += 1;
+    net_srv_time = substr(v, 2, 11) * 1;
+    local pk = substr(v, 12, 16) * 1;
+    if (pk < 64) { pk = 64; }
+    if (pk > 10000) { pk = 10000; }
+    net_pkt = pk;
+    net_srv_clients = substr(v, 17, 19) * 1;
+}
+
+// --- sending -----------------------------------------------------------------------------
+
+proc net_packet(type, msg, seq, total, payload) {
+    return "1" .. pad_left_char(type, 2, "0") .. net_id .. pad_left_char(msg, 4, "0")
+        .. pad_left_char(seq, 3, "0") .. pad_left_char(total, 3, "0") .. payload;
+}
+
+proc net_queue(r, pkt) {
+    // a full queue drops the newest: it will be sent again on the next timeout
+    if (len(net_q) >= 12) { return; }
+    add(net_q, pkt);
+    add(net_q_rq, r);
+}
+
+// drop the request's queued packets (before it starts over)
+proc net_unqueue(r) {
+    local k = len(net_q);
+    while (k > 0) {
+        if (net_q_rq[k] == r) { del(net_q, k); del(net_q_rq, k); }
+        k -= 1;
+    }
+}
+
+// write at most one packet, NET_GAP apart, to a request variable
+proc net_flush(now) {
+    if (len(net_q) == 0 || now - net_last_tx < NET_GAP) { return; }
+    local pkt = net_q[1];
+    del(net_q, 1);
+    del(net_q_rq, 1);
+    // spread computers (and resends) over the request variables
+    local slot = (net_id + net_sent) % NET_SLOTS + 1;
+    if (slot == 1) { up1 = pkt; }
+    else if (slot == 2) { up2 = pkt; }
+    else if (slot == 3) { up3 = pkt; }
+    else { up4 = pkt; }
+    net_last_tx = now;
+    net_sent += 1;
+}
+
+proc net_send_ack(r, now) {
+    net_queue(r, net_packet(31, rq_msg[r], rq_got[r], rq_total[r], ""));
+    rq_ackt[r] = now;
+}
+
+// --- receiving ---------------------------------------------------------------------------
+
+proc net_poll_rx(now) {
+    for k = 1 to NET_SLOTS {
+        local v = "";
+        if (k == 1) { v = "" .. down1; }
+        else if (k == 2) { v = "" .. down2; }
+        else if (k == 3) { v = "" .. down3; }
+        else { v = "" .. down4; }
+        local key = "p" .. v;
+        if (key != net_rx_last[k]) {
+            net_rx_last[k] = key;
+            net_receive(v, now);
+        }
+    }
+}
+
+proc net_find_msg(msg) {
+    for r = 1 to NET_MAXREQ {
+        if (rq_used[r] == 1 && rq_msg[r] == msg) { return r; }
+    }
+    return 0;
+}
+
+proc net_receive(v, now) {
+    if (len(v) < NET_HEAD || v[1] != "1") { return; }
+    if (substr(v, 4, 9) * 1 != net_id) { return; }
+    net_recv += 1;
+    local type = substr(v, 2, 3) * 1;
+    local r = net_find_msg(substr(v, 10, 13) * 1);
+    if (r == 0 || rq_state[r] >= RQ_DONE) { return; }
+    local seq = substr(v, 14, 16) * 1;
+    local total = substr(v, 17, 19) * 1;
+    local payload = substr(v, NET_HEAD + 1, len(v));
+    rq_t[r] = now;
+    rq_wait[r] = NET_TIMEOUT;
+    if (type == 31) {
+        // the server has our first `seq` chunks
+        if (seq > rq_base[r]) { rq_base[r] = seq; }
+        if (rq_next[r] <= rq_base[r]) { rq_next[r] = rq_base[r] + 1; }
+        if (rq_base[r] >= rq_upn[r]) { rq_state[r] = RQ_WAIT; }
+    } else if (type == 11) {
+        net_latency = floor((now - rq_t0[r]) * 1000);
+        rq_down[r] = payload;
+        rq_state[r] = RQ_DONE;
+    } else if (type == 30) {
+        rq_state[r] = RQ_WAIT;
+        rq_base[r] = rq_upn[r];
+        if (seq == rq_got[r] + 1) {
+            rq_down[r] = rq_down[r] .. payload;
+            rq_got[r] = seq;
+            rq_total[r] = total;
+            if (len(rq_down[r]) > NET_DOWN_MAX * 2) {
+                rq_state[r] = RQ_FAIL;
+                rq_err[r] = "the download is too big";
+                return;
+            }
+            if (rq_got[r] >= total) {
+                rq_state[r] = RQ_DONE;
+                net_send_ack(r, now);
+            } else if (rq_got[r] % 2 == 0) {
+                net_send_ack(r, now);
+            }
+        } else if (now - rq_ackt[r] > 0.4) {
+            // a gap or a repeat: tell the server where we are
+            net_send_ack(r, now);
+        }
+    } else if (type == 32) {
+        rq_down[r] = payload;
+        rq_state[r] = RQ_DONE;
+    } else if (type == 40) {
+        rq_err[r] = net_dec(payload);
+        rq_state[r] = RQ_FAIL;
+    } else if (type == 41) {
+        // the server is busy or we are over its limit: wait, then start over
+        local secs = net_dec(payload) * 1;
+        if (secs < 1) { secs = 1; }
+        if (secs > 20) {
+            rq_err[r] = "the server is busy: try again in " .. secs .. " seconds";
+            rq_state[r] = RQ_FAIL;
+            return;
+        }
+        net_hold = now + secs;
+        net_unqueue(r);
+        rq_next[r] = rq_base[r] + 1;
+        rq_t[r] = now + secs;
+        rq_state[r] = RQ_SEND;
+    }
+}
+
+// --- the frame tick ----------------------------------------------------------------------
+
+var net_shown = -1;            // the state the taskbar shows
+
+proc net_tick() {
+    local now = now_secs();
+    net_poll_hb(now);
+    net_poll_rx(now);
+    local st = net_state();
+    if (st != net_shown) {
+        net_shown = st;
+        wm_need = 1;
+    }
+    // refill the rate-limit buckets
+    local dt = now - net_tok_t;
+    if (dt > 0) {
+        net_tokens += dt / NET_TOKEN_S;
+        if (net_tokens > NET_BURST) { net_tokens = NET_BURST; }
+        net_up_avail += dt * NET_UP_BUDGET / 60;
+        if (net_up_avail > NET_UP_BUDGET) { net_up_avail = NET_UP_BUDGET; }
+        net_tok_t = now;
+    }
+    for r = 1 to NET_MAXREQ {
+        if (rq_used[r] == 1) {
+            if (proc_slot(rq_pid[r]) == 0) {
+                // its program has gone
+                net_unqueue(r);
+                rq_used[r] = 0;
+            } else if (rq_state[r] < RQ_DONE && now >= rq_t[r]) {
+                net_step(r, now);
+            }
+        }
+    }
+    net_flush(now);
+}
+
+proc net_step(r, now) {
+    if (now < net_hold) { return; }
+    if (rq_state[r] == RQ_SEND) {
+        // keep up to NET_WINDOW chunks in flight
+        while (rq_next[r] <= rq_upn[r] && rq_next[r] <= rq_base[r] + NET_WINDOW && len(net_q) < 8) {
+            local k = rq_next[r];
+            local p = rq_p[r];
+            net_queue(r, net_packet(rq_kind[r], rq_msg[r], k, rq_upn[r], substr(rq_up[r], (k - 1) * p + 1, k * p)));
+            rq_next[r] = k + 1;
+        }
+    }
+    if (now - rq_t[r] > rq_wait[r]) {
+        // no progress: resend, waiting longer each time (with jitter, so
+        // computers that collided do not collide again)
+        rq_tries[r] += 1;
+        if (rq_tries[r] > NET_TRIES) {
+            rq_state[r] = RQ_FAIL;
+            if (net_state() == 1) { rq_err[r] = "no answer from the server"; }
+            else { rq_err[r] = "not connected to the ScratchOS server"; }
+            return;
+        }
+        net_unqueue(r);
+        if (rq_state[r] == RQ_SEND || rq_got[r] == 0) {
+            rq_state[r] = RQ_SEND;
+            rq_next[r] = rq_base[r] + 1;
+            if (rq_upn[r] == 1 || rq_base[r] >= rq_upn[r]) { rq_next[r] = rq_upn[r]; }
+        } else {
+            net_send_ack(r, now);
+        }
+        rq_t[r] = now;
+        rq_wait[r] = rq_wait[r] * 2 + random(0, 100) / 100;
+        if (rq_wait[r] > 12) { rq_wait[r] = 12; }
+    }
+}
+
+// --- requests ----------------------------------------------------------------------------
+
+proc net_find_pid(pid) {
+    for r = 1 to NET_MAXREQ {
+        if (rq_used[r] == 1 && rq_pid[r] == pid) { return r; }
+    }
+    return 0;
+}
+
+proc net_free_slot() {
+    for r = 1 to NET_MAXREQ {
+        if (rq_used[r] == 0) { return r; }
+    }
+    return 0;
+}
+
+proc net_start(r, pid, kind, payload) {
+    local now = now_secs();
+    net_msgc = (net_msgc + 1) % 10000;
+    local p = net_pkt - NET_HEAD;
+    local enc = net_enc(payload);
+    local n = ceil(len(enc) / p);
+    if (n < 1) { n = 1; }
+    rq_used[r] = 1;
+    rq_pid[r] = pid;
+    rq_kind[r] = kind;
+    rq_msg[r] = net_msgc;
+    rq_state[r] = RQ_SEND;
+    rq_up[r] = enc;
+    rq_upn[r] = n;
+    rq_p[r] = p;
+    rq_base[r] = 0;
+    rq_next[r] = 1;
+    rq_down[r] = "";
+    rq_got[r] = 0;
+    rq_total[r] = 0;
+    rq_t[r] = now;
+    rq_t0[r] = now;
+    rq_wait[r] = NET_TIMEOUT;
+    rq_tries[r] = 0;
+    rq_err[r] = "";
+    rq_ackt[r] = 0;
+    net_step(r, now);
+}
+
+// a key: letters, digits and _ - . / (no "..")
+proc net_key_ok(k) {
+    if (len(k) == 0 || len(k) > 100 || contains(k, "..")) { return 0; }
+    for i = 1 to len(k) {
+        local c = ord(k[i]);
+        local ok = 0;
+        if (c >= 48 && c <= 57) { ok = 1; }
+        if (c >= 65 && c <= 90) { ok = 1; }
+        if (c >= 97 && c <= 122) { ok = 1; }
+        if (c == 95 || c == 45 || c == 46 || c == 47) { ok = 1; }
+        if (ok == 0) { return 0; }
+    }
+    return 1;
+}
+
+// --- system calls: net.* -----------------------------------------------------------------
+
+proc nat_net(id) {
+    local s = vm_slot;
+    local pid = p_pid[s];
+    if (id == N_NET_ID) { nat_retn(net_id); return; }
+    if (id == N_NET_STATUS) {
+        local h = table_new(pid);
+        local st = net_state();
+        if (st == 1) { tset_s(h, "state", "online"); }
+        else if (st == 2) { tset_s(h, "state", "no server"); }
+        else { tset_s(h, "state", "offline"); }
+        if (st == 1) { tset_b(h, "online", 1); } else { tset_b(h, "online", 0); }
+        tset_n(h, "id", net_id);
+        if (net_latency >= 0) { tset_n(h, "latency", net_latency); }
+        if (net_hb_at > 0) {
+            tset_n(h, "heartbeat", floor(now_secs() - net_hb_at));
+            tset_n(h, "clients", net_srv_clients);
+            tset_n(h, "packet", net_pkt);
+        }
+        tset_n(h, "sent", net_sent);
+        tset_n(h, "received", net_recv);
+        tset_n(h, "requests", floor(net_tokens));
+        tset_n(h, "upload", floor(net_up_avail));
+        nat_rett(h);
+        return;
+    }
+    local r = net_find_pid(pid);
+    if (r == 0) {
+        // a new request: check it, then the limits
+        local kind = 10;
+        local payload = "";
+        if (id == N_NET_GET || id == N_NET_PUT || id == N_NET_LIST) {
+            local key = "";
+            if (id == N_NET_LIST && nat_argc == 0) { key = ""; }
+            else { key = nat_str(1, "net"); }
+            if (vm_raised == 1) { return; }
+            if (net_key_ok(key) == 0 && !(id == N_NET_LIST && len(key) == 0)) {
+                nat_fail("bad name '" .. key .. "' (use letters, digits, _ - . and /)");
+                return;
+            }
+            payload = key;
+            if (id == N_NET_GET) { kind = 20; }
+            if (id == N_NET_LIST) { kind = 22; }
+            if (id == N_NET_PUT) {
+                kind = 21;
+                local data = nat_str(2, "net.put");
+                if (vm_raised == 1) { return; }
+                if (len(data) > NET_UP_MAX) { nat_fail("too big: uploads are at most " .. NET_UP_MAX .. " characters"); return; }
+                if (len(data) > net_up_avail) {
+                    nat_fail("upload limit reached: try again in " .. ceil((len(data) - net_up_avail) * 60 / NET_UP_BUDGET) .. " seconds");
+                    return;
+                }
+                payload = key .. "\n" .. data;
+            }
+        }
+        if (nat_cap("net") != 1) { return; }
+        local st = net_state();
+        if (st == 0) { nat_fail("offline: this copy of ScratchOS has no cloud connection"); return; }
+        if (st == 2) { nat_fail("the ScratchOS server is not responding"); return; }
+        if (net_tokens < 1) {
+            nat_fail("too many requests: try again in " .. ceil((1 - net_tokens) * NET_TOKEN_S) .. " seconds");
+            return;
+        }
+        r = net_free_slot();
+        if (r == 0) {
+            // other programs' requests are in flight: wait for a turn
+            nat_block(BLK_IO);
+            return;
+        }
+        net_tokens -= 1;
+        if (kind == 21) { net_up_avail -= len(payload); }
+        net_start(r, pid, kind, payload);
+        nat_block(BLK_IO);
+        return;
+    }
+    if (rq_state[r] < RQ_DONE) {
+        nat_block(BLK_IO);
+        return;
+    }
+    // finished
+    rq_used[r] = 0;
+    if (rq_state[r] == RQ_FAIL) { nat_fail(rq_err[r]); return; }
+    local kind2 = rq_kind[r];
+    if (kind2 == 10) { nat_retn(net_latency); }
+    else if (kind2 == 20) { nat_rets(net_dec(rq_down[r])); }
+    else if (kind2 == 21) { nat_retb(1); }
+    else {
+        // a list: one name a line
+        local t = table_new(pid);
+        local txt = net_dec(rq_down[r]);
+        local start = 1;
+        for i = 1 to len(txt) + 1 {
+            if (i > len(txt) || txt[i] == "\n") {
+                if (i > start) { table_append(t, substr(txt, start, i - 1), TSTR); }
+                start = i + 1;
+            }
+        }
+        nat_rett(t);
+    }
+}

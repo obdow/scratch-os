@@ -4,6 +4,7 @@ ScratchOS shell - quick reference
  Text      echo grep wc head tail sort more edit
  System    ps kill top free uptime uname date clear history
  Desktop   startx  ide [file] Power  shutdown reboot
+ Network   net status  net get NAME  net put NAME FILE  net ls   man net
  Language  run program.wsk   whisker (interactive)   man whisker
 
  Syntax    a | b   a > f   a >> f   a < f   a && b   a || b   a &

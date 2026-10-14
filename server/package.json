@@ -1,0 +1,16 @@
+{
+  "name": "scratchos-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "The ScratchOS network: a cloud-variable relay and the data server that answers ScratchOS computers",
+  "license": "MIT",
+  "scripts": {
+    "relay": "node relay.js",
+    "server": "node scratchos-server.js",
+    "test": "node test/protocol-test.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "engines": { "node": ">=18" }
+}

@@ -1,0 +1,31 @@
+NET(1)                     ScratchOS Manual
+
+    The ScratchOS network: files on a server, reached through the
+    project's cloud variables.
+
+    net status               connection state, this computer, limits
+    net ping                 round trip to the server
+    net get NAME [FILE]      download NAME (print it, or save to FILE)
+    net put NAME FILE        upload FILE as NAME
+    net ls [PREFIX]          list names on the server
+
+    Names use letters, digits and _ - . /  You may write under public/
+    and users/; pages/ holds the server's own pages (net:// in the
+    Browser).
+
+  STATES (taskbar indicator, Settings > Network)
+    online     the server's heartbeat is fresh
+    no server  cloud variables work, but the server is not answering
+    offline    no cloud connection: open ScratchOS in TurboWarp (or a
+               packaged copy) with cloud variables on
+
+  LIMITS
+    6 requests at once, then one every 4 seconds; uploads up to 8192
+    characters, 16384 a minute; the server can also ask you to wait.
+
+  NOTES
+    Cloud variables are public: anyone can read or overwrite what is
+    sent. Do not send anything private.
+
+    From Whisker: net.status() net.ping() net.get(name)
+    net.put(name, text) net.list([prefix]) net.id()  (capability: net)

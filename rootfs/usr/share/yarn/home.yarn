@@ -25,4 +25,4 @@ page "Start" theme=light
   box bg=card
     text "Make a page: open the **Whisker IDE**, create `mypage.yarn` and press **Run** (Ctrl+Enter). Or type a path in the address bar above." dim
   space
-  text "The ScratchOS network is not here yet. When it is, its pages will open here too." center dim
+  text "Pages from the ScratchOS server open at [net://](net://) addresses, through cloud variables." center dim

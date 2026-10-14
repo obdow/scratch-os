@@ -1,0 +1,62 @@
+-- net - the ScratchOS network, from the terminal (see man net)
+--@caps net
+-- usage: net status              connection, this computer's id, limits
+--        net ping                round trip to the server
+--        net get NAME [FILE]     download (to FILE, or print it)
+--        net put NAME FILE       upload FILE as NAME (under public/ or users/)
+--        net ls [PREFIX]         list names on the server
+local cmd = arg[1] or "status"
+
+local function fail(msg)
+  io.error("net: " .. tostring(msg) .. "\n")
+  exit(1)
+end
+
+if cmd == "status" then
+  local s = net.status()
+  local colour = "\e[91m"
+  if s.state == "online" then colour = "\e[92m" elseif s.state == "no server" then colour = "\e[93m" end
+  print("state     " .. colour .. s.state .. "\e[0m")
+  print("computer  " .. s.id)
+  if s.latency then print("latency   " .. s.latency .. " ms") end
+  if s.heartbeat then
+    print("server    heard " .. s.heartbeat .. " s ago, " .. s.clients .. " computers, packets of " .. s.packet .. " digits")
+  end
+  print("packets   " .. s.sent .. " sent, " .. s.received .. " received")
+  print("limits    " .. s.requests .. " requests and " .. s.upload .. " upload characters available now")
+  if s.state == "offline" then
+    print("")
+    print("This copy of ScratchOS has no cloud connection. Open it in TurboWarp with")
+    print("cloud variables on (see man net) to reach the ScratchOS server.")
+  end
+elseif cmd == "ping" then
+  local ms, err = net.ping()
+  if not ms then fail(err) end
+  print("reply from the server in " .. ms .. " ms")
+elseif cmd == "get" then
+  if not arg[2] then fail("usage: net get NAME [FILE]") end
+  local text, err = net.get(arg[2])
+  if not text then fail(err) end
+  if arg[3] then
+    local ok, e = fs.write(arg[3], text)
+    if not ok then fail(e) end
+    print("saved " .. #text .. " characters to " .. arg[3])
+  else
+    io.write(text)
+    if #text > 0 and text:sub(#text, #text) ~= "\n" then print("") end
+  end
+elseif cmd == "put" then
+  if not arg[2] or not arg[3] then fail("usage: net put NAME FILE") end
+  local text, e = fs.read(arg[3])
+  if not text then fail(e) end
+  local ok, err = net.put(arg[2], text)
+  if not ok then fail(err) end
+  print("uploaded " .. #text .. " characters as " .. arg[2])
+elseif cmd == "ls" or cmd == "list" then
+  local names, err = net.list(arg[2] or "")
+  if not names then fail(err) end
+  for _, n in ipairs(names) do print(n) end
+  if #names == 0 then print("(nothing)") end
+else
+  fail("unknown command '" .. cmd .. "' (status, ping, get, put, ls)")
+end

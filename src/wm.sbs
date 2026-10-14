@@ -32,6 +32,7 @@ const WM_ROWS = SCR_ROWS;
 const TASK_TOP = SCR_ROWS - 2;   // the taskbar's two rows
 const TB_BTN = 6;                // taskbar button width (cells); Start is one too
 const TB_CLOCK_W = 12;           // the taskbar clock's width (cells)
+const TB_NET_W = 3;              // the network indicator's width (cells)
 const TB_STARTMENU = 6;          // menu_open value of the Start menu
 const MAX_WIN = 16;
 const WK_TERM = 1;
@@ -1006,6 +1007,10 @@ proc wm_compose_taskbar() {
             if (dk_hover == -2) { sig += 1; }
         } else if (c >= tb_clock_x) {
             sig = 8 + now("minute") + 60 * now("hour") + 1440 * now("date");
+        } else if (c >= tb_clock_x - TB_NET_W) {
+            // the network indicator
+            sig = 90000 + net_state() * 10;
+            if (dk_hover == -4) { sig += 1; }
         } else {
             local j = floor((c - TB_BTN) / TB_BTN) + 1;
             if (j <= nb) {
@@ -1032,7 +1037,7 @@ proc wm_draw_taskbar() {
     // app buttons
     for j = 1 to len(tbi_app) {
         local px = (TB_BTN + (j - 1) * TB_BTN) * 8;
-        if (px + TB_BTN * 8 > tb_clock_x * 8) { return; }
+        if (px + TB_BTN * 8 > (tb_clock_x - TB_NET_W) * 8) { return; }
         local st = tb_state(j);
         local bg = C_DOCK;
         if (st % 2 == 1 || floor(st / 2) % 2 == 1) {
@@ -1067,6 +1072,25 @@ proc wm_draw_taskbar() {
             else { gfx_fill(px + 14, y + h - 3, TB_BTN * 8 - 28, 2, C_ACCENT); }
         }
     }
+    // the network: three bars, lit when the ScratchOS server answers
+    local nx = (tb_clock_x - TB_NET_W) * 8;
+    if (dk_hover == -4) { gfx_fill(nx, y + 1, TB_NET_W * 8, h - 1, C_HOVER); }
+    local st = net_state();
+    for b = 0 to 2 {
+        local bc = C_DIM;
+        if (st == 1) { bc = C_DOCKTXT; }
+        if (st == 2 && b == 0) { bc = C_TLYEL; }
+        local bh = 5 + b * 4;
+        gfx_fill(nx + 6 + b * 5, y + 23 - bh, 3, bh, bc);
+    }
+    if (st == 0) {
+        // no cloud connection at all: a small cross
+        gfx_fill(nx + 18, y + 8, 1, 1, C_DIM);
+        gfx_fill(nx + 19, y + 9, 1, 1, C_DIM);
+        gfx_fill(nx + 20, y + 10, 1, 1, C_DIM);
+        gfx_fill(nx + 20, y + 8, 1, 1, C_DIM);
+        gfx_fill(nx + 18, y + 10, 1, 1, C_DIM);
+    }
     // clock: time over date
     local d = pad_left_char(now("date"), 2, "0") .. "/" .. pad_left_char(now("month"), 2, "0") .. "/" .. now("year");
     local cx = tb_clock_x * 8;
@@ -1093,6 +1117,7 @@ proc wm_dock_hit(cx, cy) {
     if (cx < TB_BTN) { return -1; }
     if (cx == WM_COLS - 1) { return -2; }
     if (cx >= tb_clock_x) { return 0; }
+    if (cx >= tb_clock_x - TB_NET_W) { return -4; }
     local j = floor((cx - TB_BTN) / TB_BTN) + 1;
     if (j <= len(tbi_app)) { return j; }
     return 0;
@@ -1102,6 +1127,15 @@ proc wm_dock_hit(cx, cy) {
 proc tb_name(h) {
     if (h == -1) { return "Start"; }
     if (h == -2) { return "Show desktop"; }
+    if (h == -4) {
+        local st = net_state();
+        if (st == 1) {
+            if (net_latency >= 0) { return "Network: online (" .. net_latency .. " ms)"; }
+            return "Network: online";
+        }
+        if (st == 2) { return "Network: the server is not answering"; }
+        return "Network: offline (no cloud connection)";
+    }
     if (tbi_app[h] > 0) { return dk_name[tbi_app[h]]; }
     return win_title[tbi_win[h]];
 }
@@ -1110,6 +1144,7 @@ proc wm_compose_tip() {
     local name = tb_name(dk_hover);
     local cx = 3;
     if (dk_hover == -2) { cx = WM_COLS - 1; }
+    if (dk_hover == -4) { cx = tb_clock_x - 2; }
     if (dk_hover > 0) { cx = TB_BTN + (dk_hover - 1) * TB_BTN + 3; }
     local x0 = cx - floor((len(name) + 2) / 2);
     if (x0 < 0) { x0 = 0; }
@@ -1137,6 +1172,7 @@ proc wm_dock_click(h) {
         return;
     }
     if (h == -2) { wm_show_desktop(); return; }
+    if (h == -4) { wm_launch("settings network", "System Settings"); return; }
     local w = tb_button_win(h);
     if (w == 0) {
         wm_launch(dk_cmd[tbi_app[h]], dk_name[tbi_app[h]]);

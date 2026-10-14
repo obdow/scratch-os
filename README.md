@@ -104,13 +104,21 @@ console; `startx` starts the desktop from there.)
   output panel, tree of your home folder, examples and docs. Programs it runs
   open their windows on the desktop. Open it from Start, from Finder, or
   with `ide [file]` in a terminal.
-- **System Settings.** An app with four sections:
+- **System Settings.** An app with five sections:
   - **Appearance:** dark or light, for the menu bar, taskbar, windows,
     terminals, the IDE and apps that use system colours.
   - **Wallpaper:** the gradient, or any `.simg` picture (three come in
     `/usr/share/wallpapers`, and everything in `~/Pictures` is listed).
   - **Taskbar:** which apps are pinned.
+  - **Network:** the connection to the ScratchOS server, with a Test
+    connection button.
   - **About.**
+- **The ScratchOS network.** Files on a server, reached through the
+  project's cloud variables, so several people can share files at once.
+  `net get`, `net put` and `net ls` in a terminal, `net.*` in Whisker,
+  `net://` pages in the Browser, and a network indicator in the taskbar
+  (online / no server / offline). The server is in `server/`; see
+  [docs/NETWORK.md](docs/NETWORK.md) for how it works and how to host it.
 
 ## What you can do
 
@@ -125,6 +133,7 @@ user@scratchos:~$ yes > /dev/null &          # background job; `jobs`, `kill %1`
 user@scratchos:~$ top                        # live process monitor
 user@scratchos:~$ ide projects/primes.wsk    # open a file in the Whisker IDE
 user@scratchos:~$ startx                     # the desktop (from the text console)
+user@scratchos:~$ net status                 # the ScratchOS network (needs a cloud server)
 ```
 
 | Area | Features |
@@ -135,9 +144,10 @@ user@scratchos:~$ startx                     # the desktop (from the text consol
 | Desktop | menu bar with app menus, a Windows-style taskbar (Start menu, pinned and running apps, clock, show desktop), gradient wallpaper, windows with traffic lights (close, minimise, zoom), drag / resize / double-click zoom, permission and message dialogs, dark and light appearance |
 | GUI apps | Finder, Whisker IDE, Paint (with a hex / RGB colour picker), Preview (`.simg` pictures), Browser (Yarn web pages), TextEdit, Activity Monitor, Clock, 3D Cube (orbit it with the mouse), About, System Settings (appearance, picture wallpapers, taskbar), plus terminal apps like Snake and Matrix |
 | Language | Whisker: Lua-like syntax, tables, functions, methods, `pcall`/`error`, multiple returns, `load`/`require`, 140+ built-in functions |
-| Permissions | programs ask before using `files`, `proc`, `gui` or `system` capabilities: (y)es / (n)o / (a)lways; policy in `/etc/caps` |
+| Network | upload and download through cloud variables (`net`, `net.*`, `net://`), many computers at once, rate limits on both sides, connection indicator |
+| Permissions | programs ask before using `files`, `proc`, `gui`, `system` or `net` capabilities: (y)es / (n)o / (a)lways; policy in `/etc/caps` |
 
-Type `help`, `man scratchos`, `man whisker`, `man lib` or `man sh` inside the OS.
+Type `help`, `man scratchos`, `man whisker`, `man lib`, `man sh` or `man net` inside the OS.
 
 ### Keys
 
@@ -284,6 +294,8 @@ tools/ui_assets.py  JetBrains Mono glyph costumes and the colour palette
 tools/natives.py    the Whisker system-call table
 tools/simg.py       the .simg picture format: sample pictures, PNG converter
 rootfs/lib/yarn.wsk the Yarn page engine (parse, lay out, draw); /bin/browser.wsk uses it
+src/net.sbs         networking over cloud variables (src/cloud.sbs declares them)
+server/             the network's cloud relay and data server (Node)
 assets/font/        JetBrains Mono (OFL 1.1)
 test/               headless TurboWarp harness (Playwright) and regression test
 docs/               architecture, SBS and Whisker documentation
@@ -302,6 +314,7 @@ To test (Node 18+ and a Chromium for Playwright):
 cd test && npm install
 node regress.js ../ScratchOS.sb3                          # boots the OS, runs commands, checks output
 node drive.js ../ScratchOS.sb3 out --text -- "ls" "ps"    # type commands, dump the screen
+node net-e2e.js ../ScratchOS.sb3                          # the network, with 3 copies at once
 ```
 
 Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the pieces fit:

@@ -14,6 +14,10 @@ proc nat_fail(msg) {
 }
 
 proc nat_sys(id) {
+    if (id >= N_NET_STATUS) {
+        nat_net(id);
+        return;
+    }
     if (id >= N_GUI_WINDOW && id < N_SYS_VERSION) {
         nat_gui(id);
         return;

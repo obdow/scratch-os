@@ -3,6 +3,7 @@
 #   <program path or prefix*>  <capability> ...
 #
 # capabilities: files (modify system files), proc (control other processes),
-#               gui (open windows), system (shutdown/reboot)
+#               gui (open windows), system (shutdown/reboot),
+#               net (use the ScratchOS network)
 # Programs not listed here are asked at run time: (y)es (n)o (a)lways.
-/bin/*  files proc gui system
+/bin/*  files proc gui system net

@@ -25,7 +25,10 @@ async function main() {
   const waitMs = +((opts.find((o) => o.startsWith('--wait=')) || '--wait=1500').split('=')[1]);
   fs.mkdirSync(outdir, { recursive: true });
   const scale = +((opts.find((o) => o.startsWith('--scale=')) || '--scale=1').split('=')[1]);
-  const h = await launch(sb3, { scale, hq: opts.includes('--hq') });
+  // --cloud=ws://host:port[,project]: connect the cloud variables
+  const co = opts.find((o) => o.startsWith('--cloud='));
+  const cloud = co ? { host: co.slice(8).split(',')[0], project: co.slice(8).split(',')[1] || 'scratchos' } : null;
+  const h = await launch(sb3, { scale, hq: opts.includes('--hq'), cloud });
   const p = h.page;
   const tap = async (k) => { await p.keyboard.down(k); await h.sleep(60); await p.keyboard.up(k); await h.sleep(30); };
   // wait for the keyboard clones, skip the boot animation, wait for the kernel loop

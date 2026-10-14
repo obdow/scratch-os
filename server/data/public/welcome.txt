@@ -1,0 +1,2 @@
+Welcome to the public folder of the ScratchOS network.
+Anything here was uploaded by a ScratchOS computer with `net put`.

@@ -217,7 +217,13 @@ class Parser:
             self.loader(path, tok.file, prog, members=False)
         elif self.is_kw('global'):
             self.i += 1
-            prog['globals'].append(self.parse_vardecl(tok))
+            # `global cloud NAME;` declares a cloud variable (shown as "☁ NAME")
+            cloud = self.cur.kind == 'id' and self.cur.val == 'cloud' and self.peek().kind == 'id'
+            if cloud:
+                self.i += 1
+            d = self.parse_vardecl(tok)
+            d['cloud'] = cloud
+            prog['globals'].append(d)
         elif self.is_kw('sprite') or self.is_kw('stage'):
             is_stage = self.cur.val == 'stage'
             self.i += 1
@@ -1762,7 +1768,8 @@ class Program:
                     init = self.data[init[1]]
                 stage_list_values[g['name']] = init or []
             else:
-                stage_vars['vars'][g['name']] = (vid, g['name'])
+                disp = ('☁ ' + g['name']) if g.get('cloud') else g['name']
+                stage_vars['vars'][g['name']] = (vid, disp)
                 stage_var_values[g['name']] = 0 if g['init'] is None else g['init']
         sprites = self.prog['sprites']
         if 'Stage' not in sprites:
@@ -1786,6 +1793,8 @@ class Program:
             if spr['stage']:
                 for n, (vid, disp) in stage_vars['vars'].items():
                     variables[vid] = [disp, stage_var_values[n]]
+                    if disp.startswith('☁ '):
+                        variables[vid].append(True)
                 for n, (vid, disp) in stage_vars['lists'].items():
                     lists[vid] = [disp, stage_list_values[n]]
             for n, (vid, disp) in sg.vars.items():
@@ -1867,7 +1876,7 @@ def prune_unused(targets, keep=()):
     for t in targets:
         for kind in ('variables', 'lists'):
             for vid, v in t[kind].items():
-                if v[0] in keep:
+                if v[0] in keep or str(v[0]).startswith('☁'):
                     keep_ids.add(vid)
     while True:
         read = set()
@@ -1915,7 +1924,7 @@ def prune_unused(targets, keep=()):
     for t in targets:
         for kind, key in (('variables', 'vars'), ('lists', 'lists')):
             for vid in list(t[kind]):
-                if vid not in used and t[kind][vid][0] not in keep:
+                if vid not in used and t[kind][vid][0] not in keep and not str(t[kind][vid][0]).startswith('☁'):
                     removed['names'].append(key[:-1] + ' ' + t[kind][vid][0])
                     del t[kind][vid]
                     removed[key] += 1

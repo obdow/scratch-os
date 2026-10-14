@@ -1,5 +1,5 @@
 -- settings - System Settings
---@caps gui
+--@caps gui net
 -- Appearance (light / dark), Wallpaper (the gradient or any .simg picture:
 -- /usr/share/wallpapers and ~/Pictures), Taskbar (which apps are pinned) and
 -- About.  keys: up / down change section, q quit
@@ -19,7 +19,7 @@ local function colours()
 end
 colours()
 
-local SECTIONS = {"Appearance", "Wallpaper", "Taskbar", "About"}
+local SECTIONS = {"Appearance", "Wallpaper", "Taskbar", "Network", "About"}
 local SIDE = 180
 local section = 1
 local hover = nil              -- key of the item under the pointer
@@ -174,6 +174,43 @@ local function draw_taskbar(x0, y0)
   end
 end
 
+local ping_result = ""
+
+local function draw_network(x0, y0)
+  heading(x0, y0, "Network", "The ScratchOS server, reached through cloud variables.")
+  local st = net.status()
+  local names = {online = "Online", ["no server"] = "The server is not answering", offline = "Offline"}
+  local col = C.dim
+  if st.state == "online" then col = gui.color("green") elseif st.state == "no server" then col = gui.color("yellow") end
+  local y = y0 + 64
+  gfx.disc(win, x0 + 6, y + 8, 5, col)
+  gfx.text(win, x0 + 20, y, names[st.state] or st.state, C.text)
+  local rows = {{"Computer", tostring(st.id)}}
+  if st.latency then rows[#rows + 1] = {"Latency", st.latency .. " ms"} end
+  if st.heartbeat then
+    rows[#rows + 1] = {"Server", "heard " .. st.heartbeat .. " s ago, " .. st.clients .. " computers"}
+    rows[#rows + 1] = {"Packets", "up to " .. st.packet .. " digits, " .. st.sent .. " sent, " .. st.received .. " received"}
+  end
+  rows[#rows + 1] = {"Allowance", st.requests .. " requests, " .. st.upload .. " upload characters"}
+  for i, r in ipairs(rows) do
+    gfx.text(win, x0, y + 12 + i * 22, r[1], C.dim)
+    gfx.text(win, x0 + 110, y + 12 + i * 22, r[2], C.text)
+  end
+  local by = y + 30 + (#rows + 1) * 22
+  local label = " Test connection "
+  gfx.fill(win, x0, by, #label * 8, 22, hover == "ping" and C.accent or C.button)
+  gfx.text(win, x0, by + 3, label, hover == "ping" and C.ontext or C.text)
+  hit(x0, by, #label * 8, 22, "ping")
+  if ping_result ~= "" then gfx.text(win, x0 + #label * 8 + 14, by + 3, ping_result, C.dim) end
+  local notes = {
+    "Online: the server's heartbeat arrives and it answers.",
+    "Not answering: cloud variables work, but no server is running.",
+    "Offline: this copy has no cloud connection (open it in TurboWarp",
+    "with cloud variables, or the ScratchOS host page).",
+  }
+  for i, n in ipairs(notes) do gfx.text(win, x0, by + 40 + i * 18, n, C.dim) end
+end
+
 local function draw_about(x0, y0)
   gfx.text(win, x0, y0 + 10, "☺", C.accent, nil, 2)
   gfx.text(win, x0 + 32, y0 + 10, "ScratchOS", C.text, nil, 2)
@@ -214,6 +251,7 @@ local function draw()
   if section == 1 then draw_appearance(x0, y0)
   elseif section == 2 then draw_wallpaper(x0, y0)
   elseif section == 3 then draw_taskbar(x0, y0)
+  elseif section == 4 then draw_network(x0, y0)
   else draw_about(x0, y0) end
   if status ~= "" then gfx.text(win, x0, H - 22, status, C.dim) end
   gfx.flush()
@@ -245,12 +283,22 @@ local function click(key)
   elseif kind == "w" and n and walls[n] then
     local ok, err = gui.wallpaper(walls[n].path)
     if ok then status = "" else status = "Cannot use " .. walls[n].name .. ": " .. tostring(err) end
+  elseif key == "ping" then
+    ping_result = "Waiting for the server..."
+    draw()
+    local ms, err = net.ping()
+    if ms then ping_result = "Answered in " .. ms .. " ms" else ping_result = tostring(err) end
   elseif kind == "p" and n then
     local name = gui.apps()[n]
     gui.pinned(name, not gui.pinned(name))
   end
 end
 
+if arg[1] then
+  for i, name in ipairs(SECTIONS) do
+    if name:lower() == arg[1]:lower() then section = i end
+  end
+end
 draw()
 local running = true
 while running do

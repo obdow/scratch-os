@@ -23,6 +23,7 @@ local C = {}
 
 local url = nil                            -- the current address
 local base = HOME                          -- folder that relative links start from
+local trusted = true                       -- the page's scripts may run
 local srcpath = nil                        -- file shown by Source
 local doc, view = nil, nil
 local scroll = 0
@@ -60,6 +61,12 @@ local function resolve(u)
   u = u:trim()
   if u == "" or u:sub(1, 1) == "#" then return u end
   if u:startswith("about:") or string.find(u, "://") then return u end
+  if base:startswith("net://") and not u:startswith("/") and not u:startswith("~") then
+    -- relative to a page on the network
+    local p = normpath(base:sub(7, #base) .. "/" .. u):sub(2)
+    if u:endswith("/") and p ~= "" then p = p .. "/" end
+    return "net://" .. p
+  end
   if u:startswith("file:") then u = u:sub(6, #u) end
   if u == "~" or u:startswith("~/") then u = HOME .. u:sub(2, #u) end
   if u:sub(1, 1) ~= "/" then u = base .. "/" .. u end
@@ -116,6 +123,32 @@ schemes.file = function(path)
   return table.concat(out, "\n") .. "\n", dir, path
 end
 
+-- pages on the ScratchOS server (through cloud variables, see man net):
+-- net:// is its front page, net://NAME a file, net://FOLDER/ a listing
+schemes.net = function(rest)
+  if rest == "" then rest = "pages/index.yarn" end
+  if rest:endswith("/") then
+    local names, err = net.list(rest)
+    if names == nil then return nil, "The ScratchOS network: " .. tostring(err) end
+    local out = {"page " .. q("net://" .. rest), "  title " .. q(rest), "  text \"On the ScratchOS server\" dim", "  list"}
+    for _, n in ipairs(names) do
+      out[#out + 1] = "    item " .. q("[" .. n:sub(#rest + 1, #n):replace("]", "\\]") .. "](net://" .. n .. ")")
+    end
+    if #names == 0 then out[#out + 1] = "    item \"(empty)\"" end
+    return table.concat(out, "\n") .. "\n", "net://" .. rest:sub(1, #rest - 1), nil
+  end
+  local text, err = net.get(rest)
+  if text == nil then return nil, "The ScratchOS network: " .. tostring(err) end
+  local dir = "net://"
+  local slash = 0
+  for i = #rest, 1, -1 do if slash == 0 and rest:sub(i, i) == "/" then slash = i end end
+  if slash > 0 then dir = "net://" .. rest:sub(1, slash - 1) end
+  if rest:endswith(".yarn") then return text, dir, nil end
+  local out = {"page " .. q(rest), "  subheading " .. q("net://" .. rest), "  code"}
+  for _, l in ipairs(string.split(text, "\n")) do out[#out + 1] = "    " .. l end
+  return table.concat(out, "\n") .. "\n", dir, nil
+end
+
 -- returns the page's Yarn text, the folder its links start from, and the
 -- file Source opens; or nil and an error
 local function fetch(u)
@@ -130,8 +163,8 @@ local function fetch(u)
   end
   local h = schemes[scheme]
   if h == nil then
-    return nil, "Pages at " .. scheme .. ":// addresses come from the ScratchOS network, which is " ..
-                "not available yet. For now the browser opens pages on this computer."
+    return nil, "There is no " .. scheme .. ":// on ScratchOS. Pages come from this computer, or from " ..
+                "the ScratchOS network at net:// addresses."
   end
   -- (a call's extra results are kept only through local variables)
   local src, d, file = h(rest)
@@ -180,6 +213,7 @@ local go
 
 -- run page code (a button's action, onload ...)
 local function run_code(code)
+  if not trusted then say_error("Scripts are off on shared network pages") return end
   local f, err = load(yarn.fixcall(code))
   if f == nil then
     say_error("Error in " .. q(code) .. ": " .. tostring(err))
@@ -201,6 +235,9 @@ end
 
 local function load_page(src, dir, file)
   problems = {}
+  -- scripts run on this computer's pages and the server's own (net://pages/),
+  -- not on pages anyone can upload: they would run with the browser's rights
+  trusted = not url:startswith("net://") or url == "net://" or url:startswith("net://pages/")
   base = dir or HOME
   srcpath = file
   doc = yarn.parse(src)
@@ -211,6 +248,10 @@ local function load_page(src, dir, file)
   banner = nil
   -- page scripts share the browser's globals; forget the last page's hooks
   onload = nil
+  if not trusted and #doc.scripts > 0 then
+    problem(doc.scripts[1].line, "scripts are off on shared network pages")
+    doc.scripts = {}
+  end
   for _, sc in ipairs(doc.scripts) do
     local f, err = load(sc.src)
     if f == nil then

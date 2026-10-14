@@ -175,6 +175,7 @@ run in a child shell.
 | `proc` | kill processes the program did not start |
 | `gui` | open windows |
 | `system` | power off or reboot |
+| `net` | use the ScratchOS network |
 
 `/etc/caps` grants capabilities by path (prefix `*` allowed). Otherwise the
 first use blocks the process and asks the user, in the terminal or as a
@@ -263,8 +264,29 @@ Both are Whisker programs; the kernel knows nothing about web pages.
   globals. The `page` API is made of browser functions working on its
   top-level locals. An action that changes the page only marks it dirty;
   the page is laid out again once the action returns.
-* `fetch` picks a handler by address scheme (`about:`, files). A future
-  network or database is one more handler.
+* `fetch` picks a handler by address scheme (`about:`, `net://`, files).
+  `net://` fetches through `net.get` / `net.list`. Scripts run only on local
+  pages and the server's own `net://` pages, and are off for uploaded ones.
+
+## Network (`src/net.sbs`, `src/cloud.sbs`, `server/`)
+
+The full protocol is in [NETWORK.md](NETWORK.md). Inside the kernel:
+
+* `global cloud NAME;` in SBS declares a Stage variable `☁ NAME` with the
+  cloud flag. The pruner never removes cloud variables or writes to them.
+  There are nine: `heartbeat`, `up1`–`up4` and `down1`–`down4`.
+* `net_tick()` runs every frame, in `tick()` and in the IDE loop:
+  * reads the heartbeat;
+  * looks at each `down` variable for a changed value (compared as
+    `"p" .. v`, because `=` compares long digit strings as numbers);
+  * steps each request: queue chunks, resend on time-out, obey "wait";
+  * writes at most one queued packet every 0.11 s, rotating through `up1`–`up4`.
+* Up to 3 requests are kept in parallel lists (`rq_*`), one per blocked
+  process. `nat_net` starts a request, blocks the process with `BLK_IO`, and
+  returns the result when the process is resumed after the request
+  finishes, the same way `io.read` waits for input.
+* When `net_state()` changes, the taskbar is marked for redraw. Its
+  indicator is three cells in front of the clock.
 
 ## Scratch / TurboWarp quirks worked around
 

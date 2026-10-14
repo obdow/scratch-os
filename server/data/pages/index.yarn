@@ -1,0 +1,30 @@
+-- pages/index.yarn on the ScratchOS server: the network's front page (net://)
+page "The ScratchOS Network" theme=ocean
+  space
+  title "The ScratchOS Network" center
+  text "You are reading this from the ScratchOS server, through cloud variables." center dim
+  space
+  row
+    box
+      subheading "Pages"
+      text "Pages like this one live on the server, under pages/. Links work as usual."
+      link "About the network" -> about.yarn
+    box
+      subheading "Share files"
+      text "Upload with `net put public/NAME FILE` in a terminal, download with `net get`."
+      link "What has been shared" -> ../public/
+    box
+      subheading "Status"
+      text "" #status
+      button "Ping the server" -> ping()
+  script
+    function onload() check() end
+    function check()
+      local s = net.status()
+      page.set("status", "State: " .. s.state .. ", this computer is " .. s.id)
+    end
+    function ping()
+      local ms, err = net.ping()
+      if ms then say("The server answered in " .. ms .. " ms") else say("No answer: " .. err) end
+      check()
+    end

@@ -49,6 +49,8 @@ NATIVES = [
     # system
     'sys.version', 'sys.uptime', 'sys.mem', 'sys.shutdown', 'sys.reboot', 'sys.caps',
     'sys.hostname', 'sys.gc', 'sys.request', 'sys.procs', 'sys.date',
+    # the network, over cloud variables (net.sbs); keep last
+    'net.status', 'net.ping', 'net.get', 'net.put', 'net.list', 'net.id',
 ]
 
 

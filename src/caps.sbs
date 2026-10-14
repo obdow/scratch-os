@@ -24,9 +24,10 @@ var prompt_cap = "";
 var prompt_tty = 0;
 var prompt_gui = 0;
 
-list cap_names = ["files", "proc", "gui", "system"];
+list cap_names = ["files", "proc", "gui", "system", "net"];
 list cap_desc = ["modify system files (outside /home and /tmp)", "control other processes",
-                 "open windows on the desktop", "shut down or restart the computer"];
+                 "open windows on the desktop", "shut down or restart the computer",
+                 "send and receive data through the ScratchOS server"];
 
 proc caps_init() {
     caps_load();

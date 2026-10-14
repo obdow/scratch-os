@@ -13,6 +13,7 @@ SCRATCHOS(7)               ScratchOS Manual
     * capability-based permissions with interactive prompts
     * Paint, Preview and the .simg picture format (man simg)
     * the Browser, for web pages written in Yarn (man yarn)
+    * the ScratchOS network over cloud variables: net://, `net` (man net)
 
     ScratchOS boots to the desktop.  Hold Esc while it boots for the text
     console; `startx` starts the desktop from there.  On the desktop,

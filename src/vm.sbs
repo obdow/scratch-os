@@ -56,6 +56,7 @@ proc vm_init() {
     repeat (MAX_PROC * STACK_SIZE) { add(STK, ""); add(STT, 0); }
     repeat (MAX_PROC * CS_SIZE) { add(CSK, 0); }
     heap_init();
+    net_init();
     clear(p_capq);
     clear(p_glnames);
     repeat (MAX_PROC) { add(p_capq, ""); add(p_glnames, ""); }

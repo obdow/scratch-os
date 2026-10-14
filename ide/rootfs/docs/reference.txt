@@ -193,6 +193,28 @@ gfx.image(win, img, 10, 10, 4)          -- at 400%
 parses, lays out and draws Yarn pages in any window. See `man yarn` and
 the guide at `about:help`.
 
+**net** (capability `net`; see `man net` and docs/NETWORK.md): the
+ScratchOS network, files on a server reached through cloud variables. Calls
+wait until the server answers, and return nil and an error message on
+failure (offline, no server, not found, rate limited...).
+
+| Function | Returns / notes |
+|---|---|
+| `status()` | a table: `state` (`"online"`, `"no server"` or `"offline"`), `online`, `id`, `latency` (ms), `heartbeat` (seconds since), `clients`, `packet`, `sent`, `received`, `requests` and `upload` (what the limits allow now) |
+| `ping()` | round trip in milliseconds |
+| `get(name)` | the file's text |
+| `put(name, text)` | true; names under `public/` or `users/`, up to 8192 characters |
+| `list([prefix])` | a table of names |
+| `id()` | this computer's id (random each boot) |
+
+```lua
+--@caps net
+if net.status().state == "online" then
+  net.put("public/hello.txt", "hi from " .. net.id())
+  print(net.get("public/hello.txt"))
+end
+```
+
 **sys:** `version()`, `uptime()`, `mem()`, `hostname()`, `caps()`,
 `request(cap)`, `gc()`, `procs()`, `date()`, `shutdown()`, `reboot()`.
 
@@ -215,6 +237,7 @@ Sensitive calls need a capability:
 | `proc` | killing processes the program did not start |
 | `gui` | `gui.window`, `gui.terminal`, `gui.ide`, `gui.launch`, `gui.track`, `gui.appearance`, `gui.wallpaper`, `gui.pinned`, `gui.clipboard` |
 | `system` | `sys.shutdown`, `sys.reboot` |
+| `net` | everything in `net` |
 
 The first use asks the user: (y)es, (n)o or (a)lways. Declare needs on any
 comment line to be asked when the program starts:
