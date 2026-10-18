@@ -297,6 +297,16 @@ proc vm_pow(a, b) {
 
 // --- errors -------------------------------------------------------------------
 
+// the program's file name, for error messages ("hello.wsk:3: ..."); the
+// process name is the whole command line, arguments and redirections too
+proc vm_progname(slot) {
+    local p = p_path[slot];
+    if (len(p) == 0) { return p_name[slot]; }
+    local i = len(p);
+    while (i > 1 && p[i - 1] != "/") { i -= 1; }
+    return substr(p, i, len(p));
+}
+
 // raise a runtime error in the running process (unwinds to pcall)
 var vm_raised = 0;
 var vm_last_err = "";      // last uncaught runtime error (used by the IDE)
@@ -305,7 +315,7 @@ var vm_last_err_pid = 0;
 proc vm_raise(msg) {
     vm_raised = 1;
     local full = msg;
-    if (vm_line > 0) { full = p_name[vm_slot] .. ":" .. vm_line .. ": " .. msg; }
+    if (vm_line > 0) { full = vm_progname(vm_slot) .. ":" .. vm_line .. ": " .. msg; }
     local c = vm_csp;
     while (c > vm_csbase) {
         if (CSK[c] == 1) {
