@@ -305,6 +305,13 @@ proc fs_total_bytes() {
 
 // does modifying `ino` (or creating inside dir `ino`) need the "files" capability?
 // Free areas: /home and /tmp.
+// /home and /tmp themselves (what is inside them is free, but not the
+// folders: removing or renaming one needs the files capability)
+proc fs_is_free_root(ino) {
+    if (fs_parent[ino] == 1 && (fs_name[ino] == "home" || fs_name[ino] == "tmp")) { return 1; }
+    return 0;
+}
+
 proc fs_protected(ino) {
     local i = ino;
     while (i != 1 && i != 0) {

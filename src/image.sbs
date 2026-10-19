@@ -151,10 +151,20 @@ proc img_disc_wh(h, w, ht, cx, cy, r, rgb) {
 proc img_circle(h, cx, cy, r, rgb) {
     local w = img_w(h);
     local ht = img_h(h);
-    local segs = imax(16, round(r * 4));
-    for k = 0 to segs {
-        local a = k * 360 / segs;
-        img_set(h, w, ht, round(cx + r * cos(a)), round(cy + r * sin(a)), rgb);
+    // midpoint circle: symmetric, and no gaps at any size
+    local x = round(r);
+    local y = 0;
+    local err = 1 - x;
+    local ox = round(cx);
+    local oy = round(cy);
+    while (x >= y) {
+        img_set(h, w, ht, ox + x, oy + y, rgb); img_set(h, w, ht, ox - x, oy + y, rgb);
+        img_set(h, w, ht, ox + x, oy - y, rgb); img_set(h, w, ht, ox - x, oy - y, rgb);
+        img_set(h, w, ht, ox + y, oy + x, rgb); img_set(h, w, ht, ox - y, oy + x, rgb);
+        img_set(h, w, ht, ox + y, oy - x, rgb); img_set(h, w, ht, ox - y, oy - x, rgb);
+        y += 1;
+        if (err < 0) { err += 2 * y + 1; }
+        else { x -= 1; err += 2 * (y - x) + 1; }
     }
 }
 
@@ -538,7 +548,7 @@ proc nat_image(id) {
         case N_IMAGE_FLIP: {
             local h13 = nat_img_arg(1, "image.flip");
             local dir = "h";
-            if (nat_argc >= 2) { dir = nat_str(2, "image.flip"); }
+            if (nat_argc >= 2 && nat_t(2) != TNIL) { dir = nat_str(2, "image.flip"); }
             if (vm_raised == 0) {
                 if (dir == "v" || dir == "vertical") { img_flip(h13, 1); } else { img_flip(h13, 0); }
             }

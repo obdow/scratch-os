@@ -239,8 +239,11 @@ def build_data(kind):
     # code -> glyph slot in a set (unsupported codes show '?'), and
     # costume number -> code for ord() (costume lookup by name, set 0)
     gmap = [glyphs.index(c) if c in glyphs else qmark for c in range(256)]
+    # glyph costumes are 1..len(glyphs); the name-only ones follow all the sets
+    nsets = len(build_palette()[0])
+    glyph_code = list(glyphs) + [63] * (nsets * size - len(glyphs)) + ord_extra_codes(kind)
     return {'ui_pal_gb': gb, 'ui_pal_rb': rb, 'ui_pal_hue': hue, 'ui_pal_bri': bri, 'ui_pal_rgb': rgb,
-            'ui_gmap': gmap, 'glyph_code': list(glyphs)}
+            'ui_gmap': gmap, 'glyph_code': glyph_code}
 
 
 def ui_consts():
@@ -479,7 +482,20 @@ def costumes(kind):
                 img = Image.new('RGBA', (w * 2, h * 2), base + (255,))
                 out.append(assets.make_costume(f's{k}rect_{w}x{h}', assets.png_bytes(img), 'png', 0, 0))
     assert len(out) == len(bases) * set_size(kind)
+    # name-only costumes for the codes without a glyph, so ord() (a costume
+    # lookup by name, which is case-sensitive) knows every character
+    blank = b'<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2" viewBox="0 0 2 2"></svg>'
+    for code in ord_extra_codes(kind):
+        out.append(assets.make_costume(assets.cp437_char(code), blank, 'svg', 1, 1, 1))
     return out
+
+
+def ord_extra_codes(kind):
+    """Codes that get a name-only costume: no glyph, and not one of the
+    characters ord() tests directly (NUL, space, and the control characters
+    the kernel keeps as ASCII: 7 8 9 10 13 27)."""
+    skip = {0, 32, 7, 8, 9, 10, 13, 27}
+    return [c for c in range(256) if c not in skip and c not in GLYPHS[kind]]
 
 
 if __name__ == '__main__':

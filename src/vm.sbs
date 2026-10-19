@@ -4,7 +4,7 @@
 // Memory:
 //   CODE        compiled code segments (one per program, cached by inode+mtime)
 //   STK / STT   value stacks (value / tag); each process owns STACK_SIZE cells
-//   CSK         call stacks; frames of 5 cells [ret pc, old fp, dest, W, flags]
+//   CSK         call stacks; frames of 5 cells [ret pc, old fp, dest, W, flags + 2 * caller's line]
 //
 // A frame's locals live at STK[fp + slot].  CALL n W calls the function
 // below n arguments and leaves W results where the function value was.
@@ -203,13 +203,15 @@ proc vm_typename(t) {
 }
 
 proc fmt_number(v) {
+    // NaN: Scratch compares it equal to itself (as text), so test the text
+    if (("" .. v) == "NaN") { return "nan"; }
     if (v == floor(v) && v < 1e15 && v > -1e15) { return floor(v) .. ""; }
-    if (v != v) { return "nan"; }
     if (v > 1e308) { return "inf"; }
     if (v < -1e308) { return "-inf"; }
     // 14 significant digits like Lua's %.14g
     local a = abs(v);
     local e = floor(log10(a));
+    if (e < -290) { return v .. ""; }      // pow10 below would overflow
     local scale = pow10(13 - e);
     local r = round(v * scale) / scale;
     return r .. "";
@@ -312,25 +314,26 @@ var vm_raised = 0;
 var vm_last_err = "";      // last uncaught runtime error (used by the IDE)
 var vm_last_err_line = 0;
 var vm_last_err_pid = 0;
+//
+// A caught error does not unwind at once: the instruction (or native) that
+// raised it still finishes and moves pc / sp, so vm_raise only records the
+// pcall frame and stops the loop (vm_running = 2); vm_exec then unwinds with
+// vm_recover once the instruction is over.  Later raises from the same
+// instruction are ignored.
+var vm_pend_c = 0;         // the pcall frame a pending error unwinds to
+var vm_pend_msg = "";
 proc vm_raise(msg) {
+    if (vm_running != 1) { return; }   // already raised (or stopped) during this instruction
     vm_raised = 1;
     local full = msg;
     if (vm_line > 0) { full = vm_progname(vm_slot) .. ":" .. vm_line .. ": " .. msg; }
     local c = vm_csp;
     while (c > vm_csbase) {
-        if (CSK[c] == 1) {
+        if (CSK[c] % 2 == 1) {
             // protected frame found
-            local retpc = CSK[c - 4];
-            local oldfp = CSK[c - 3];
-            local dest = CSK[c - 2];
-            local w = CSK[c - 1];
-            vm_csp = c - 5;
-            vm_fp = oldfp;
-            vm_pc = retpc;
-            clear(nr_v); clear(nr_t);
-            add(nr_v, 0); add(nr_t, TBOOL);
-            add(nr_v, full); add(nr_t, TSTR);
-            vm_place_results(dest, w);
+            vm_pend_c = c;
+            vm_pend_msg = full;
+            vm_running = 2;
             return;
         }
         c -= 5;
@@ -342,6 +345,25 @@ proc vm_raise(msg) {
     vm_running = 0;
     vm_exited = 1;
     proc_exit(vm_slot, 1);
+}
+
+// unwind to the pcall frame of a pending error; pcall returns false, msg
+proc vm_recover() {
+    local c = vm_pend_c;
+    local retpc = CSK[c - 4];
+    local oldfp = CSK[c - 3];
+    local dest = CSK[c - 2];
+    local w = CSK[c - 1];
+    vm_line = floor(CSK[c] / 2);
+    vm_csp = c - 5;
+    vm_fp = oldfp;
+    vm_pc = retpc;
+    clear(nr_v); clear(nr_t);
+    add(nr_v, 0); add(nr_t, TBOOL);
+    add(nr_v, vm_pend_msg); add(nr_t, TSTR);
+    vm_place_results(dest, w);
+    vm_running = 1;
+    vm_raised = 0;       // handled: natives running a callback carry on
 }
 
 // copy nr_v/nr_t into the stack at dest, adjusted to w values
@@ -385,7 +407,7 @@ proc vm_call(fnpos, n, w, retpc, flags, dest) {
         CSK[vm_csp + 2] = vm_fp;
         CSK[vm_csp + 3] = dest;
         CSK[vm_csp + 4] = w;
-        CSK[vm_csp + 5] = flags;
+        CSK[vm_csp + 5] = flags + 2 * vm_line;
         vm_csp += 5;
         vm_fp = fnpos + 1;
         local extra = nl - np;
@@ -420,7 +442,8 @@ proc vm_return(n) {
     local oldfp = CSK[c - 3];
     local dest = CSK[c - 2];
     local w = CSK[c - 1];
-    local flags = CSK[c];
+    local flags = CSK[c] % 2;
+    vm_line = floor(CSK[c] / 2);
     vm_csp = c - 5;
     local src = vm_sp - n + 1;
     clear(nr_v);
@@ -585,7 +608,7 @@ var vm_sync = 0;     // > 0 while running a callback synchronously
 
 // call the function at fnpos with n args and run it to completion;
 // the result is left at STK[fnpos]
-proc vm_call_sync(fnpos, n) {
+proc vm_call_sync(fnpos, n) recursive {   // callbacks can nest
     local save_pc = vm_pc;
     local level = vm_csp;
     if (STT[fnpos] != TFUN) {
@@ -603,6 +626,9 @@ proc vm_call_sync(fnpos, n) {
 // drops to `stop_level` (synchronous callbacks).  Returns instructions run.
 proc vm_exec(quantum, stop_level) recursive {
     local left = quantum;
+    local more = 1;
+    while (more == 1) {
+    more = 0;
     while (vm_running == 1 && left > 0 && vm_csp > stop_level) {
         left -= 1;
         local op = CODE[vm_pc];
@@ -953,6 +979,13 @@ proc vm_exec(quantum, stop_level) recursive {
                 vm_raise("illegal instruction " .. op .. " at " .. (vm_pc - vm_cbase));
             }
         }
+    }
+    // a caught error (see vm_raise): unwind and carry on, unless its pcall
+    // is outside this callback (the caller's vm_exec unwinds it then)
+    if (vm_running == 2 && vm_pend_c > stop_level) {
+        vm_recover();
+        more = 1;
+    }
     }
     return quantum - left;
 }

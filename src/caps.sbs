@@ -207,7 +207,7 @@ proc caps_command(ok, oi, ek, ei) {
                 fd_write(ok, oi, "  " .. pad_left(p_pid[s], 4) .. " " .. pad_right(p_path[s], 22) .. p_caps[s] .. "\n");
             }
         }
-        fd_write(ok, oi, "Capabilities: files proc gui system\n");
+        fd_write(ok, oi, "Capabilities: files proc gui system net\n");
         return 0;
     }
     local sub = sh_argv[2];

@@ -13,8 +13,10 @@ list lo_map = data("lower");         // code+1 -> lowercase code
 list char_class = data("char_class");
 list glyph_code = data("glyph_code");  // glyph costume number -> code
 
-// CP437 code of a single character (63 '?' if it has no glyph costume).
+// CP437 code of a single character (63 '?' if it is not CP437).
 // ORD_SENTINEL is the costume of '?'; glyph_code maps costume -> code.
+// Every code has a costume named by its character: a glyph, or a blank
+// name-only one (tools/ui_assets.py), except the ones tested below.
 // The costume lookup runs first: comparisons of "0" with whitespace are
 // unreliable in Scratch, so whitespace is only tested when the lookup fails.
 proc ord(ch) {
@@ -29,6 +31,7 @@ proc ord(ch) {
     if (ch == "\r") { return 13; }
     if (ch == "\e") { return 27; }
     if (ch == "\x08") { return 8; }
+    if (ch == "\x07") { return 7; }
     return 63;
 }
 
@@ -92,7 +95,10 @@ proc substr(s, a, b) {
 proc str_find(s, pat, init) {
     local n = len(s);
     local m = len(pat);
-    if (m == 0) { return init; }
+    if (m == 0) {
+        if (init > n + 1) { return 0; }
+        return init;
+    }
     local first = pat[1];
     local i = init;
     while (i <= n - m + 1) {

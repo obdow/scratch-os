@@ -136,18 +136,19 @@ print(0x10, 0xff, 0XAbC)
 ```
 
 A number is read greedily: digits and dots are collected together. So
-`1..2` is one malformed number, not `1 .. 2`. Malformed numbers (such as
-`1..2`, `1.2.3` or `1e`) are not reported as errors; they silently become 0.
-Put spaces around `..` after a number:
+`1..2` is one malformed number, not `1 .. 2`, and the program does not
+compile. Malformed numbers (such as `1..2`, `1.2.3` or `1e`) are compile
+errors. Put spaces around `..` after a number:
 
 ```lua
 print(1 .. 2)
-print(1..2)
+local f, err = load("print(1..2)")
+print(err)
 ```
 
 ```output
 12
-0
+line 1: malformed number '1..2'
 ```
 
 ### Strings
@@ -167,7 +168,6 @@ A string literal is written between double quotes `"..."` or single quotes
 | `\xHH` | the character with hex code `HH` (exactly two hex digits) |
 | `\ddd` | the character with decimal code `ddd` (one to three digits; the code is taken modulo 256) |
 | `\` + newline | a newline (the string continues on the next line) |
-| `\0` | nothing (the empty string); see [Known issues](#known-issues) |
 | `\` + any other character | that character itself (`\q` is `q`, `\a` is `a`) |
 
 Code 0 has no character in ScratchOS, so `"\0"` and `"\256"` add nothing.
@@ -1676,13 +1676,18 @@ false   prog.wsk:2: number expected, got string
 true    2
 ```
 
-**Warning:** at present `pcall` only works reliably for errors raised by
-`error`, `assert`, built-in functions and calls (`attempt to call ...`,
-`stack overflow`, `'for'` errors). Errors raised by an *operator* inside
-the protected function (arithmetic, `..`, comparison, `#`, indexing a
-non-table, `t[nil] = v`) are caught, but `pcall`'s results come back
-wrong. See [Known issues](#known-issues). Until that is fixed, check values
-before using operators on them, and raise your own error with `error`.
+`pcall` catches every kind of runtime error: those raised by `error` and
+`assert`, by built-in functions, and by operators such as arithmetic on
+`nil` or indexing a non-table.
+
+```lua
+local ok, e = pcall(function() local t = nil; return t.x end)
+print(ok, e)
+```
+
+```output
+false   prog.wsk:1: attempt to index a nil value
+```
 
 ### Compile errors
 
@@ -1838,8 +1843,8 @@ Syntax:
 * Long strings and block comments have no levels (`[==[ ]==]`); block
   comments do not nest.
 * String escapes: `\e` is ESC; `\a`, `\b`, `\f`, `\v`, `\z` and `\u{...}`
-  are not supported (`\a` is just `a`); `\0` produces nothing.
-* Malformed numbers like `1..2` become 0 instead of being an error.
+  are not supported (`\a` is just `a`); `\0` produces nothing, because
+  code 0 has no character.
 * No `#!` first line.
 * No varargs: `...` in a parameter list is one parameter named `arg`, and
   `...` cannot be used in expressions.
@@ -1882,64 +1887,11 @@ Semantics:
 These are bugs in the current version of Whisker. Programs should not rely
 on them.
 
-### pcall and operator errors
-
-When an operator (arithmetic, unary `-`, `..`, comparison, `#`, indexing,
-`t[nil] = v`) raises an error inside a function called by `pcall`, the VM
-skips part of the instruction that follows the `pcall` call. The results
-`pcall` returns are then wrong (often both `nil`, so `if not ok` does not
-notice the error), and the code right after it can misbehave. Errors from
-`error`, `assert`, built-in functions, calls of non-functions, `stack
-overflow` and `for` loops are not affected.
-
-```lua
-local ok, e = pcall(function() return nil + 1 end)
-print(ok, e)     -- should print false and the message
-```
-
-### Built-in functions that report two errors
-
-Some built-in functions keep checking arguments after the first bad one.
-When they raise a second error, that error is not caught by `pcall` and
-stops the program. For example `pcall(function() string.rep() end)` stops
-the program with `bad argument #2 to 'rep' (number expected, got nil)`.
-
-### Wrong line numbers
-
-After a function returns, error messages can report a line inside that
-function instead of the caller's line, until the caller reaches a new line.
-In this program the error is on line 4:
-
-```lua
-local function f()
-  return 1
-end
-local y = f() + nil
-```
-
-```output
-prog.wsk:2: attempt to perform arithmetic on a nil value
-```
-
-Also, a function body written on the same line as the statement that
-defines it does not record its line, so errors in it are reported at the
-caller's line:
-
-```lua
-local function f() return nil + 1 end
-print("x")
-f()
-```
-
-```output
-x
-prog.wsk:3: attempt to perform arithmetic on a nil value
-```
-
 ### NaN
 
 Undefined results such as `0/0`, `x % 0` and `(-8) ^ (1/3)` print as
-`inf`, compare equal to themselves, and count as 0 in further arithmetic.
+`nan`, but Scratch arithmetic treats them oddly: they compare equal to
+themselves and count as 0 in further arithmetic.
 
 ```lua
 local n = 0 / 0
@@ -1947,7 +1899,7 @@ print(n, n == n, n + 1)
 ```
 
 ```output
-inf     true    1
+nan     true    1
 ```
 
 ### Large numbers print imprecisely
@@ -1998,19 +1950,15 @@ print(left)
 
 ### String escapes
 
-* `\0` followed by digits: `"\065"` is `"65"`, not `"A"`. `\0` is read as
-  an empty character and the digits stay in the string.
-* `\x` followed by characters that are not hex digits produces nothing and
-  swallows two characters.
-* A quoted string that is still open when the source ends is accepted,
-  instead of being reported as `unfinished string`.
+`\x` followed by characters that are not hex digits produces nothing and
+swallows two characters.
 
 ```lua
-print("\065", "[\xZZ]")
+print("[\xZZ]")
 ```
 
 ```output
-65      []
+[]
 ```
 
 ### Other

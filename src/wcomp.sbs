@@ -213,7 +213,12 @@ proc wlex(src) {
                     num = num .. "e";
                     i += 1;
                     if (i <= n && (src[i] == "-" || src[i] == "+")) { num = num .. src[i]; i += 1; }
-                    while (i <= n && char_class[ord(src[i]) + 1] == 2) { num = num .. src[i]; i += 1; }
+                    local edigits = 0;
+                    while (i <= n && char_class[ord(src[i]) + 1] == 2) { num = num .. src[i]; i += 1; edigits += 1; }
+                    if (edigits == 0) { wlex_error("malformed number '" .. num .. "'", line); }
+                }
+                if (str_find(num, ".", str_find(num, ".", 1) + 1) > 0 && str_find(num, ".", 1) > 0) {
+                    wlex_error("malformed number '" .. num .. "'", line);
                 }
                 wlex_add(TK_NUM, num * 1, line);
             }
@@ -241,7 +246,6 @@ proc wlex(src) {
                     else if (e == "\\") { out = out .. "\\"; }
                     else if (e == "\"") { out = out .. "\""; }
                     else if (e == "'") { out = out .. "'"; }
-                    else if (e == "0") { out = out .. ""; }
                     else if (e == "x") {
                         local hx = str_lower(substr(src, i, i + 1));
                         local code = (str_find("0123456789abcdef", hx[1], 1) - 1) * 16 + str_find("0123456789abcdef", hx[2], 1) - 1;
@@ -262,6 +266,7 @@ proc wlex(src) {
                     i += 1;
                 }
             }
+            if (done == 0) { wlex_error("unfinished string", line); }
             wlex_add(TK_STR, out, line);
         } else if (c == "-" && i < n && src[i + 1] == "-") {
             // comment
@@ -719,6 +724,7 @@ proc c_funcbody(is_method) recursive {
     local save_max = c_maxlocals;
     local save_loop = c_loop;
     local save_line = c_line;
+    c_line = 0;          // the body's first statement marks its line
     local save_top = c_main_top;
     if (c_depth == 0) { c_main_top = len(lc_name); }
     c_depth += 1;

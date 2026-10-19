@@ -102,6 +102,11 @@ sprite Kernel {
             if (fs > 0) { add(kq_pid, p_pid[fs]); add(kq_ev, ev); }
             return;
         }
+        if (ev == "^d" && len(tty_line[t]) == 0 && fs > 0 && p_kind[fs] != PK_SHELL) {
+            // Ctrl+D on an empty line: end of input for the program reading it
+            tty_eof[t] = 1;
+            return;
+        }
         tty_key(t, ev);
     }
 

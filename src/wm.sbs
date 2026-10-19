@@ -2185,7 +2185,9 @@ proc nat_gui(id) {
             else if (nat_cap("gui") == 1) {
                 local cmd = "";
                 if (nat_argc >= 1) { cmd = nat_str(1, "gui.terminal"); }
-                local tw = wm_open_term(cmd, cmd, -1, -1, 100, 30);
+                local ttitle = cmd;
+                if (len(cmd) == 0) { ttitle = "Terminal"; }
+                local tw = wm_open_term(cmd, ttitle, -1, -1, 100, 30);
                 if (tw == 0) { nat_fail("too many windows"); } else { nat_retn(tw); }
             }
         }
@@ -2242,6 +2244,11 @@ proc nat_gui(id) {
             if (nat_argc >= 1 && nat_t(1) != TNIL) {
                 local wp = nat_str(1, "gui.wallpaper");
                 if (vm_raised == 0) {
+                    // relative to the program's directory, stored as an absolute path
+                    if (len(wp) > 0) {
+                        local wi = fs_lookup(wp, p_cwd[vm_slot]);
+                        if (wi > 0) { wp = fs_path(wi); }
+                    }
                     if (wm_set_wallpaper(wp) == 0) { nat_fail(wall_err); return; }
                 }
             }

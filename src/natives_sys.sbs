@@ -93,7 +93,7 @@ proc nat_sys(id) {
             if (vm_raised == 0) {
                 if (ino5 == 0) { nat_fail(fs_err); }
                 else if (fs_is_ancestor(ino5, cwd) == 1) { nat_fail("cannot remove the current directory"); }
-                else if (nat_fs_cap(ino5) == 1) {
+                else if (nat_fs_cap_node(ino5) == 1) {
                     local rec = 0;
                     if (nat_argc >= 2 && vm_truthy(nat_v(2), nat_t(2)) == 1) { rec = 1; }
                     if (fs_remove(ino5, rec) == 1) { nat_retb(1); } else { nat_fail(fs_err); }
@@ -120,7 +120,7 @@ proc nat_sys(id) {
                     if (ddir == 0) { nat_fail(fs_err); }
                     else {
                         local ok = nat_fs_cap(ddir);
-                        if (ok == 1 && id == N_FS_RENAME) { ok = nat_fs_cap(src); }
+                        if (ok == 1 && id == N_FS_RENAME) { ok = nat_fs_cap_node(src); }
                         if (ok == 1) {
                             local r = 0;
                             if (id == N_FS_RENAME) { r = fs_rename(src, ddir, dname); }

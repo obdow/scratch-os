@@ -163,8 +163,7 @@ table: 0x       string
 
 Two different tables always give different strings, and the same table
 always gives the same string, so `tostring(t)` can serve as an identity.
-"Not a number" (from `0/0`) prints wrongly as `inf`; see
-[Known issues](#known-issues).
+"Not a number" (from `0/0`) prints as `nan`.
 
 ### tonumber(v [, base])
 
@@ -272,10 +271,10 @@ prog.wsk:5: stop here
 Calls `f` with the remaining arguments in *protected mode*. If `f` finishes,
 `pcall` returns `true` followed by `f`'s results. If `f` raises an error,
 `pcall` returns `false` and the error message, and the program goes on.
-Errors raised by `error`, `assert` and other built-in functions (such as
-bad arguments), and calls of a `nil` value, are caught this way. Errors
-raised by operators, such as indexing `nil` or arithmetic on `nil`, are
-currently not reported correctly; see [Known issues](#known-issues).
+Every runtime error is caught this way: errors raised by `error`, `assert`
+and other built-in functions (such as bad arguments), by operators (such
+as indexing `nil` or arithmetic on `nil`), by calls of a `nil` value, and
+by a `table.sort` comparison function.
 
 `f` must be a function written in Whisker. A built-in such as `print` or
 `string.sub` is not accepted: wrap it in a function. Passing anything else
@@ -433,9 +432,7 @@ print("never printed")
 bye
 ```
 
-`exit(true)` and `exit(false)` are meant to mean 0 and 1, but currently
-raise `bad argument #1 to 'exit' (number expected, got boolean)`; see
-[Known issues](#known-issues).
+`exit(true)` exits with code 0 and `exit(false)` with code 1.
 
 ### load(src)
 
@@ -893,9 +890,8 @@ print((" "):byte(), ("\t"):byte(), ("\n"):byte(), ("é"):byte())
 32      9       10      130
 ```
 
-At the moment `byte` returns 63 (the code of `?`) for many characters
-outside printable ASCII, for example `É` and the box-drawing characters;
-see [Known issues](#known-issues).
+Every CP437 character has its own code: `("É"):byte()` is 144 and
+`("╔"):byte()` is 201.
 
 ### string.char(...)
 
@@ -1158,7 +1154,7 @@ print(math.max(3, 1, 4, 1, 5), math.max(-1, -5), math.max(7), math.max("10", 9))
 ### math.min(x, ...)
 
 Returns the smallest of its arguments. The same rules as `math.max`
-apply (its error messages also say `'max'`).
+apply, and its error messages say `'min'`.
 
 ```lua
 print(math.min(3, 1, 4, 1, 5), math.min(2.5, 2.4), math.min(0))
@@ -1351,25 +1347,27 @@ the array leaves a hole that `#t` still counts.
 ### table.insert(t, [pos,] v)
 
 With two arguments, appends `v` at the end of `t`. With three, inserts `v`
-at position `pos` and moves the elements from `pos` on up by one. A `pos`
-greater than `#t` appends. `pos` must be at least 1 (see
-[Known issues](#known-issues)). Returns nothing. Appending `nil` does
-nothing.
+at position `pos` and moves the elements from `pos` on up by one. `pos`
+must be a whole number from 1 to `#t + 1` (which appends); anything else
+raises `bad argument #2 to 'insert' (position out of bounds)`. Returns
+nothing. Appending `nil` does nothing.
 
 ```lua
 local t = {"b", "d"}
 table.insert(t, "e")
 table.insert(t, 1, "a")
 table.insert(t, 3, "c")
-table.insert(t, 99, "f")
+table.insert(t, 6, "f")
 print(#t, table.concat(t, " "))
 table.insert(t, nil)
 print(#t)
+print(pcall(function() table.insert(t, 99, "x") end))
 ```
 
 ```output
 6       a b c d e f
 6
+false
 ```
 
 ### table.remove(t [, pos])
@@ -1656,43 +1654,14 @@ print(table.concat(t, " "), table.concat(r, " "))
 
 These behaviours look like bugs. Avoid relying on them.
 
-* **Not-a-number prints as `inf`.** `0/0`, `math.sqrt(-1)` and
-  `math.log(-1)` produce NaN, but `tostring` shows `inf`, and `nan == nan`
-  is `true`. Numbers smaller than about 1e-295 (such as `5e-324`) print as
-  `NaN`.
-* **`string.byte` returns 63 for many characters.** Only printable ASCII,
-  tab, newline, carriage return, escape and the few CP437 characters the
-  system draws (such as `é`) get their real code. Others, such as `É`, `ß`
-  and most box-drawing characters, give 63. For the same reason
-  `string.upper` and `string.lower` leave most accented letters unchanged,
-  sorting treats those characters as `?`, and `==` may treat two of them as
-  equal.
-* **`pcall` and errors from operators.** When the error inside `pcall`
-  comes from an operator rather than a function call, `pcall` returns the
-  wrong values. Indexing `nil` (`t.x` with `t` = `nil`) gives the message
-  and `nil` instead of `false` and the message; arithmetic on `nil` gives
-  `nil, nil`; calling a method on a number (`n:upper()`) gives `true`.
-  Outside `pcall` these errors are reported correctly. Until this is
-  fixed, check values before using them, or raise the error yourself with
-  `error`.
-* **Line numbers in errors from one-line functions.** An error inside a
-  function written on a single line, such as
-  `pcall(function() return string.sub(s, "x") end)` passed on to another
-  function, can report the line that was running before the call.
-* **Errors in a `table.sort` comparator** are not caught by `pcall`; the
-  program ends.
-* **`exit(true)` and `exit(false)`** raise an error instead of exiting with
-  code 0 or 1.
-* **`table.insert(t, pos, v)` with `pos` below 1** writes outside the
-  table instead of raising an error. The value is lost and other data may
-  be damaged.
+* **Not-a-number compares equal to itself.** `0/0`, `math.sqrt(-1)` and
+  `math.log(-1)` produce NaN, which prints as `nan`, but `nan == nan` is
+  `true` and NaN counts as 0 in further arithmetic (Scratch rules).
+* **`string.char(8)`** (backspace) gives an empty string.
 * **`tonumber`** returns `0` for strings like `"0x1g"` (starting with `0x`
   but not valid hex), and accepts bases outside 2 to 36.
 * **`string.format("%x", n)`** gives an empty string for negative `n`, and
   `%d` of a number between -1 and 0 gives `-0`.
-* **`string.find(s, "", init)`** returns `init` even when `init` is past
-  the end of `s`.
-* **`math.min`** reports its argument errors as `'max'`.
 
 See also: [language.md](language.md) for the syntax these functions are used
 with, [system.md](system.md) for `io`, `os`, `fs` and `proc`,

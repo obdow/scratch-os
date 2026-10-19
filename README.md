@@ -190,7 +190,8 @@ gfx.text(win, 60, 80, "Hello!", 15)
 repeat local e = gui.waitevent(win) until e.type == "close"
 ```
 
-See [docs/WHISKER.md](docs/WHISKER.md) for the full language and library reference.
+The [Whisker manual](docs/whisker/README.md) covers the language and every library function,
+with tested examples; [docs/WHISKER.md](docs/WHISKER.md) is a two-page quick reference.
 
 ## Whisker IDE
 
@@ -298,7 +299,7 @@ src/net.sbs         networking over cloud variables (src/cloud.sbs declares them
 server/             the network's cloud relay and data server (Node)
 assets/font/        JetBrains Mono (OFL 1.1)
 test/               headless TurboWarp harness (Playwright) and regression test
-docs/               architecture, SBS and Whisker documentation
+docs/               architecture, SBS, Yarn and network docs; docs/whisker/ is the Whisker manual
 ```
 
 Requirements: Python 3 with Pillow. To build:
@@ -315,6 +316,7 @@ cd test && npm install
 node regress.js ../ScratchOS.sb3                          # boots the OS, runs commands, checks output
 node drive.js ../ScratchOS.sb3 out --text -- "ls" "ps"    # type commands, dump the screen
 node net-e2e.js ../ScratchOS.sb3                          # the network, with 3 copies at once
+node doctest.js                                           # runs the examples in docs/whisker/
 ```
 
 Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the pieces fit:

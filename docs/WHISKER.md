@@ -4,6 +4,9 @@ Whisker is ScratchOS's programming language. It looks like Lua. The kernel
 compiles it to bytecode and runs it on a preemptive virtual machine. Every
 program in `/bin` is written in Whisker; read them with `cat /bin/ls.wsk`.
 
+This page is a quick reference. For everything (every function, every
+difference from Lua, tested examples), read the full manual in [docs/whisker/](whisker/README.md).
+
 ```
 run prog.wsk args      # or just prog.wsk if it is in the current directory
 whisker                # interactive REPL
@@ -235,7 +238,7 @@ Sensitive calls need a capability:
 |---|---|
 | `files` | writing outside `/home` and `/tmp` |
 | `proc` | killing processes the program did not start |
-| `gui` | `gui.window`, `gui.terminal`, `gui.ide`, `gui.launch`, `gui.track`, `gui.appearance`, `gui.wallpaper`, `gui.pinned`, `gui.clipboard` |
+| `gui` | `gui.window`, `gui.terminal`, `gui.ide`, `gui.launch` |
 | `system` | `sys.shutdown`, `sys.reboot` |
 | `net` | everything in `net` |
 

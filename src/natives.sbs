@@ -101,6 +101,12 @@ proc nat_fs_cap(ino) {
     return nat_cap("files");
 }
 
+// may the process remove or rename inode `ino` itself?
+proc nat_fs_cap_node(ino) {
+    if (fs_is_free_root(ino) == 1) { return nat_cap("files"); }
+    return nat_fs_cap(ino);
+}
+
 proc native_call(id, a0, argc, w, dest, retpc) {
     nat_a0 = a0;
     nat_argc = argc;
@@ -109,7 +115,7 @@ proc native_call(id, a0, argc, w, dest, retpc) {
     vm_raised = 0;
     clear(nr_v);
     clear(nr_t);
-    if (id < N_FS_READ || id == N_SYS_UPTIME || id == N_SYS_DATE) {
+    if (id < N_FS_READ || id == N_SYS_UPTIME || id == N_SYS_DATE || id == N_PROC_PID) {
         nat_core(id, w, dest, retpc);
     } else {
         nat_sys(id);
@@ -224,8 +230,10 @@ proc nat_core(id, w, dest, retpc) {
             if (vm_raised == 0) { nat_sleep(secs); }
         }
         case N_EXIT, N_OS_EXIT: {
-            local code = nat_optnum(1, 0, "exit");
+            local code = 0;
             if (nat_t(1) == TBOOL) { code = 1 - nat_v(1); }
+            else { code = nat_optnum(1, 0, "exit"); }
+            if (vm_raised == 1) { return; }
             vm_running = 0;
             vm_exited = 1;
             proc_exit(vm_slot, code);
@@ -367,9 +375,11 @@ proc nat_core(id, w, dest, retpc) {
             else { nat_retn(random(floor(nat_num(1, "random")), floor(nat_num(2, "random")))); }
         }
         case N_MATH_MAX, N_MATH_MIN: {
-            local best = nat_num(1, "max");
+            local mname = "max";
+            if (id == N_MATH_MIN) { mname = "min"; }
+            local best = nat_num(1, mname);
             for i = 2 to nat_argc {
-                local v = nat_num(i, "max");
+                local v = nat_num(i, mname);
                 if ((id == N_MATH_MAX && v > best) || (id == N_MATH_MIN && v < best)) { best = v; }
             }
             nat_retn(best);
@@ -390,7 +400,13 @@ proc nat_core(id, w, dest, retpc) {
         case N_TABLE_INSERT: {
             local h4 = nat_table(1, "insert");
             if (vm_raised == 0) {
-                if (nat_argc >= 3) { table_insert(h4, nat_num(2, "insert"), nat_v(3), nat_t(3)); }
+                if (nat_argc >= 3) {
+                    local ipos = nat_num(2, "insert");
+                    if (vm_raised == 0 && (ipos < 1 || ipos > tb_an[h4] + 1 || ipos != floor(ipos))) {
+                        vm_raise("bad argument #2 to 'insert' (position out of bounds)");
+                    }
+                    if (vm_raised == 0) { table_insert(h4, ipos, nat_v(3), nat_t(3)); }
+                }
                 else { table_append(h4, nat_v(2), nat_t(2)); }
             }
         }
@@ -421,7 +437,15 @@ proc nat_core(id, w, dest, retpc) {
         }
         case N_TABLE_SORT: {
             local h7 = nat_table(1, "sort");
-            if (vm_raised == 0) { table_sort(h7); }
+            if (vm_raised == 0) {
+                // the sort's state is shared, so a comparator cannot sort again
+                if (sort_busy == 1) { vm_raise("table.sort cannot be used inside a sort's comparison function"); }
+                else {
+                    sort_busy = 1;
+                    table_sort(h7);
+                    sort_busy = 0;
+                }
+            }
         }
         case N_TABLE_KEYS: {
             local h8 = nat_table(1, "keys");
@@ -503,7 +527,16 @@ proc nat_core(id, w, dest, retpc) {
             local ei = index(env_k, k);
             if (ei > 0) { nat_rets(env_v[ei]); } else { nat_retnil(); }
         }
-        case N_OS_SETENV: { env_set(nat_str(1, "setenv"), vm_tostr(nat_v(2), nat_t(2))); }
+        case N_OS_SETENV: {
+            local ek = nat_str(1, "setenv");
+            if (vm_raised == 0) {
+                if (nat_t(2) == TNIL) {
+                    // setenv(k, nil) removes the variable
+                    local ei = index(env_k, ek);
+                    if (ei > 0) { del(env_k, ei); del(env_v, ei); }
+                } else { env_set(ek, vm_tostr(nat_v(2), nat_t(2))); }
+            }
+        }
         case N_OS_PID, N_PROC_PID: { nat_retn(p_pid[vm_slot]); }
         case N_OS_ARGS: {
             table_get(p_glob[vm_slot], 1, TNUM);
@@ -714,6 +747,8 @@ list mrg_t;
 var srt_cmp = 0;      // 0 = default ordering, else comparator stack position
 
 // a < b ?
+var sort_busy = 0;      // 1 while table.sort runs
+
 proc sort_less(av, at, bv, bt) {
     if (srt_cmp > 0) {
         // call comparator(a, b) synchronously
@@ -818,13 +853,17 @@ proc vm_global_slot(name) {
 }
 
 // require(name): load /lib/name.wsk (or ./name.wsk) once, return its result
-proc nat_require() {
+proc nat_require() recursive {      // modules require modules
     local name = nat_str(1, "require");
     if (vm_raised == 1) { return; }
     local key = "__mod_" .. name;
     local gs = vm_global_slot(key);
     if (gs > 0) {
         local gp = tb_ab[p_glob[vm_slot]] + gs;
+        if (HT[gp] == TSTR && HV[gp] == "\x01loading") {
+            vm_raise("loop while loading module '" .. name .. "'");
+            return;
+        }
         if (HT[gp] != TNIL) { nat_ret(HV[gp], HT[gp]); return; }
     }
     local ino = fs_lookup("/lib/" .. name .. ".wsk", 1);
@@ -833,13 +872,28 @@ proc nat_require() {
     if (ino == 0 || fs_type[ino] == FT_DIR) { vm_raise("module '" .. name .. "' not found"); return; }
     local f = vm_load_chunk(fs_data[ino], key);
     if (f == 0) { vm_raise("error loading module '" .. name .. "': " .. vm_err); return; }
-    // run the module body now
+    // run the module body now, marked as loading so a cycle is reported
+    gs = vm_global_slot(key);      // vm_load_chunk registered the name
+    if (gs > 0) {
+        local gpl = tb_ab[p_glob[vm_slot]] + gs;
+        HV[gpl] = "\x01loading";
+        HT[gpl] = TSTR;
+    }
     local pos = vm_sp + 1;
     STK[pos] = f;
     STT[pos] = TFUN;
     vm_sp = pos;
     vm_call_sync(pos, 0);
-    if (vm_running == 0 || vm_raised == 1) { return; }
+    if (vm_running == 0 || vm_raised == 1) {
+        // failed: forget the module, so a later require tries again
+        gs = vm_global_slot(key);
+        if (gs > 0) {
+            local gpf = tb_ab[p_glob[vm_slot]] + gs;
+            HV[gpf] = "";
+            HT[gpf] = TNIL;
+        }
+        return;
+    }
     local rv = STK[pos];
     local rt = STT[pos];
     vm_sp = pos - 1;
