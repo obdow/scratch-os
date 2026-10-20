@@ -1,0 +1,835 @@
+// ===========================================================================
+// r3d.sbs - the Whisker 3D renderer (included inside sprite Kernel)
+//
+// Every frame:
+//   1. the sky is filled (a vertical gradient) over the viewport;
+//   2. each visible mesh object is culled against the view (bounding sphere),
+//      its vertices are moved into camera space, and each face is
+//      back-face culled, lit (ambient + sun + point lights, flat per face),
+//      fogged, clipped to the near plane, projected and clipped to the
+//      viewport, then put in a depth bucket;
+//   3. the buckets are drawn from far to near (painter's algorithm), each
+//      triangle with the incircle triangle filler (tri_fill).
+// The draw list stays until the next frame, so the editor can pick the
+// object under the pointer (r3_pick).
+//
+// Screen coordinates here are pixels from the stage's top-left corner (y
+// down), like gfx.sbs; tri_fill works in Scratch stage coordinates.
+// ===========================================================================
+
+const R3_NB = 1024;          // depth buckets
+
+// quality (per game: Project settings)
+var q_budget = 600;          // most triangles drawn per frame
+var q_far = 120;             // draw distance
+var q_fill = 2;              // filler resolution: pen size of the finest stroke
+var q_near = 0.1;
+
+// viewport (screen pixels) and projection
+var vp_x = 0;
+var vp_y = 0;
+var vp_w = SCR_W;
+var vp_h = SCR_H;
+var vp_cx = 0;
+var vp_cy = 0;
+var vp_f = 1;
+var vp_kx = 1;
+var vp_ky = 1;
+var vp_scale = 1;            // screen pixels per game pixel (HUD, fill size)
+
+// camera: position and rotation (columns = right, up, forward)
+var rc_x = 0;
+var rc_y = 2;
+var rc_z = -8;
+var rc00 = 1;
+var rc01 = 0;
+var rc02 = 0;
+var rc10 = 0;
+var rc11 = 1;
+var rc12 = 0;
+var rc20 = 0;
+var rc21 = 0;
+var rc22 = 1;
+
+// lights in camera space
+var ls_x = 0;
+var ls_y = -1;
+var ls_z = 0;
+list lp_x;
+list lp_y;
+list lp_z;
+list lp_r;
+list lp_p;
+
+// camera-space vertices of the object being drawn
+list tv_x;
+list tv_y;
+list tv_z;
+
+// the draw list (stage coordinates) and depth buckets
+list dl_ax;
+list dl_ay;
+list dl_bx;
+list dl_by;
+list dl_cx;
+list dl_cy;
+list dl_col;
+list dl_al;
+list dl_ob;
+list dl_nx;
+list dl_k;                   // 0 triangle, 1 line (editor grid): ax, ay to bx, by, size in cx
+list bk_head;
+list bk_cnt;
+var dl_n = 0;
+var r3_tris = 0;             // triangles drawn last frame
+var r3_objs = 0;
+
+// clipping work lists
+list cp_x;
+list cp_y;
+list cp_z;
+list cq_x;
+list cq_y;
+list cq_z;
+list sp_x;
+list sp_y;
+list sq_x;
+list sq_y;
+
+var r3_pen_al = -1;          // pen transparency currently set
+var r3_nodraw = 0;           // tests: build the draw list but skip the pen
+var r3_bright = 1;
+
+proc r3_init() {
+    clear(bk_head); clear(bk_cnt);
+    repeat (R3_NB) { add(bk_head, 0); add(bk_cnt, 0); }
+    clear(dl_ax); clear(dl_ay); clear(dl_bx); clear(dl_by); clear(dl_cx); clear(dl_cy);
+    clear(dl_col); clear(dl_al); clear(dl_ob); clear(dl_nx);
+    dl_n = 0;
+}
+
+// --- viewport and camera ---------------------------------------------------------------
+
+proc r3_viewport(x, y, w, h, scale) {
+    vp_x = x;
+    vp_y = y;
+    vp_w = w;
+    vp_h = h;
+    vp_cx = x + w / 2;
+    vp_cy = y + h / 2;
+    vp_scale = scale;
+    vp_f = (h / 2) / tan(cam_fov / 2);
+    vp_kx = (w / 2) / vp_f;
+    vp_ky = (h / 2) / vp_f;
+}
+
+proc r3_camera(x, y, z, rx, ry, rz) {
+    rc_x = x;
+    rc_y = y;
+    rc_z = z;
+    w3_rot(rx, ry, rz);
+    rc00 = m00; rc01 = m01; rc02 = m02;
+    rc10 = m10; rc11 = m11; rc12 = m12;
+    rc20 = m20; rc21 = m21; rc22 = m22;
+}
+
+// world point -> camera space: r3_x, r3_y, r3_z
+var r3_x = 0;
+var r3_y = 0;
+var r3_z = 0;
+proc r3_tocam(x, y, z) {
+    local dx = x - rc_x;
+    local dy = y - rc_y;
+    local dz = z - rc_z;
+    r3_x = rc00 * dx + rc10 * dy + rc20 * dz;
+    r3_y = rc01 * dx + rc11 * dy + rc21 * dz;
+    r3_z = rc02 * dx + rc12 * dy + rc22 * dz;
+}
+
+// world point -> screen pixel (r3_sx, r3_sy); 0 if it is behind the camera
+var r3_sx = 0;
+var r3_sy = 0;
+proc r3_project(x, y, z) {
+    r3_tocam(x, y, z);
+    if (r3_z < q_near) { return 0; }
+    r3_sx = vp_cx + r3_x * vp_f / r3_z;
+    r3_sy = vp_cy - r3_y * vp_f / r3_z;
+    return 1;
+}
+
+// --- filling -------------------------------------------------------------------------
+
+// The incircle triangle filler (Triangle Filler.sb3): draw the outline with
+// a thin pen, then the triangle's incircle with a pen as wide as it, then
+// ever smaller copies of the triangle shrunk towards its vertices, each with
+// a pen as wide as the gap it has to cover, until the gap is smaller than
+// `res`.  Stage coordinates.
+proc tri_fill(ax, ay, bx, by, cx, cy, res) {
+    pen_up();
+    // one pixel wider than the finest fill stroke, so the soft edges of two
+    // neighbouring faces overlap fully instead of letting the sky through
+    pen_size(res + 1);
+    goto(ax, ay);
+    pen_down();
+    goto(bx, by);
+    goto(cx, cy);
+    goto(ax, ay);
+    pen_up();
+    local ab = sqrt((ax - bx) * (ax - bx) + (ay - by) * (ay - by));
+    local ac = sqrt((ax - cx) * (ax - cx) + (ay - cy) * (ay - cy));
+    local bc = sqrt((bx - cx) * (bx - cx) + (by - cy) * (by - cy));
+    local sp = (ab + ac + bc) / 2;
+    if (sp <= 0) { return; }
+    local q = (sp - ab) * (sp - ac) * (sp - bc) / sp;
+    if (q <= 0) { return; }
+    local r = sqrt(q);
+    if (r < res / 2) { return; }          // a sliver: the outline covers it
+    local ix = (bc * ax + ac * bx + ab * cx) / (sp * 2);
+    local iy = (bc * ay + ac * by + ab * cy) / (sp * 2);
+    goto(ix, iy);
+    pen_size(r * 2);
+    pen_down();
+    local rf = 0;
+    if (ab < bc || ac < bc) {
+        if (ab < ac) { rf = sqrt((ix - cx) * (ix - cx) + (iy - cy) * (iy - cy)); }
+        else { rf = sqrt((ix - bx) * (ix - bx) + (iy - by) * (iy - by)); }
+    } else {
+        rf = sqrt((ix - ax) * (ix - ax) + (iy - ay) * (iy - ay));
+    }
+    rf = (rf - r) / (2 * rf);
+    local oax = (ix - ax) / r;
+    local oay = (iy - ay) / r;
+    local obx = (ix - bx) / r;
+    local oby = (iy - by) / r;
+    local ocx = (ix - cx) / r;
+    local ocy = (iy - cy) / r;
+    until (r < res) {
+        r = r * rf;
+        pen_size(r * 2 + 0.5);
+        goto(ax + r * oax, ay + r * oay);
+        goto(bx + r * obx, by + r * oby);
+        goto(cx + r * ocx, cy + r * ocy);
+        goto(ax + r * oax, ay + r * oay);
+    }
+    pen_up();
+}
+
+// an exact rectangle in screen pixels: wide strokes along the rows, then
+// 1-pixel strokes at the two ends where the round pen caps fall short.  A
+// rectangle as wide as the stage simply runs its strokes past both edges.
+// See-through rectangles (al > 0) are stamped instead (r3_ghost_rect).
+proc r3_rect(x, y, w, h, rgb, al) {
+    if (w < 1 || h < 1) { return; }
+    pen_up();
+    pen_color(rgb);
+    if (al != r3_pen_al) { pen_alpha(al); r3_pen_al = al; }
+    if (al > 0) { r3_ghost_rect(x, y, w, h, rgb, al); return; }
+    local full = 0;
+    if (x <= 0 && x + w >= SCR_W) { full = 1; }
+    local t = 16;
+    if (h < t) { t = h; }
+    if (w < t && full == 0) { t = w; }
+    local x0 = x + t / 2 - HALF_W;
+    local x1 = x + w - t / 2 - HALF_W;
+    if (full == 1) { x0 = 0 - HALF_W - t; x1 = HALF_W + t; }
+    pen_size(t);
+    local yy = y + t / 2;
+    forever {
+        if (yy > y + h - t / 2) { yy = y + h - t / 2; }
+        goto(x0, HALF_H - yy);
+        pen_down();
+        goto(x1, HALF_H - yy);
+        pen_up();
+        if (yy >= y + h - t / 2) { break; }
+        yy += t / 2;
+    }
+    if (full == 1) { return; }
+    pen_size(1);
+    for i = 0 to ceil(t / 2) {
+        local xa = x + 0.5 + i - HALF_W;
+        local xb = x + w - 0.5 - i - HALF_W;
+        goto(xa, HALF_H - y - 0.5);
+        pen_down();
+        goto(xa, HALF_H - (y + h) + 0.5);
+        pen_up();
+        goto(xb, HALF_H - y - 0.5);
+        pen_down();
+        goto(xb, HALF_H - (y + h) + 0.5);
+        pen_up();
+    }
+}
+
+// a see-through rectangle: the text engine's power-of-two rectangle
+// costumes, stamped with the ghost effect so that no two stamps overlap
+// (overlaps would show darker); the colour is the nearest palette colour
+list gr_off;
+list gr_pow;
+proc gr_split(n) {
+    clear(gr_off);
+    clear(gr_pow);
+    local o = 0;
+    local left = floor(n);
+    while (left >= 256) { add(gr_off, o); add(gr_pow, 8); o += 256; left -= 256; }
+    local p = 7;
+    while (p >= 0) {
+        local sz = pow10(p * 0.30103);
+        sz = round(sz);
+        if (left >= sz) { add(gr_off, o); add(gr_pow, p); o += sz; left -= sz; }
+        p -= 1;
+    }
+}
+
+list gr_yo;
+list gr_yp;
+proc r3_ghost_rect(x, y, w, h, rgb, al) {
+    gfx_color(gfx_nearest(rgb));
+    effect("ghost", al);
+    gr_split(h);
+    clear(gr_yo); clear(gr_yp);
+    for i = 1 to len(gr_off) { add(gr_yo, gr_off[i]); add(gr_yp, gr_pow[i]); }
+    gr_split(w);
+    for j = 1 to len(gr_yo) {
+        for i = 1 to len(gr_off) {
+            goto(floor(x) + gr_off[i] - HALF_W, HALF_H - floor(y) - gr_yo[j]);
+            costume(gfx_rbase + gr_pow[i] * 9 + gr_yp[j]);
+            stamp();
+        }
+    }
+    effect("ghost", 0);
+    r3_pen_costume();
+}
+
+proc mix_col(a, b, t) {
+    local ar = floor(a / 65536);
+    local ag = floor(a / 256) % 256;
+    local ab = a % 256;
+    local br = floor(b / 65536);
+    local bg = floor(b / 256) % 256;
+    local bb = b % 256;
+    return round(ar + (br - ar) * t) * 65536 + round(ag + (bg - ag) * t) * 256 + round(ab + (bb - ab) * t);
+}
+
+// the sky: a gradient of 8 bands from sky_top to sky_bot
+proc r3_sky() {
+    local n = 16;
+    if (sky_top == sky_bot) { n = 1; }
+    for i = 0 to n - 1 {
+        local y0 = vp_y + floor(vp_h * i / n);
+        local y1 = vp_y + floor(vp_h * (i + 1) / n);
+        local t = 0;
+        if (n > 1) { t = i / (n - 1); }
+        r3_rect(vp_x, y0, vp_w, y1 - y0, mix_col(sky_top, sky_bot, t), 0);
+    }
+}
+
+// --- the frame -----------------------------------------------------------------------
+
+// lights into camera space (call after r3_camera)
+proc r3_lights() {
+    local l = sqrt(sun_x * sun_x + sun_y * sun_y + sun_z * sun_z);
+    if (l == 0) { l = 1; }
+    local sx = sun_x / l;
+    local sy = sun_y / l;
+    local sz = sun_z / l;
+    ls_x = rc00 * sx + rc10 * sy + rc20 * sz;
+    ls_y = rc01 * sx + rc11 * sy + rc21 * sz;
+    ls_z = rc02 * sx + rc12 * sy + rc22 * sz;
+    clear(lp_x); clear(lp_y); clear(lp_z); clear(lp_r); clear(lp_p);
+    for i = 1 to len(ob_name) {
+        if (ob_alive[i] == 1 && ob_kind[i] == K_LIGHT && ob_vis[i] == 1 && len(lp_x) < 8) {
+            r3_tocam(ob_px[i], ob_py[i], ob_pz[i]);
+            add(lp_x, r3_x);
+            add(lp_y, r3_y);
+            add(lp_z, r3_z);
+            add(lp_r, ob_lrange[i]);
+            add(lp_p, ob_lpow[i]);
+        }
+    }
+}
+
+proc r3_begin() {
+    for i = 1 to R3_NB { bk_head[i] = 0; bk_cnt[i] = 0; }
+    dl_n = 0;
+    r3_objs = 0;
+}
+
+// render the scene into the viewport set by r3_viewport, from the camera set
+// by r3_camera.  sky = 0 leaves the background as it is.
+proc r3_render(sky) {
+    r3_render_begin(sky);
+    r3_draw();
+}
+
+// Scratch keeps sprites from going far off the stage ("fencing", always on
+// at scratch.mit.edu), which would pull pen lines at the edges inwards; a
+// tiny blank costume while drawing keeps that to under a pixel
+proc r3_pen_costume() {
+    costume("pen");
+}
+
+// the same in two halves, so the editor can add sorted lines (r3_sline)
+proc r3_render_begin(sky) {
+    r3_pen_costume();
+    if (sky == 1) { r3_sky(); }
+    r3_lights();
+    r3_begin();
+    for i = 1 to len(ob_name) {
+        if (ob_alive[i] == 1 && ob_vis[i] == 1 && ob_kind[i] == K_MESH && ob_mesh[i] > 0) {
+            r3_object(i);
+        }
+    }
+}
+
+// a world-space line sorted with the faces (by its far end)
+proc r3_sline(x1, y1, z1, x2, y2, z2, rgb, size) {
+    r3_tocam(x1, y1, z1);
+    local ax = r3_x;
+    local ay = r3_y;
+    local az = r3_z;
+    r3_tocam(x2, y2, z2);
+    local bx = r3_x;
+    local by = r3_y;
+    local bz = r3_z;
+    if (az < q_near && bz < q_near) { return; }
+    if (az > q_far && bz > q_far) { return; }
+    if (az < q_near) {
+        local t = (q_near - az) / (bz - az);
+        ax = ax + (bx - ax) * t; ay = ay + (by - ay) * t; az = q_near;
+    } else if (bz < q_near) {
+        local t2 = (q_near - bz) / (az - bz);
+        bx = bx + (ax - bx) * t2; by = by + (ay - by) * t2; bz = q_near;
+    }
+    local sx1 = vp_cx + ax * vp_f / az;
+    local sy1 = vp_cy - ay * vp_f / az;
+    local sx2 = vp_cx + bx * vp_f / bz;
+    local sy2 = vp_cy - by * vp_f / bz;
+    // keep it inside the viewport (Liang-Barsky)
+    local m = size / 2 + 1;
+    local dx = sx2 - sx1;
+    local dy = sy2 - sy1;
+    local t0 = 0;
+    local t1 = 1;
+    for e = 1 to 4 {
+        local p = 0;
+        local q = 0;
+        if (e == 1) { p = 0 - dx; q = sx1 - (vp_x + m); }
+        else if (e == 2) { p = dx; q = vp_x + vp_w - m - sx1; }
+        else if (e == 3) { p = 0 - dy; q = sy1 - (vp_y + m); }
+        else { p = dy; q = vp_y + vp_h - m - sy1; }
+        if (p == 0) {
+            if (q < 0) { return; }
+        } else {
+            local r = q / p;
+            if (p < 0) { if (r > t1) { return; } if (r > t0) { t0 = r; } }
+            else { if (r < t0) { return; } if (r < t1) { t1 = r; } }
+        }
+    }
+    local zk = az;
+    if (bz > zk) { zk = bz; }
+    local bucket = 1;
+    if (zk > q_near) { bucket = floor(R3_NB * sqrt((zk - q_near) / (q_far - q_near))) + 1; }
+    if (bucket > R3_NB) { bucket = R3_NB; }
+    r3_push(sx1 + dx * t0, sy1 + dy * t0, sx1 + dx * t1, sy1 + dy * t1, 0, 0, rgb, 0, 0, bucket);
+    dl_k[dl_n] = 1;
+    dl_cx[dl_n] = size;
+}
+
+// push one object's faces into the draw list
+proc r3_object(id) {
+    local m = ob_mesh[id];
+    // bounding sphere in camera space
+    local sx = ob_sx[id];
+    local sy = ob_sy[id];
+    local sz = ob_sz[id];
+    local smax = abs(sx);
+    if (abs(sy) > smax) { smax = abs(sy); }
+    if (abs(sz) > smax) { smax = abs(sz); }
+    local rad = ms_rad[m] * smax;
+    r3_tocam(ob_px[id], ob_py[id], ob_pz[id]);
+    local tx = r3_x;
+    local ty = r3_y;
+    local tz = r3_z;
+    if (tz + rad < q_near || tz - rad > q_far) { return; }
+    if (abs(tx) > tz * vp_kx + rad * sqrt(1 + vp_kx * vp_kx)) { return; }
+    if (abs(ty) > tz * vp_ky + rad * sqrt(1 + vp_ky * vp_ky)) { return; }
+    r3_objs += 1;
+    // A = Rcam^T * R * S
+    w3_rot(ob_rx[id], ob_ry[id], ob_rz[id]);
+    local b00 = m00 * sx;
+    local b01 = m01 * sy;
+    local b02 = m02 * sz;
+    local b10 = m10 * sx;
+    local b11 = m11 * sy;
+    local b12 = m12 * sz;
+    local b20 = m20 * sx;
+    local b21 = m21 * sy;
+    local b22 = m22 * sz;
+    local a00 = rc00 * b00 + rc10 * b10 + rc20 * b20;
+    local a01 = rc00 * b01 + rc10 * b11 + rc20 * b21;
+    local a02 = rc00 * b02 + rc10 * b12 + rc20 * b22;
+    local a10 = rc01 * b00 + rc11 * b10 + rc21 * b20;
+    local a11 = rc01 * b01 + rc11 * b11 + rc21 * b21;
+    local a12 = rc01 * b02 + rc11 * b12 + rc21 * b22;
+    local a20 = rc02 * b00 + rc12 * b10 + rc22 * b20;
+    local a21 = rc02 * b01 + rc12 * b11 + rc22 * b21;
+    local a22 = rc02 * b02 + rc12 * b12 + rc22 * b22;
+    local v0 = ms_v0[m];
+    local vn = ms_vn[m];
+    while (len(tv_x) < vn) { add(tv_x, 0); add(tv_y, 0); add(tv_z, 0); }
+    for k = 1 to vn {
+        local x = mv_x[v0 + k];
+        local y = mv_y[v0 + k];
+        local z = mv_z[v0 + k];
+        tv_x[k] = a00 * x + a01 * y + a02 * z + tx;
+        tv_y[k] = a10 * x + a11 * y + a12 * z + ty;
+        tv_z[k] = a20 * x + a21 * y + a22 * z + tz;
+    }
+    // a mirrored object (an odd number of negative scales) turns faces inside out
+    local flip = 0;
+    if (sx * sy * sz < 0) { flip = 1; }
+    local t0 = ms_t0[m];
+    local base = ob_col[id];
+    local al = ob_alpha[id];
+    local unlit = ob_unlit[id];
+    local two = ob_twoside[id];
+    for k = t0 + 1 to t0 + ms_tn[m] {
+        local ia = mt_a[k];
+        local ib = mt_b[k];
+        local ic = mt_c[k];
+        if (flip == 1) { ib = mt_c[k]; ic = mt_b[k]; }
+        local ax = tv_x[ia];
+        local ay = tv_y[ia];
+        local az = tv_z[ia];
+        local bx = tv_x[ib];
+        local by = tv_y[ib];
+        local bz = tv_z[ib];
+        local cx = tv_x[ic];
+        local cy = tv_y[ic];
+        local cz = tv_z[ic];
+        // whole face beyond the near or far plane
+        if (!(az < q_near && bz < q_near && cz < q_near) && !(az > q_far && bz > q_far && cz > q_far)) {
+            local ux = bx - ax;
+            local uy = by - ay;
+            local uz = bz - az;
+            local wx = cx - ax;
+            local wy = cy - ay;
+            local wz = cz - az;
+            local nx = uy * wz - uz * wy;
+            local ny = uz * wx - ux * wz;
+            local nz = ux * wy - uy * wx;
+            local facing = nx * ax + ny * ay + nz * az;
+            if (facing < 0 || two == 1) {
+                if (facing > 0) { nx = 0 - nx; ny = 0 - ny; nz = 0 - nz; }
+                local col = mt_col[k];
+                if (col == -1) { col = base; }
+                local zavg = (az + bz + cz) / 3;
+                // painter's order by the farthest corner: floors and walls
+                // behind an object are drawn before it
+                local zkey = az;
+                if (bz > zkey) { zkey = bz; }
+                if (cz > zkey) { zkey = cz; }
+                if (unlit == 0) {
+                    local nl = sqrt(nx * nx + ny * ny + nz * nz);
+                    if (nl > 0) { nx = nx / nl; ny = ny / nl; nz = nz / nl; }
+                    local b = amb;
+                    local d = 0 - (nx * ls_x + ny * ls_y + nz * ls_z);
+                    if (d > 0) { b += d * sun_i; }
+                    if (len(lp_x) > 0) {
+                        local gx = (ax + bx + cx) / 3;
+                        local gy = (ay + by + cy) / 3;
+                        for j = 1 to len(lp_x) {
+                            local lx = lp_x[j] - gx;
+                            local ly = lp_y[j] - gy;
+                            local lz = lp_z[j] - zavg;
+                            local dist = sqrt(lx * lx + ly * ly + lz * lz);
+                            if (dist < lp_r[j] && dist > 0) {
+                                local att = 1 - dist / lp_r[j];
+                                local lam = (nx * lx + ny * ly + nz * lz) / dist;
+                                if (lam > 0) { b += lp_p[j] * att * att * lam; }
+                            }
+                        }
+                    }
+                    col = shade_col(col, b);
+                    if (fog_on == 1 && zavg > fog_near) {
+                        local f = (zavg - fog_near) / (fog_far - fog_near);
+                        if (f > 1) { f = 1; }
+                        col = mix_col(col, fog_col, f);
+                    }
+                }
+                r3_face(ax, ay, az, bx, by, bz, cx, cy, cz, col, al, id, zkey);
+            }
+        }
+    }
+}
+
+// colour scaled by brightness b (1 = as is), each channel capped at 255
+proc shade_col(c, b) {
+    local r = floor(floor(c / 65536) * b);
+    local g = floor((floor(c / 256) % 256) * b);
+    local bl = floor((c % 256) * b);
+    if (r > 255) { r = 255; }
+    if (g > 255) { g = 255; }
+    if (bl > 255) { bl = 255; }
+    return r * 65536 + g * 256 + bl;
+}
+
+// one camera-space triangle: near clip, project, viewport clip, bucket
+proc r3_face(ax, ay, az, bx, by, bz, cx, cy, cz, col, al, id, zavg) {
+    local bucket = 1;
+    if (zavg > q_near) { bucket = floor(R3_NB * sqrt((zavg - q_near) / (q_far - q_near))) + 1; }
+    if (bucket > R3_NB) { bucket = R3_NB; }
+    clear(cp_x); clear(cp_y); clear(cp_z);
+    add(cp_x, ax); add(cp_y, ay); add(cp_z, az);
+    add(cp_x, bx); add(cp_y, by); add(cp_z, bz);
+    add(cp_x, cx); add(cp_y, cy); add(cp_z, cz);
+    if (az < q_near || bz < q_near || cz < q_near) {
+        // Sutherland-Hodgman against z = near
+        clear(cq_x); clear(cq_y); clear(cq_z);
+        for i = 1 to 3 {
+            local j = i % 3 + 1;
+            local zi = cp_z[i];
+            local zj = cp_z[j];
+            local ini = 0;
+            local inj = 0;
+            if (zi >= q_near) { ini = 1; add(cq_x, cp_x[i]); add(cq_y, cp_y[i]); add(cq_z, zi); }
+            if (zj >= q_near) { inj = 1; }
+            if (ini != inj) {
+                local t = (q_near - zi) / (zj - zi);
+                add(cq_x, cp_x[i] + (cp_x[j] - cp_x[i]) * t);
+                add(cq_y, cp_y[i] + (cp_y[j] - cp_y[i]) * t);
+                add(cq_z, q_near);
+            }
+        }
+        clear(cp_x); clear(cp_y); clear(cp_z);
+        for i = 1 to len(cq_x) { add(cp_x, cq_x[i]); add(cp_y, cq_y[i]); add(cp_z, cq_z[i]); }
+        if (len(cp_x) < 3) { return; }
+    }
+    // project
+    clear(sp_x); clear(sp_y);
+    local x0 = 999999;
+    local x1 = -999999;
+    local y0 = 999999;
+    local y1 = -999999;
+    for i = 1 to len(cp_x) {
+        local px = vp_cx + cp_x[i] * vp_f / cp_z[i];
+        local py = vp_cy - cp_y[i] * vp_f / cp_z[i];
+        add(sp_x, px);
+        add(sp_y, py);
+        if (px < x0) { x0 = px; }
+        if (px > x1) { x1 = px; }
+        if (py < y0) { y0 = py; }
+        if (py > y1) { y1 = py; }
+    }
+    local m = q_fill * vp_scale / 2;
+    local lx = vp_x + m;
+    local rx = vp_x + vp_w - m;
+    local ty = vp_y + m;
+    local by2 = vp_y + vp_h - m;
+    if (x1 < lx || x0 > rx || y1 < ty || y0 > by2) { return; }
+    if (x0 < lx || x1 > rx || y0 < ty || y1 > by2) {
+        r3_clip2(lx, ty, rx, by2);
+        if (len(sp_x) < 3) { return; }
+    }
+    // a fan of triangles from the first corner
+    for i = 2 to len(sp_x) - 1 {
+        r3_push(sp_x[1], sp_y[1], sp_x[i], sp_y[i], sp_x[i + 1], sp_y[i + 1], col, al, id, bucket);
+    }
+}
+
+// clip the polygon in sp_x / sp_y to a rectangle (Sutherland-Hodgman)
+proc r3_clip2(lx, ty, rx, by) {
+    for e = 1 to 4 {
+        clear(sq_x); clear(sq_y);
+        local n = len(sp_x);
+        for i = 1 to n {
+            local j = i % n + 1;
+            local xi = sp_x[i];
+            local yi = sp_y[i];
+            local xj = sp_x[j];
+            local yj = sp_y[j];
+            local di = 0;
+            local dj = 0;
+            if (e == 1) { di = xi - lx; dj = xj - lx; }
+            else if (e == 2) { di = rx - xi; dj = rx - xj; }
+            else if (e == 3) { di = yi - ty; dj = yj - ty; }
+            else { di = by - yi; dj = by - yj; }
+            local ii = 0;
+            local ij = 0;
+            if (di >= 0) { ii = 1; add(sq_x, xi); add(sq_y, yi); }
+            if (dj >= 0) { ij = 1; }
+            if (ii != ij) {
+                local t = di / (di - dj);
+                add(sq_x, xi + (xj - xi) * t);
+                add(sq_y, yi + (yj - yi) * t);
+            }
+        }
+        clear(sp_x); clear(sp_y);
+        for i = 1 to len(sq_x) { add(sp_x, sq_x[i]); add(sp_y, sq_y[i]); }
+        if (len(sp_x) < 3) { return; }
+    }
+}
+
+// a screen triangle into the draw list (converted to stage coordinates)
+proc r3_push(ax, ay, bx, by, cx, cy, col, al, id, bucket) {
+    dl_n += 1;
+    if (dl_n > len(dl_ax)) {
+        add(dl_ax, 0); add(dl_ay, 0); add(dl_bx, 0); add(dl_by, 0); add(dl_cx, 0); add(dl_cy, 0);
+        add(dl_col, 0); add(dl_al, 0); add(dl_ob, 0); add(dl_nx, 0); add(dl_k, 0);
+    }
+    dl_k[dl_n] = 0;
+    dl_ax[dl_n] = ax - HALF_W;
+    dl_ay[dl_n] = HALF_H - ay;
+    dl_bx[dl_n] = bx - HALF_W;
+    dl_by[dl_n] = HALF_H - by;
+    dl_cx[dl_n] = cx - HALF_W;
+    dl_cy[dl_n] = HALF_H - cy;
+    dl_col[dl_n] = col;
+    dl_al[dl_n] = al;
+    dl_ob[dl_n] = id;
+    dl_nx[dl_n] = bk_head[bucket];
+    bk_head[bucket] = dl_n;
+    bk_cnt[bucket] = bk_cnt[bucket] + 1;
+}
+
+// draw the buckets far to near, keeping only the nearest q_budget triangles
+proc r3_draw() {
+    local last = R3_NB;
+    local cnt = 0;
+    if (dl_n > q_budget) {
+        local b = 1;
+        while (b <= R3_NB && cnt < q_budget) { cnt += bk_cnt[b]; b += 1; }
+        last = b - 1;
+    }
+    local res = q_fill * vp_scale;
+    local drawn = 0;
+    local b2 = last;
+    while (b2 >= 1) {
+        local t = bk_head[b2];
+        while (t > 0) {
+            if (dl_k[t] == 1) {
+                // a depth-sorted line (the editor's grid)
+                pen_up();
+                pen_color(dl_col[t]);
+                if (r3_pen_al != 0) { pen_alpha(0); r3_pen_al = 0; }
+                pen_size(dl_cx[t]);
+                goto(dl_ax[t], dl_ay[t]);
+                pen_down();
+                goto(dl_bx[t], dl_by[t]);
+                pen_up();
+            } else if (dl_al[t] < 100 && r3_nodraw == 0) {
+                pen_color(dl_col[t]);
+                if (dl_al[t] != r3_pen_al) { pen_alpha(dl_al[t]); r3_pen_al = dl_al[t]; }
+                tri_fill(dl_ax[t], dl_ay[t], dl_bx[t], dl_by[t], dl_cx[t], dl_cy[t], res);
+                drawn += 1;
+            }
+            t = dl_nx[t];
+        }
+        b2 -= 1;
+    }
+    r3_tris = drawn;
+    if (r3_pen_al != 0) { pen_alpha(0); r3_pen_al = 0; }
+}
+
+// the object drawn on top at screen pixel (x, y) last frame, or 0
+proc r3_pick(x, y) {
+    local px = x - HALF_W;
+    local py = HALF_H - y;
+    for b = 1 to R3_NB {
+        local t = bk_head[b];
+        while (t > 0) {
+            if (dl_k[t] == 0 && pt_in_tri(px, py, dl_ax[t], dl_ay[t], dl_bx[t], dl_by[t], dl_cx[t], dl_cy[t]) == 1) {
+                return dl_ob[t];
+            }
+            t = dl_nx[t];
+        }
+    }
+    return 0;
+}
+
+proc pt_in_tri(px, py, ax, ay, bx, by, cx, cy) {
+    local d1 = (px - bx) * (ay - by) - (ax - bx) * (py - by);
+    local d2 = (px - cx) * (by - cy) - (bx - cx) * (py - cy);
+    local d3 = (px - ax) * (cy - ay) - (cx - ax) * (py - ay);
+    local neg = 0;
+    local pos = 0;
+    if (d1 < 0 || d2 < 0 || d3 < 0) { neg = 1; }
+    if (d1 > 0 || d2 > 0 || d3 > 0) { pos = 1; }
+    if (neg == 1 && pos == 1) { return 0; }
+    return 1;
+}
+
+// --- lines (editor gizmos, HUD) ------------------------------------------------------
+
+// a world-space line, clipped to the near plane and the viewport
+proc r3_line3(x1, y1, z1, x2, y2, z2, rgb, size) {
+    r3_tocam(x1, y1, z1);
+    local ax = r3_x;
+    local ay = r3_y;
+    local az = r3_z;
+    r3_tocam(x2, y2, z2);
+    local bx = r3_x;
+    local by = r3_y;
+    local bz = r3_z;
+    if (az < q_near && bz < q_near) { return; }
+    if (az < q_near) {
+        local t = (q_near - az) / (bz - az);
+        ax = ax + (bx - ax) * t;
+        ay = ay + (by - ay) * t;
+        az = q_near;
+    } else if (bz < q_near) {
+        local t2 = (q_near - bz) / (az - bz);
+        bx = bx + (ax - bx) * t2;
+        by = by + (ay - by) * t2;
+        bz = q_near;
+    }
+    r3_line2(vp_cx + ax * vp_f / az, vp_cy - ay * vp_f / az, vp_cx + bx * vp_f / bz, vp_cy - by * vp_f / bz, rgb, size, 1);
+}
+
+// a screen line (pixels); clip = 1 keeps it inside the viewport
+proc r3_line2(xa, ya, xb, yb, rgb, size, clip) {
+    local x1 = xa;
+    local y1 = ya;
+    local x2 = xb;
+    local y2 = yb;
+    if (clip == 1) {
+        // Liang-Barsky
+        local m = size / 2 + 1;
+        local lx = vp_x + m;
+        local rx = vp_x + vp_w - m;
+        local ty = vp_y + m;
+        local by = vp_y + vp_h - m;
+        local dx = x2 - x1;
+        local dy = y2 - y1;
+        local t0 = 0;
+        local t1 = 1;
+        for e = 1 to 4 {
+            local p = 0;
+            local q = 0;
+            if (e == 1) { p = 0 - dx; q = x1 - lx; }
+            else if (e == 2) { p = dx; q = rx - x1; }
+            else if (e == 3) { p = 0 - dy; q = y1 - ty; }
+            else { p = dy; q = by - y1; }
+            if (p == 0) {
+                if (q < 0) { return; }
+            } else {
+                local r = q / p;
+                if (p < 0) { if (r > t1) { return; } if (r > t0) { t0 = r; } }
+                else { if (r < t0) { return; } if (r < t1) { t1 = r; } }
+            }
+        }
+        local nx1 = x1 + dx * t0;
+        local ny1 = y1 + dy * t0;
+        x2 = x1 + dx * t1;
+        y2 = y1 + dy * t1;
+        x1 = nx1;
+        y1 = ny1;
+    }
+    pen_up();
+    pen_color(rgb);
+    if (r3_pen_al != 0) { pen_alpha(0); r3_pen_al = 0; }
+    pen_size(size);
+    goto(x1 - HALF_W, HALF_H - y1);
+    pen_down();
+    goto(x2 - HALF_W, HALF_H - y2);
+    pen_up();
+}

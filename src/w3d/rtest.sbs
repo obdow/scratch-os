@@ -1,0 +1,65 @@
+// renderer test scene (temporary)
+include "../kbd.sbs";
+
+sprite Kernel {
+    costumes "ide_glyphs";
+    include "../gfx.sbs";
+    include "../ui.sbs";
+    include "../str.sbs";
+    include "../fs.sbs";
+    include "objects.sbs";
+    include "mesh.sbs";
+    include "r3d.sbs";
+
+    var frames = 0;
+    var w3_proj = "/";
+    var ang = 0;
+    var stats = "";
+    var skipall = 0;
+    var w3_stats = "";
+    var acc = 0;
+    var nacc = 0;
+    list shapes = ["cube", "sphere", "cylinder", "cone", "pyramid", "wedge", "torus", "capsule"];
+
+    on flag {
+        gfx_init();
+        fs_init();
+        mesh_init();
+        r3_init();
+        ob_clear();
+        env_defaults();
+        fog_on = 1;
+        fog_near = 10;
+        fog_far = 40;
+        local g = ob_new("Ground", K_MESH);
+        ob_setmesh(g, "plane");
+        ob_sx[g] = 30; ob_sz[g] = 30;
+        ob_col[g] = 5025616;
+        for i = 1 to 8 {
+            local o = ob_new(shapes[i], K_MESH);
+            ob_setmesh(o, shapes[i]);
+            ob_px[o] = (i - 4.5) * 1.6;
+            ob_py[o] = 0.6;
+            ob_pz[o] = 3;
+            ob_col[o] = mix_col(16733440, 4474111, i / 8);
+        }
+        local c = ob_new("Camera", K_CAMERA);
+        r3_viewport(0, 0, SCR_W, SCR_H, 1);
+        forever {
+            ang += 2;
+            for i = 2 to 9 { ob_ry[i] = ang; ob_rx[i] = ang / 2; }
+            pen_clear();
+            r3_camera(0, 3, -6, 20, 0, 0);
+            local t0 = days2000() * 86400000;
+            if (skipall == 0) { r3_render(1); }
+            local t1 = days2000() * 86400000;
+            acc += t1 - t0;
+            nacc += 1;
+            if (nacc == 10) { w3_stats = (acc / 10) .. " ms, " .. r3_tris .. " tris, dl " .. dl_n; acc = 0; nacc = 0; }
+            if (key("m")) { skipall = 1; }
+            frames += 1;
+            if (key("n")) { r3_nodraw = 1; }
+            stats = r3_tris .. " " .. dl_n;
+        }
+    }
+}

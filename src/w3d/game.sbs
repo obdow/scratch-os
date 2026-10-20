@@ -1,0 +1,399 @@
+// ===========================================================================
+// game.sbs - running a Whisker 3D game (included inside sprite Kernel)
+//
+// Each script file used by the scene runs as one Whisker process.  The
+// script's own code runs first; then a loop (GAME_FOOTER, appended to the
+// script) calls start(self) once for each object using the script, and
+// update(self, dt), on_message(self, msg, data) and on_collide(self, other)
+// every frame.  w3d.frame() blocks the process until the next frame, which
+// keeps every script in step with the renderer:
+//
+//   input -> scripts (until all are waiting in w3d.frame) -> physics ->
+//   render -> HUD
+// ===========================================================================
+
+var g_on = 0;                // a game is running
+var g_t = 0;                 // seconds since it started
+var g_last = 0;
+var g_dt = 0;
+var g_fps = 0;
+var g_fcount = 0;
+var g_ftime = 0;
+var g_next = "";             // scene to switch to (w3d.load)
+var g_quit = 0;
+var g_err = "";              // why the game stopped ("" = still fine)
+var g_err_path = "";         // script and line of a script error
+var g_err_line = 0;
+var g_parent = 0;            // process slot that owns the scripts
+var g_out_k = 0;             // where scripts print (FD_*)
+var g_out_i = 0;
+var g_full = 1;              // 1: draw on the whole stage (play), 0: viewport given by the caller
+var g_run = 0;               // scripts started
+
+list gs_path;                // per script: its file, process id, generated file
+list gs_pid;
+list gw_go;                  // per process slot: the next frame has begun
+list gw_wait;                // per process slot: waiting in w3d.frame
+
+list hd_k;                   // HUD queue for this frame
+list hd_x;
+list hd_y;
+list hd_w;
+list hd_h;
+list hd_s;
+list hd_c;
+list hd_a;
+
+list mq_to;                  // messages waiting for objects
+list mq_msg;
+list mq_mt;
+list mq_v;
+list mq_t;
+
+list sv_k;                   // values shared by every script (w3d.set / get)
+list sv_v;
+list sv_t;
+
+list ik_name;                // keys asked about with input.pressed / released
+list ik_prev;
+list ik_now;
+var m_prev = 0;
+var m_now = 0;
+
+const GAME_FOOTER = "\n-- (Whisker 3D) the loop that runs this script for its objects\nlocal __started = {}\nwhile true do\n  local __dt = w3d.frame()\n  if __dt == nil then break end\n  local __list = w3d.instances()\n  for __i, __o in ipairs(__list) do\n    if not __started[__o.id] then\n      __started[__o.id] = true\n      if start then start(__o) end\n    end\n  end\n  if on_message then\n    local __to, __msg, __data = w3d.message()\n    while __to do\n      on_message(__to, __msg, __data)\n      __to, __msg, __data = w3d.message()\n    end\n  end\n  if on_collide then\n    for __i, __o in ipairs(__list) do\n      if w3d.alive(__o) then\n        local __hits = w3d.contacts(__o)\n        for __j, __h in ipairs(__hits) do on_collide(__o, __h) end\n      end\n    end\n  end\n  if update then\n    for __i, __o in ipairs(__list) do\n      if w3d.alive(__o) then update(__o, __dt) end\n    end\n  end\nend\n";
+
+proc game_init() {
+    clear(gw_go); clear(gw_wait);
+    repeat (MAX_PROC) { add(gw_go, 0); add(gw_wait, 0); }
+    w3n_init();
+}
+
+// start the game at scene `path` (project-relative).  parent: the process
+// slot owning the scripts; out_k / out_i: where they print.  1 on success.
+proc game_start(path, parent, out_k, out_i) {
+    game_stop("");
+    g_parent = parent;
+    g_out_k = out_k;
+    g_out_i = out_i;
+    g_err = "";
+    g_err_path = "";
+    g_err_line = 0;
+    g_quit = 0;
+    g_next = "";
+    clear(sv_k); clear(sv_v); clear(sv_t);
+    clear(ik_name); clear(ik_prev); clear(ik_now);
+    if (game_scene(path) == 0) { return 0; }
+    g_on = 1;
+    g_t = 0;
+    g_last = now_secs();
+    g_fcount = 0;
+    g_ftime = g_last;
+    g_fps = 0;
+    return 1;
+}
+
+// load a scene and start its scripts
+proc game_scene(path) {
+    game_kill_scripts();
+    ob_tables_free();
+    if (scene_load(path) == 0) { g_err = sc_err; return 0; }
+    phys_reset();
+    clear(mq_to); clear(mq_msg); clear(mq_mt); clear(mq_v); clear(mq_t);
+    clear(snd_k);
+    for i = 1 to len(ob_name) {
+        if (len(ob_script[i]) > 0) {
+            if (game_need_script(ob_script[i]) == 0) { return 0; }
+        }
+    }
+    return 1;
+}
+
+// make sure a process runs script `path`; 0 (and g_err) if it cannot start
+proc game_need_script(path) {
+    if (index(gs_path, path) > 0) {
+        local k = index(gs_path, path);
+        if (streq(gs_path[k], path) == 1) { return 1; }
+    }
+    local text = pj_read(path);
+    if (w3_ino == 0) {
+        g_err = "script not found: " .. path;
+        g_err_path = path;
+        return 0;
+    }
+    local dir = fs_parent[w3_ino];
+    local base = fs_name[w3_ino];
+    local ino = 0;
+    if (HAS_COMPILER == 1) {
+        // the script plus the loop, in a file with the same name (so error
+        // messages say "player.wsk:12: ...")
+        local n = len(gs_path) + 1;
+        fs_mkdir_p("/tmp/w3run/" .. n);
+        ino = fs_create("/tmp/w3run/" .. n .. "/" .. base, FT_FILE, 1);
+        fs_data[ino] = text .. GAME_FOOTER;
+        fs_mtime[ino] = fs_now() + n / 1000;
+    } else {
+        // exported games carry their scripts compiled, loop included
+        pj_read(".build/" .. path);
+        if (w3_ino == 0) {
+            g_err = path .. " was not compiled: export the game from Whisker 3D again";
+            g_err_path = path;
+            return 0;
+        }
+        ino = w3_ino;
+    }
+    clear(sh_argv);
+    add(sh_argv, path);
+    local c = vm_spawn(g_parent, ino);
+    if (c == 0) {
+        // a compile error: "line N: message"
+        g_err_path = path;
+        g_err_line = 0;
+        local msg = vm_err;
+        if (substr(msg, 1, 5) == "line ") {
+            local num = "";
+            local i = 6;
+            while (i <= len(msg) && char_class[ord(msg[i]) + 1] == 2) { num = num .. msg[i]; i += 1; }
+            if (len(num) > 0) { g_err_line = num * 1; }
+        }
+        g_err = path .. ": " .. msg;
+        return 0;
+    }
+    p_name[c] = base;
+    p_in_k[c] = FD_NULL; p_in_i[c] = 0;
+    p_out_k[c] = g_out_k; p_out_i[c] = g_out_i;
+    p_err_k[c] = g_out_k; p_err_i[c] = g_out_i;
+    p_caps[c] = "|files|proc|system|net|";
+    p_capq[c] = "";
+    p_pgid[c] = p_pid[c];
+    p_cwd[c] = dir;
+    gw_go[c] = 0;
+    gw_wait[c] = 0;
+    add(gs_path, path);
+    add(gs_pid, p_pid[c]);
+    return 1;
+}
+
+proc game_kill_scripts() {
+    for i = 1 to len(gs_pid) {
+        local s = proc_slot(gs_pid[i]);
+        if (s > 0) { proc_exit(s, 0); gw_go[s] = 0; gw_wait[s] = 0; }
+    }
+    clear(gs_path);
+    clear(gs_pid);
+}
+
+// stop the game; why = "" for a normal stop
+proc game_stop(why) {
+    if (g_on == 0 && len(gs_pid) == 0) { return; }
+    g_on = 0;
+    game_kill_scripts();
+    ob_tables_free();
+    snd_queue(9, "", 0, 0, 0);
+    if (len(why) > 0 && len(g_err) == 0) { g_err = why; }
+}
+
+// the game camera into the renderer, for the current viewport
+proc game_camera() {
+    local c = cam_ob;
+    if (c > 0 && ob_alive[c] == 1) {
+        r3_camera(ob_px[c], ob_py[c], ob_pz[c], ob_rx[c], ob_ry[c], ob_rz[c]);
+    } else {
+        r3_camera(0, 3, -8, 15, 0, 0);
+    }
+}
+
+// the area the game is drawn in: the whole stage, letterboxed when the game
+// is 480 x 360 and the stage is bigger
+proc game_viewport() {
+    if (g_full == 0) { return; }
+    local sc = SCR_W / game_w;
+    if (SCR_H / game_h < sc) { sc = SCR_H / game_h; }
+    local w = game_w * sc;
+    local h = game_h * sc;
+    r3_viewport(floor((SCR_W - w) / 2), floor((SCR_H - h) / 2), w, h, sc);
+}
+
+proc input_frame() {
+    for i = 1 to len(ik_name) {
+        ik_prev[i] = ik_now[i];
+        if (key(ik_name[i])) { ik_now[i] = 1; } else { ik_now[i] = 0; }
+    }
+    m_prev = m_now;
+    if (mouse_down()) { m_now = 1; } else { m_now = 0; }
+}
+
+// one frame of the game; returns 0 when it has stopped
+var g_trace = "";
+proc game_tick() {
+    if (g_on == 0) { return 0; }
+    g_trace = "start";
+    local now = now_secs();
+    g_dt = now - g_last;
+    if (g_dt > 0.1) { g_dt = 0.1; }
+    if (g_dt < 0) { g_dt = 0; }
+    g_last = now;
+    g_t += g_dt;
+    g_fcount += 1;
+    if (now - g_ftime >= 1) {
+        g_fps = round(g_fcount / (now - g_ftime));
+        g_fcount = 0;
+        g_ftime = now;
+    }
+    g_trace = "input";
+    input_frame();
+    clear(hd_k); clear(hd_x); clear(hd_y); clear(hd_w); clear(hd_h); clear(hd_s); clear(hd_c); clear(hd_a);
+    // let every script run its frame
+    for i = 1 to len(gs_pid) {
+        local s = proc_slot(gs_pid[i]);
+        if (s > 0) { gw_go[s] = 1; }
+    }
+    g_trace = "scripts";
+    local t0 = days2000() * 86400000;
+    local busy = 1;
+    while (busy == 1) {
+        sched_run(6);
+        busy = 0;
+        for i = 1 to len(gs_pid) {
+            local s2 = proc_slot(gs_pid[i]);
+            if (s2 > 0) {
+                if (gw_go[s2] == 1 || gw_wait[s2] == 0) { busy = 1; }
+            }
+        }
+        if (days2000() * 86400000 - t0 > 40) { busy = 0; }
+    }
+    // a script that ended with an error stops the game
+    for i = 1 to len(gs_pid) {
+        if (proc_slot(gs_pid[i]) == 0 && vm_last_err_pid == gs_pid[i] && g_on == 1) {
+            g_err_path = gs_path[i];
+            g_err_line = vm_last_err_line;
+            g_err = gs_path[i] .. ":" .. vm_last_err_line .. ": " .. vm_last_err;
+            game_stop("");
+            return 0;
+        }
+    }
+    if (g_quit == 1) { game_stop(""); return 0; }
+    g_trace = "physics";
+    phys_step(g_dt);
+    g_trace = "scene";
+    if (len(g_next) > 0) {
+        local nx = g_next;
+        g_next = "";
+        if (game_scene(nx) == 0) { game_stop(""); return 0; }
+    }
+    g_trace = "draw";
+    game_draw();
+    g_trace = "done";
+    return 1;
+}
+
+proc game_draw() {
+    if (g_full == 1) { pen_clear(); }
+    game_viewport();
+    game_camera();
+    r3_render(1);
+    hud_draw();
+    if (g_full == 1 && (vp_x > 0 || vp_y > 0)) {
+        // letterbox bars
+        if (vp_x > 0) {
+            r3_rect(0, 0, vp_x, SCR_H, 0, 0);
+            r3_rect(vp_x + vp_w, 0, SCR_W - vp_x - vp_w, SCR_H, 0, 0);
+        }
+        if (vp_y > 0) {
+            r3_rect(0, 0, SCR_W, vp_y, 0, 0);
+            r3_rect(0, vp_y + vp_h, SCR_W, SCR_H - vp_y - vp_h, 0, 0);
+        }
+    }
+    gfx_pen_col = -1;
+    gfx_pen_size = -1;
+}
+
+// --- HUD ----------------------------------------------------------------------------------
+
+proc hud_add(k, x, y, w, h, s, c, a) {
+    if (len(hd_k) > 400) { return; }
+    add(hd_k, k); add(hd_x, x); add(hd_y, y); add(hd_w, w); add(hd_h, h);
+    add(hd_s, s); add(hd_c, c); add(hd_a, a);
+}
+
+proc hud_draw() {
+    local sc = vp_scale;
+    for i = 1 to len(hd_k) {
+        local k = hd_k[i];
+        local x = vp_x + hd_x[i] * sc;
+        local y = vp_y + hd_y[i] * sc;
+        if (k == 1) {
+            local big = 0;
+            if (hd_a[i] * sc >= 2) { big = 1; }
+            local cw = 8;
+            if (big == 1) { cw = 16; }
+            local c = gfx_nearest(hd_c[i]);
+            local s = hd_s[i];
+            local cx = x;
+            for j = 1 to len(s) {
+                local ch = s[j];
+                if (ch == "\n") {
+                    cx = x;
+                    y += cw * 2;
+                } else {
+                    if (ch != " ") {
+                        if (big == 1) { gfx_glyph2(cx, y, ord(ch), c); } else { gfx_glyph(cx, y, ord(ch), c); }
+                    }
+                    cx += cw;
+                }
+            }
+        } else if (k == 2) {
+            r3_rect(x, y, hd_w[i] * sc, hd_h[i] * sc, hd_c[i], hd_a[i]);
+        } else if (k == 3) {
+            r3_line2(x, y, vp_x + hd_w[i] * sc, vp_y + hd_h[i] * sc, hd_c[i], hd_a[i] * sc, 1);
+        }
+    }
+}
+
+// --- sound queue (played by the Sound sprite, sound.sbs) -------------------------------
+
+// kind 1 effect (a = name, b = volume, c = pitch in semitones), 2 note,
+// 3 drum, 4 rest (a, b = beats, c = instrument, v = voice), 5 tempo,
+// 6 volume, 9 stop everything
+proc snd_queue(k, a, b, c, v) {
+    if (len(snd_k) > 300) { return; }
+    local chan = v;
+    local cc = c;
+    if (k == 1) {
+        snd_rr = snd_rr % 4 + 1;
+        chan = snd_rr;
+        cc = c * 10;
+    }
+    add(snd_k, k);
+    add(snd_a, a);
+    add(snd_b, b);
+    add(snd_c, cc);
+    add(snd_v, chan);
+}
+
+// a module compiled ahead of time for these global names (exported games:
+// the exporter compiled each module for the order the script requires it).
+// 1 with the code in cb / gl_names, or 0 and vm_err.
+proc wbc_find_module(name, names) {
+    local dir = fs_lookup(w3_proj .. "/.build/req", 1);
+    local want = wbc_bar(names);
+    if (dir > 0) {
+        fs_list(dir);
+        local kids = "";
+        for i = 1 to len(fs_tmp) { kids = kids .. fs_tmp[i] .. ","; }
+        local start = 1;
+        for i = 1 to len(kids) {
+            if (kids[i] == ",") {
+                local f = substr(kids, start, i - 1) * 1;
+                start = i + 1;
+                wbc_head(fs_data[f]);
+                if (streq(wbc_module, name) == 1 && streq(wbc_base, want) == 1) {
+                    if (wbc_parse(fs_data[f]) == 0) { vm_err = c_errmsg; return 0; }
+                    return 1;
+                }
+            }
+        }
+    }
+    vm_err = "module '" .. name .. "' was compiled for a different order of require calls; "
+        .. "require modules at the top of a script, in the same order every time";
+    return 0;
+}

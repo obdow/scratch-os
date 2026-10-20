@@ -274,6 +274,14 @@ class Parser:
                 r = a / b
                 return int(r) if r == int(r) else r
             if op == '%' and b != 0: return a % b
+            if op == '==': return 1 if a == b else 0
+            if op == '!=': return 1 if a != b else 0
+            if op == '<': return 1 if a < b else 0
+            if op == '>': return 1 if a > b else 0
+            if op == '<=': return 1 if a <= b else 0
+            if op == '>=': return 1 if a >= b else 0
+            if op == '&&': return 1 if (a and b) else 0
+            if op == '||': return 1 if (a or b) else 0
         return None
 
     def parse_vardecl(self, tok):
@@ -330,6 +338,16 @@ class Parser:
             spr['vars'].append(self.parse_vardecl(tok))
         elif self.is_kw('list'):
             spr['vars'].append(self.parse_vardecl(tok))
+        elif self.is_kw('sounds'):
+            self.i += 1
+            while True:
+                spr.setdefault('sounds', []).append(self.cur.val)
+                self.i += 1
+                if self.is_op(','):
+                    self.i += 1
+                    continue
+                break
+            self.eat_op(';')
         elif self.is_kw('costumes'):
             self.i += 1
             while True:
@@ -420,6 +438,10 @@ class Parser:
                         els = [self.parse_stmt()]
                     else:
                         els = self.parse_block()
+                # a constant condition (build settings) keeps only one branch
+                cv = self.fold(c)
+                if isinstance(cv, (int, float)) and not isinstance(cv, bool):
+                    return N('block', then if cv else (els or []), tok=tok)
                 return N('if', c, then, els, tok=tok)
             if kw in ('while', 'until'):
                 self.i += 1
@@ -1541,6 +1563,28 @@ class SpriteGen:
             b = mk('pen_setPenColorToColor', {'COLOR': ('color', X(0))})
         elif name == 'pen_size':
             b = mk('pen_setPenSizeTo', {'SIZE': ('num', X(0))})
+        elif name == 'pen_alpha':
+            # pen transparency 0 (opaque) .. 100 (invisible)
+            b = mk('pen_setPenColorParamTo', {'COLOR_PARAM': (('menu', 'pen_menu_colorParam', 'colorParam', 'transparency'), ('lit', 'transparency')),
+                                               'VALUE': ('num', X(0))})
+        elif name == 'sound_start':
+            b = mk('sound_play', {'SOUND_MENU': (('menu', 'sound_sounds_menu', 'SOUND_MENU', ''), X(0))})
+        elif name == 'sound_stop_all':
+            b = mk('sound_stopallsounds')
+        elif name == 'sound_volume':
+            b = mk('sound_setvolumeto', {'VOLUME': ('num', X(0))})
+        elif name in ('sound_pitch', 'sound_pan'):
+            b = mk('sound_seteffectto', {'VALUE': ('num', X(0))}, {'EFFECT': ['PITCH' if name == 'sound_pitch' else 'PAN', None]})
+        elif name == 'music_note':
+            b = mk('music_playNoteForBeats', {'NOTE': (('menu', 'note', 'NOTE', '60'), X(0)), 'BEATS': ('num', X(1))})
+        elif name == 'music_drum':
+            b = mk('music_playDrumForBeats', {'DRUM': (('menu', 'music_menu_DRUM', 'DRUM', '1'), X(0)), 'BEATS': ('num', X(1))})
+        elif name == 'music_rest':
+            b = mk('music_restForBeats', {'BEATS': ('num', X(0))})
+        elif name == 'music_instrument':
+            b = mk('music_setInstrument', {'INSTRUMENT': (('menu', 'music_menu_INSTRUMENT', 'INSTRUMENT', '1'), X(0))})
+        elif name == 'music_tempo':
+            b = mk('music_setTempo', {'TEMPO': ('num', X(0))})
         elif name == 'wait':
             b = mk('control_wait', {'DURATION': ('posnum', X(0))})
         elif name == 'wait_until':
@@ -1754,7 +1798,7 @@ class Program:
         else:
             p.parse_program(self.prog)
 
-    def build_targets(self, costume_provider):
+    def build_targets(self, costume_provider, sound_provider=None):
         """Returns list of target dicts (without asset bytes) and asset map."""
         stage_vars = {'vars': {}, 'lists': {}}
         stage_var_values = {}
@@ -1788,6 +1832,11 @@ class Program:
                 for c in costume_provider(group):
                     assets[c['md5ext']] = c.pop('_bytes')
                     costumes.append(c)
+            sounds = []
+            for group in spr.get('sounds', []):
+                for snd in sound_provider(group):
+                    assets[snd['md5ext']] = snd.pop('_bytes')
+                    sounds.append(snd)
             variables = {}
             lists = {}
             if spr['stage']:
@@ -1804,7 +1853,7 @@ class Program:
             t = {
                 'isStage': spr['stage'], 'name': name, 'variables': variables, 'lists': lists,
                 'broadcasts': {}, 'blocks': blocks, 'comments': {}, 'currentCostume': 0,
-                'costumes': costumes, 'sounds': [], 'volume': 100, 'layerOrder': layer,
+                'costumes': costumes, 'sounds': sounds, 'volume': 100, 'layerOrder': layer,
             }
             if spr['stage']:
                 t.update({'tempo': 60, 'videoTransparency': 50, 'videoState': 'off', 'textToSpeechLanguage': None})

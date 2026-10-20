@@ -1,0 +1,61 @@
+// ===========================================================================
+// shell_lite.sbs - the parts of the shell the rest of the kernel needs, for
+// builds without a shell (the Whisker 3D game players): the environment,
+// argv, error messages, and proc.spawn / proc.run with plain words (no
+// pipes, quotes or redirection).
+// ===========================================================================
+
+list sh_inter;
+list env_k = ["HOME", "USER", "OS"];
+list env_v = ["/game", "player", "Whisker 3D"];
+list tok_v;
+list sh_argv;
+
+proc shell_init() {
+    clear(sh_inter);
+    repeat (MAX_PROC) { add(sh_inter, 0); }
+}
+
+proc shell_spawn(parent_slot, script, name) { return 0; }
+proc shell_step(s) { }
+
+proc env_get(name) {
+    local i = index(env_k, name);
+    if (i == 0) { return ""; }
+    return env_v[i];
+}
+
+proc env_set(name, value) {
+    local i = index(env_k, name);
+    if (i == 0) {
+        add(env_k, name);
+        add(env_v, value);
+    } else {
+        env_v[i] = value;
+    }
+}
+
+proc sh_errmsg(s, text) {
+    fd_write(p_err_k[s], p_err_i[s], text .. "\n");
+}
+
+// split a command line at spaces
+proc sh_tokenize(s, cmd) {
+    clear(tok_v);
+    local w = "";
+    for i = 1 to len(cmd) {
+        if (cmd[i] == " ") {
+            if (len(w) > 0) { add(tok_v, w); w = ""; }
+        } else { w = w .. cmd[i]; }
+    }
+    if (len(w) > 0) { add(tok_v, w); }
+}
+
+proc sh_resolve(s, name) {
+    local ino = fs_lookup(name, p_cwd[s]);
+    if (ino == 0 || fs_type[ino] != FT_FILE) {
+        sh_errmsg(s, name .. ": not found");
+        return 0;
+    }
+    return ino;
+}

@@ -26,6 +26,7 @@ sprite Kernel {
     include "../shell.sbs";
     include "../boot.sbs";
     include "../heap.sbs";
+    include "../wcore.sbs";
     include "../wcomp.sbs";
     include "../vm.sbs";
     include "../natives.sbs";
@@ -33,6 +34,7 @@ sprite Kernel {
     include "../caps.sbs";
     include "../image.sbs";
     include "../net.sbs";
+    include "../w3d_stub.sbs";
     include "../wm.sbs";
     include "ide.sbs";
     include "textview.sbs";        // native rendering of text files

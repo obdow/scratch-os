@@ -169,6 +169,8 @@ var sb_grab = 0;          // scrollbar drag: pointer offset inside the thumb (pi
 var ide_con = 0;          // the Output panel tty
 var ide_ready = 0;        // ide_init has run
 var ide_grab = 0;         // hosted: a mouse press that began inside the IDE is held
+var w3e_mode = 2;         // Whisker 3D: 0 start screen, 1 scene editor, 2 code (the IDE), 3 playing
+var w3e_vdirty = 0;       // Whisker 3D: the viewport must be drawn again
 
 // folders (the stand-alone IDE has its own file system; inside ScratchOS the
 // IDE works in the user's home folder)
@@ -234,9 +236,11 @@ proc ide_init() {
     ide_layout();
     tree_build();
     open_file(ide_proj .. "/main.wsk");
-    tty_write(ide_con, "\e[97mWhisker IDE\e[0m - " .. OS_NAME .. " " .. OS_VERSION .. " runtime.  "
-        .. "\e[93mCtrl+Enter\e[0m runs, \e[93mEsc\e[0m opens the menu.\n");
-    tty_write(ide_con, "New here?  Help > Quick start, or open a file in the examples folder.\n");
+    if (W3D_ENGINE == 0) {
+        tty_write(ide_con, "\e[97mWhisker IDE\e[0m - " .. OS_NAME .. " " .. OS_VERSION .. " runtime.  "
+            .. "\e[93mCtrl+Enter\e[0m runs, \e[93mEsc\e[0m opens the menu.\n");
+        tty_write(ide_con, "New here?  Help > Quick start, or open a file in the examples folder.\n");
+    }
     ide_ready = 1;
     ide_full = 1;
     ide_dirty = 1;
@@ -319,6 +323,7 @@ proc mi(menu, label, key, cmd) {
 
 proc ide_menus_init() {
     clear(mi_menu); clear(mi_label); clear(mi_key); clear(mi_cmd);
+    if (W3D_ENGINE == 1) { w3e_menus(); return; }
     mi(1, "New file...", "", "new");
     mi(1, "Save", "Ctrl+S", "save");
     mi(1, "Save as...", "", "saveas");
@@ -1407,7 +1412,10 @@ proc ide_compose() {
         local cx = IC - 10 - len(nm);
         if (cx > mn_x[len(mn_title)] + 6) { puts(cx, 0, nm, C_DIM + AB * C_PANEL); }
     }
-    if (run_pid > 0) {
+    if (W3D_ENGINE == 1) {
+        puts(IC - 8, 0, "  Play  ", C_TEXT + AB * C_BUTTON);
+        put(IC - 7, 0, G_RIGHT, C_RUN + AB * C_BUTTON);
+    } else if (run_pid > 0) {
         puts(IC - 8, 0, "   Stop ", C_TEXT + AB * C_BUTTON);
         put(IC - 7, 0, G_STOP, C_STOP + AB * C_BUTTON);
     } else {
@@ -1415,10 +1423,17 @@ proc ide_compose() {
         put(IC - 7, 0, G_RIGHT, C_RUN + AB * C_BUTTON);
     }
     deco_row(0, 0, IC - 1, D_BOTTOM);
-    ide_compose_tabs();
-    ide_compose_tree();
-    ide_compose_editor();
-    ide_compose_output();
+    local code_view = 1;
+    if (W3D_ENGINE == 1) {
+        // Whisker 3D: the start screen, the scene editor, or (code) the IDE
+        if (w3e_mode != 2) { code_view = 0; w3e_compose(); } else { w3e_compose_modebar(); }
+    }
+    if (code_view == 1) {
+        ide_compose_tabs();
+        ide_compose_tree();
+        ide_compose_editor();
+    }
+    if (w3e_mode != 0) { ide_compose_output(); }
     ide_compose_status();
     if (cv_win > 0) { ide_compose_canvas(); }
     if (ac_open == 1) { ide_compose_ac(); }
@@ -1836,6 +1851,7 @@ proc ide_draw_cell(i) {
         if (cv_win > 0) { canvas_repaint_rect(cv_win, col * 8, row * 16, 8, 16); }
         return;
     }
+    if (c == -3) { return; }          // the Whisker 3D viewport draws itself
     ui_cell(col * 8, row * 16, c, sc_at[i]);
 }
 
@@ -1861,6 +1877,7 @@ proc ide_render() {
             so_at[i] = sc_at[i];
             if (c == -1) { tty_cells += 1; }
             else if (c == -2) { canvas_cells += 1; }
+            else if (c == -3) { w3e_vdirty = 1; }
             else { ide_draw_cell(i); }
         }
     }
@@ -2021,6 +2038,7 @@ proc prompt_done() {
     local v = pr_buf;
     pr_kind = "";
     ide_dirty = 1;
+    if (W3D_ENGINE == 1) { if (w3e_prompt(kind, v) == 1) { return; } }
     if (kind == "new") {
         if (len(v) == 0) { return; }
         local path = v;
@@ -2171,6 +2189,7 @@ proc ide_cmd(cmd) {
     ac_open = 0;
     ide_full = 1;
     ide_dirty = 1;
+    if (W3D_ENGINE == 1) { if (w3e_cmd(cmd) == 1) { return; } }
     if (cmd == "new") { prompt("new", "New file name: ", ""); return; }
     if (cmd == "save") { save_tab(); return; }
     if (cmd == "saveas") {
@@ -2360,6 +2379,7 @@ proc ide_key(event) {
         if (ev == "escape") { ac_open = 0; ide_full = 1; return; }
         if (len(ev) > 1 && ev != "backspace") { ac_open = 0; ide_full = 1; }
     }
+    if (W3D_ENGINE == 1) { if (w3e_key(ev) == 1) { return; } }
     // global keys
     if (ev == "^enter") { ide_cmd("run"); return; }
     if (ev == "escape") {
@@ -2512,6 +2532,7 @@ proc ide_mouse() {
     if (mdown == 1 && mwas == 0) { ide_press(c, r); }
     else if (mdown == 1 && moved == 1) { ide_drag(c, r); }
     else if (mdown == 0 && mwas == 1) {
+        if (W3D_ENGINE == 1) { w3e_release(c, r); }
         if (mdrag == 3 && cv_win > 0) {
             wm_event(cv_win, "mouseup", mx - (cv_x + 1) * 8, my - (cv_y + 1) * 16, "");
         }
@@ -2560,7 +2581,9 @@ proc ide_press(c, r) {
         if (r != 0) { return; }
     }
     if (r == 0) {
+        if (W3D_ENGINE == 1) { if (w3e_press_bar(c) == 1) { return; } }
         if (c >= IC - 8) {
+            if (W3D_ENGINE == 1) { ide_cmd("play"); return; }
             if (run_pid > 0) { ide_cmd("stop"); } else { ide_cmd("run"); }
             return;
         }
@@ -2573,6 +2596,7 @@ proc ide_press(c, r) {
         }
         return;
     }
+    if (W3D_ENGINE == 1) { if (w3e_press(c, r) == 1) { return; } }
     if (ac_open == 1) {
         if (c >= ac_x && c < ac_x + 24 && r >= ac_y && r < ac_y + len(ac_items)) {
             ac_sel = r - ac_y + 1;
@@ -2726,6 +2750,7 @@ proc ide_press(c, r) {
 proc ide_wheel(lines) {
     local c = floor(mx / 8);
     local r = floor(my / 16);
+    if (W3D_ENGINE == 1) { if (w3e_wheel(c, r, lines) == 1) { return; } }
     if (show_tree == 1 && c < TREE_W && r > ed_y0 && r < out_top) {
         tr_top += lines;
         if (tr_top > len(tr_path) - tree_rows() + 1) { tr_top = len(tr_path) - tree_rows() + 1; }
@@ -2741,6 +2766,7 @@ proc ide_wheel(lines) {
 }
 
 proc ide_drag(c, r) {
+    if (W3D_ENGINE == 1) { if (w3e_drag(c, r) == 1) { return; } }
     if (mdrag == 1 && cur_tab > 0) {
         local y = etop + r - ed_y0;
         if (r < ed_y0) { y = etop - 1; }

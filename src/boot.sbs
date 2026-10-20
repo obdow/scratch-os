@@ -141,7 +141,7 @@ proc boot_seq() nowarp {
     kok("Started Whisker virtual machine");
     caps_init();
     kok("Loaded capability policy (/etc/caps)");
-    wm_init();
+    if (HAS_WM == 1) { wm_init(); }
     boot_progress(0.75);
     kok("Started window manager");
     kok("Reached target Multi-User System");
@@ -165,7 +165,7 @@ proc boot_seq() nowarp {
         return;
     }
     wait(0.25);
-    wm_start(0);
+    if (HAS_WM == 1) { wm_start(0); }
 }
 
 list kb_names = data("kb_keys");
@@ -219,7 +219,7 @@ proc sys_power(mode) {
 proc power_off() nowarp {
     local reboot = power_req;
     power_req = -1;
-    wm_stop_all();
+    if (HAS_WM == 1) { wm_stop_all(); }
     tty_write(con, "\n");
     for s = 1 to MAX_PROC {
         if (p_state[s] != PS_FREE && p_kind[s] != PK_INIT) {

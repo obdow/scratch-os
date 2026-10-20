@@ -1,0 +1,343 @@
+// ===========================================================================
+// phys.sbs - Whisker 3D physics (included inside sprite Kernel)
+//
+// Bodies: static (never moves), dynamic (gravity, velocity, pushed out of
+// what it hits), kinematic (moved only by scripts, pushes dynamic bodies
+// like a static one).  Colliders: box (the axis-aligned box around the
+// object's rotated shape) or sphere.  A trigger collider reports touches
+// but does not block.
+//
+// Each step: dynamic bodies fall and move; then every dynamic collider is
+// pushed out of everything it overlaps, along the shortest way out, and
+// loses its speed into the surface (or bounces).  Being pushed up means it
+// stands on something (grounded).  Every touching pair is recorded for
+// w3d.contacts and touching().
+// ===========================================================================
+
+list cb_x0;          // world collider box per object (this step)
+list cb_y0;
+list cb_z0;
+list cb_x1;
+list cb_y1;
+list cb_z1;
+list cb_cx;          // sphere: centre and radius
+list cb_cy;
+list cb_cz;
+list cb_r;
+list ct_a;           // touching pairs (both orders)
+list ct_b;
+var ph_nx = 0;       // contact normal of the last overlap test (for A)
+var ph_ny = 0;
+var ph_nz = 0;
+var ph_d = 0;        // penetration depth
+
+proc phys_reset() {
+    clear(ct_a); clear(ct_b);
+}
+
+// the world box and sphere of object i's collider
+proc phys_box(i) {
+    while (len(cb_x0) < i) {
+        add(cb_x0, 0); add(cb_y0, 0); add(cb_z0, 0); add(cb_x1, 0); add(cb_y1, 0); add(cb_z1, 0);
+        add(cb_cx, 0); add(cb_cy, 0); add(cb_cz, 0); add(cb_r, 0);
+    }
+    local m = ob_mesh[i];
+    local lx0 = -0.5;
+    local ly0 = -0.5;
+    local lz0 = -0.5;
+    local lx1 = 0.5;
+    local ly1 = 0.5;
+    local lz1 = 0.5;
+    if (m > 0) {
+        lx0 = ms_x0[m]; ly0 = ms_y0[m]; lz0 = ms_z0[m];
+        lx1 = ms_x1[m]; ly1 = ms_y1[m]; lz1 = ms_z1[m];
+        // flat shapes (planes, quads) get a little thickness
+        if (ly1 - ly0 < 0.02) { ly0 = ly0 - 0.01; ly1 = ly1 + 0.01; }
+    }
+    local sx = ob_sx[i];
+    local sy = ob_sy[i];
+    local sz = ob_sz[i];
+    // centre and half size in the object's own axes (scaled)
+    local hx = abs((lx1 - lx0) * sx) / 2;
+    local hy = abs((ly1 - ly0) * sy) / 2;
+    local hz = abs((lz1 - lz0) * sz) / 2;
+    local ox = (lx0 + lx1) / 2 * sx;
+    local oy = (ly0 + ly1) / 2 * sy;
+    local oz = (lz0 + lz1) / 2 * sz;
+    w3_rot(ob_rx[i], ob_ry[i], ob_rz[i]);
+    local cx = ob_px[i] + m00 * ox + m01 * oy + m02 * oz;
+    local cy = ob_py[i] + m10 * ox + m11 * oy + m12 * oz;
+    local cz = ob_pz[i] + m20 * ox + m21 * oy + m22 * oz;
+    local ex = abs(m00) * hx + abs(m01) * hy + abs(m02) * hz;
+    local ey = abs(m10) * hx + abs(m11) * hy + abs(m12) * hz;
+    local ez = abs(m20) * hx + abs(m21) * hy + abs(m22) * hz;
+    cb_x0[i] = cx - ex; cb_x1[i] = cx + ex;
+    cb_y0[i] = cy - ey; cb_y1[i] = cy + ey;
+    cb_z0[i] = cz - ez; cb_z1[i] = cz + ez;
+    cb_cx[i] = cx; cb_cy[i] = cy; cb_cz[i] = cz;
+    local r = hx;
+    if (hy > r) { r = hy; }
+    if (hz > r) { r = hz; }
+    cb_r[i] = r;
+}
+
+proc has_coll(i) {
+    if (ob_alive[i] == 1 && ob_coll[i] != C_NONE) { return 1; }
+    return 0;
+}
+
+proc phys_boxes() {
+    for i = 1 to len(ob_name) {
+        if (has_coll(i) == 1) { phys_box(i); }
+    }
+}
+
+// do colliders a and b overlap?  Sets ph_nx/ny/nz (the way to push a out)
+// and ph_d.
+proc phys_overlap(a, b) {
+    local ka = ob_coll[a];
+    local kb = ob_coll[b];
+    if (ka == C_SPHERE && kb == C_SPHERE) {
+        local dx = cb_cx[a] - cb_cx[b];
+        local dy = cb_cy[a] - cb_cy[b];
+        local dz = cb_cz[a] - cb_cz[b];
+        local d = sqrt(dx * dx + dy * dy + dz * dz);
+        local rr = cb_r[a] + cb_r[b];
+        if (d >= rr) { return 0; }
+        ph_d = rr - d;
+        if (d > 0.00001) { ph_nx = dx / d; ph_ny = dy / d; ph_nz = dz / d; }
+        else { ph_nx = 0; ph_ny = 1; ph_nz = 0; }
+        return 1;
+    }
+    if (ka == C_SPHERE || kb == C_SPHERE) {
+        local s = a;
+        local bx = b;
+        if (kb == C_SPHERE) { s = b; bx = a; }
+        // closest point of the box to the sphere's centre
+        local px = cb_cx[s];
+        local py = cb_cy[s];
+        local pz = cb_cz[s];
+        local qx = px;
+        local qy = py;
+        local qz = pz;
+        if (qx < cb_x0[bx]) { qx = cb_x0[bx]; }
+        if (qx > cb_x1[bx]) { qx = cb_x1[bx]; }
+        if (qy < cb_y0[bx]) { qy = cb_y0[bx]; }
+        if (qy > cb_y1[bx]) { qy = cb_y1[bx]; }
+        if (qz < cb_z0[bx]) { qz = cb_z0[bx]; }
+        if (qz > cb_z1[bx]) { qz = cb_z1[bx]; }
+        local ddx = px - qx;
+        local ddy = py - qy;
+        local ddz = pz - qz;
+        local dd = sqrt(ddx * ddx + ddy * ddy + ddz * ddz);
+        if (dd >= cb_r[s]) { return 0; }
+        if (dd > 0.00001) {
+            ph_d = cb_r[s] - dd;
+            ph_nx = ddx / dd; ph_ny = ddy / dd; ph_nz = ddz / dd;
+        } else {
+            // centre inside the box: out through the nearest face
+            phys_box_pen(s, bx);
+            ph_d = ph_d + cb_r[s];
+        }
+        if (s != a) { ph_nx = 0 - ph_nx; ph_ny = 0 - ph_ny; ph_nz = 0 - ph_nz; }
+        return 1;
+    }
+    if (cb_x1[a] <= cb_x0[b] || cb_x0[a] >= cb_x1[b]) { return 0; }
+    if (cb_y1[a] <= cb_y0[b] || cb_y0[a] >= cb_y1[b]) { return 0; }
+    if (cb_z1[a] <= cb_z0[b] || cb_z0[a] >= cb_z1[b]) { return 0; }
+    phys_box_pen(a, b);
+    return 1;
+}
+
+// box a overlaps box b: the shortest way out for a
+proc phys_box_pen(a, b) {
+    local px1 = cb_x1[b] - cb_x0[a];     // push a +x
+    local px2 = cb_x1[a] - cb_x0[b];     // push a -x
+    local py1 = cb_y1[b] - cb_y0[a];
+    local py2 = cb_y1[a] - cb_y0[b];
+    local pz1 = cb_z1[b] - cb_z0[a];
+    local pz2 = cb_z1[a] - cb_z0[b];
+    ph_d = px1; ph_nx = 1; ph_ny = 0; ph_nz = 0;
+    if (px2 < ph_d) { ph_d = px2; ph_nx = -1; ph_ny = 0; ph_nz = 0; }
+    // prefer standing on things: a small vertical overlap wins
+    if (py1 < ph_d * 1.2) { ph_d = py1; ph_nx = 0; ph_ny = 1; ph_nz = 0; }
+    if (py2 < ph_d) { ph_d = py2; ph_nx = 0; ph_ny = -1; ph_nz = 0; }
+    if (pz1 < ph_d) { ph_d = pz1; ph_nx = 0; ph_ny = 0; ph_nz = 1; }
+    if (pz2 < ph_d) { ph_d = pz2; ph_nx = 0; ph_ny = 0; ph_nz = -1; }
+}
+
+proc ct_add(a, b) {
+    for i = 1 to len(ct_a) {
+        if (ct_a[i] == a && ct_b[i] == b) { return; }
+    }
+    add(ct_a, a); add(ct_b, b);
+    add(ct_a, b); add(ct_b, a);
+}
+
+// move object i by (dx, dy, dz) and its collider box with it
+proc phys_shift(i, dx, dy, dz) {
+    ob_px[i] = ob_px[i] + dx;
+    ob_py[i] = ob_py[i] + dy;
+    ob_pz[i] = ob_pz[i] + dz;
+    cb_x0[i] = cb_x0[i] + dx; cb_x1[i] = cb_x1[i] + dx;
+    cb_y0[i] = cb_y0[i] + dy; cb_y1[i] = cb_y1[i] + dy;
+    cb_z0[i] = cb_z0[i] + dz; cb_z1[i] = cb_z1[i] + dz;
+    cb_cx[i] = cb_cx[i] + dx; cb_cy[i] = cb_cy[i] + dy; cb_cz[i] = cb_cz[i] + dz;
+}
+
+// remove a's speed going into the surface with normal n (or bounce)
+proc phys_hit(a) {
+    local vn = ob_vx[a] * ph_nx + ob_vy[a] * ph_ny + ob_vz[a] * ph_nz;
+    if (vn < 0) {
+        local k = 1 + ob_bounce[a];
+        if (vn > -1.5) { k = 1; }           // no tiny endless bounces
+        ob_vx[a] = ob_vx[a] - k * vn * ph_nx;
+        ob_vy[a] = ob_vy[a] - k * vn * ph_ny;
+        ob_vz[a] = ob_vz[a] - k * vn * ph_nz;
+    }
+    if (ph_ny > 0.7) { ob_ground[a] = 1; }
+}
+
+proc phys_step(dt0) {
+    clear(ct_a); clear(ct_b);
+    local n = len(ob_name);
+    local dt = dt0;
+    if (dt > 0.1) { dt = 0.1; }
+    for i = 1 to n {
+        if (ob_alive[i] == 1 && ob_body[i] == B_DYNAMIC) {
+            ob_vy[i] = ob_vy[i] + grav * dt;
+            ob_px[i] = ob_px[i] + ob_vx[i] * dt;
+            ob_py[i] = ob_py[i] + ob_vy[i] * dt;
+            ob_pz[i] = ob_pz[i] + ob_vz[i] * dt;
+            ob_ground[i] = 0;
+        }
+    }
+    phys_boxes();
+    // two passes settle stacks better than one
+    repeat (2) {
+        for a = 1 to n {
+            if (has_coll(a) == 1 && ob_body[a] == B_DYNAMIC) {
+                for b = 1 to n {
+                    if (b != a && has_coll(b) == 1) {
+                        if (phys_overlap(a, b) == 1) {
+                            ct_add(a, b);
+                            if (ob_trig[a] == 0 && ob_trig[b] == 0) {
+                                if (ob_body[b] == B_DYNAMIC) {
+                                    // share the push between two moving bodies
+                                    if (b > a) {
+                                        local h = ph_d / 2;
+                                        phys_shift(a, ph_nx * h, ph_ny * h, ph_nz * h);
+                                        phys_shift(b, 0 - ph_nx * h, 0 - ph_ny * h, 0 - ph_nz * h);
+                                        phys_hit(a);
+                                        ph_nx = 0 - ph_nx; ph_ny = 0 - ph_ny; ph_nz = 0 - ph_nz;
+                                        phys_hit(b);
+                                    }
+                                } else {
+                                    phys_shift(a, ph_nx * ph_d, ph_ny * ph_d, ph_nz * ph_d);
+                                    phys_hit(a);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // touches between triggers / kinematic bodies and other colliders
+    for a = 1 to n {
+        if (has_coll(a) == 1 && ob_body[a] != B_DYNAMIC && (ob_trig[a] == 1 || ob_body[a] == B_KINEMATIC)) {
+            for b = 1 to n {
+                if (b != a && has_coll(b) == 1 && ob_body[b] != B_DYNAMIC) {
+                    if (phys_overlap(a, b) == 1) { ct_add(a, b); }
+                }
+            }
+        }
+    }
+}
+
+// --- raycasts --------------------------------------------------------------------------
+
+var rh_ob = 0;       // results of the last raycast
+var rh_t = 0;
+var rh_x = 0;
+var rh_y = 0;
+var rh_z = 0;
+var rh_nx = 0;
+var rh_ny = 0;
+var rh_nz = 0;
+
+// the nearest collider hit by the ray from (x, y, z) along (dx, dy, dz)
+// within maxd (dx, dy, dz need not be unit length; distances are in world
+// units along the normalised direction).  Returns the object or 0.
+proc raycast(x, y, z, dx, dy, dz, maxd, ignore) {
+    local l = sqrt(dx * dx + dy * dy + dz * dz);
+    rh_ob = 0;
+    if (l == 0) { return 0; }
+    local ux = dx / l;
+    local uy = dy / l;
+    local uz = dz / l;
+    rh_t = maxd;
+    phys_boxes();
+    for i = 1 to len(ob_name) {
+        if (has_coll(i) == 1 && i != ignore && ob_trig[i] == 0) {
+            if (ob_coll[i] == C_SPHERE) {
+                local ox = x - cb_cx[i];
+                local oy = y - cb_cy[i];
+                local oz = z - cb_cz[i];
+                local b = ox * ux + oy * uy + oz * uz;
+                local c = ox * ox + oy * oy + oz * oz - cb_r[i] * cb_r[i];
+                local disc = b * b - c;
+                if (disc >= 0) {
+                    local t = 0 - b - sqrt(disc);
+                    if (t < 0) { t = 0 - b + sqrt(disc); }
+                    if (t >= 0 && t < rh_t) {
+                        rh_t = t;
+                        rh_ob = i;
+                        rh_x = x + ux * t; rh_y = y + uy * t; rh_z = z + uz * t;
+                        rh_nx = (rh_x - cb_cx[i]) / cb_r[i];
+                        rh_ny = (rh_y - cb_cy[i]) / cb_r[i];
+                        rh_nz = (rh_z - cb_cz[i]) / cb_r[i];
+                    }
+                }
+            } else {
+                // slabs
+                local t0 = 0;
+                local t1 = rh_t;
+                local ax = 0;
+                local ok = 1;
+                for e = 1 to 3 {
+                    local o = x;
+                    local u = ux;
+                    local lo = cb_x0[i];
+                    local hi = cb_x1[i];
+                    if (e == 2) { o = y; u = uy; lo = cb_y0[i]; hi = cb_y1[i]; }
+                    if (e == 3) { o = z; u = uz; lo = cb_z0[i]; hi = cb_z1[i]; }
+                    if (abs(u) < 0.0000001) {
+                        if (o < lo || o > hi) { ok = 0; }
+                    } else {
+                        local ta = (lo - o) / u;
+                        local tb = (hi - o) / u;
+                        local sgn = -1;
+                        if (ta > tb) { local tmp = ta; ta = tb; tb = tmp; sgn = 1; }
+                        if (ta > t0) { t0 = ta; ax = e * sgn; }
+                        if (tb < t1) { t1 = tb; }
+                        if (t0 > t1) { ok = 0; }
+                    }
+                }
+                if (ok == 1 && t0 < rh_t) {
+                    rh_t = t0;
+                    rh_ob = i;
+                    rh_x = x + ux * t0; rh_y = y + uy * t0; rh_z = z + uz * t0;
+                    rh_nx = 0; rh_ny = 0; rh_nz = 0;
+                    if (ax == -1) { rh_nx = -1; }
+                    if (ax == 1) { rh_nx = 1; }
+                    if (ax == -2) { rh_ny = -1; }
+                    if (ax == 2) { rh_ny = 1; }
+                    if (ax == -3) { rh_nz = -1; }
+                    if (ax == 3) { rh_nz = 1; }
+                }
+            }
+        }
+    }
+    return rh_ob;
+}

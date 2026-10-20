@@ -1,0 +1,9 @@
+// ===========================================================================
+// w3d_stub.sbs - the Whisker 3D natives outside Whisker 3D (included inside
+// sprite Kernel in ScratchOS and the Whisker IDE).  The engine includes
+// src/w3d/natives3d.sbs instead.
+// ===========================================================================
+
+proc nat_w3d(id) {
+    vm_raise(nat_names[id] .. " is only available in Whisker 3D");
+}

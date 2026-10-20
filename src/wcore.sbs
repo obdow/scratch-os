@@ -1,0 +1,214 @@
+// ===========================================================================
+// wcore.sbs - what the Whisker compiler produces, and compiled code as text
+// (included inside sprite Kernel, before wcomp.sbs when the compiler is in
+// the build).
+//
+// A compiled program is cb (the code cells), gl_names (its global names)
+// and c_caps (capabilities it declares).  Whisker 3D games are exported
+// compiled, so the game players need no compiler.  The text form ("WBC"):
+//   WBC 1
+//   module <name>     ("-" for a program)
+//   base <names>      the global names a module was compiled against
+//   names <names>     the global names after compiling ("|" between names)
+//   caps <caps>
+//   code <n>
+//   ... n lines, one code cell each ("\\" and "\\n" escaped)
+// ===========================================================================
+
+// bytecode opcodes (the VM and the compiler)
+const OP_PUSHNIL = 1;
+const OP_PUSHTRUE = 2;
+const OP_PUSHFALSE = 3;
+const OP_PUSHN = 4;
+const OP_PUSHS = 5;
+const OP_GETL = 6;
+const OP_SETL = 7;
+const OP_GETG = 8;
+const OP_SETG = 9;
+const OP_POP = 10;
+const OP_ADD = 11;
+const OP_SUB = 12;
+const OP_MUL = 13;
+const OP_DIV = 14;
+const OP_MOD = 15;
+const OP_POW = 16;
+const OP_IDIV = 17;
+const OP_CONCAT = 18;
+const OP_NEG = 19;
+const OP_NOT = 20;
+const OP_LEN = 21;
+const OP_EQ = 22;
+const OP_NE = 23;
+const OP_LT = 24;
+const OP_LE = 25;
+const OP_GT = 26;
+const OP_GE = 27;
+const OP_JMP = 28;
+const OP_JF = 29;
+const OP_JT = 30;
+const OP_JFK = 31;
+const OP_JTK = 32;
+const OP_NEWTABLE = 33;
+const OP_GETINDEX = 34;
+const OP_SETINDEX = 35;
+const OP_APPEND = 36;
+const OP_SETFIELDK = 37;
+const OP_CALL = 38;
+const OP_CALLN = 39;
+const OP_RET = 40;
+const OP_RETNIL = 41;
+const OP_FUNC = 42;
+const OP_PUSHNAT = 43;
+const OP_SELF = 44;
+const OP_FORCHK = 45;
+const OP_FORINC = 46;
+const OP_ITERP = 47;
+const OP_ITERI = 48;
+const OP_LINE = 49;
+const OP_DUP = 50;
+const OP_GETFIELD = 51;
+const OP_SETFIELD = 52;
+const OP_HALT = 53;
+const OP_GETM = 54;
+const OP_SETM = 55;
+
+list cb;                 // code buffer
+list gl_names;           // global names of this program
+list nat_names = data("nat_names");
+var c_errmsg = "";
+var c_caps = "";         // capabilities declared with --@caps
+
+proc gl_names_encode() {
+    local out = "";
+    for k = 1 to len(gl_names) { out = out .. gl_names[k] .. "\x01"; }
+    return out;
+}
+
+// "\x01"-separated names <-> "|"-separated
+proc wbc_bar(names) {
+    local out = "";
+    for i = 1 to len(names) {
+        if (names[i] == "\x01") { out = out .. "|"; } else { out = out .. names[i]; }
+    }
+    return out;
+}
+
+proc wbc_esc(v) {
+    local s = "" .. v;
+    if (!contains(s, "\\") && !contains(s, "\n")) { return s; }
+    local out = "";
+    for i = 1 to len(s) {
+        local ch = s[i];
+        if (ch == "\\") { out = out .. "\\\\"; }
+        else if (ch == "\n") { out = out .. "\\n"; }
+        else { out = out .. ch; }
+    }
+    return out;
+}
+
+proc wbc_unesc(s) {
+    if (!contains(s, "\\")) { return s; }
+    local out = "";
+    local i = 1;
+    while (i <= len(s)) {
+        local ch = s[i];
+        if (ch == "\\" && i < len(s)) {
+            if (s[i + 1] == "n") { out = out .. "\n"; } else { out = out .. s[i + 1]; }
+            i += 2;
+        } else {
+            out = out .. ch;
+            i += 1;
+        }
+    }
+    return out;
+}
+
+// the compiled program in cb / gl_names / c_caps as WBC text
+proc wbc_text(module, base) {
+    local t = "WBC 1\nmodule " .. module .. "\nbase " .. wbc_bar(base) .. "\nnames " .. wbc_bar(gl_names_encode())
+        .. "\ncaps " .. c_caps .. "\ncode " .. len(cb) .. "\n";
+    for k = 1 to len(cb) { t = t .. wbc_esc(cb[k]) .. "\n"; }
+    return t;
+}
+
+proc is_wbc(text) {
+    if (substr(text, 1, 6) == "WBC 1\n") { return 1; }
+    return 0;
+}
+
+// header fields of WBC text, without reading the code
+var wbc_module = "";
+var wbc_base = "";
+proc wbc_head(text) {
+    wbc_module = "";
+    wbc_base = "";
+    local start = 1;
+    local n = 0;
+    for i = 1 to len(text) {
+        if (text[i] == "\n") {
+            local line = substr(text, start, i - 1);
+            start = i + 1;
+            n += 1;
+            if (substr(line, 1, 7) == "module ") { wbc_module = substr(line, 8, len(line)); }
+            if (substr(line, 1, 5) == "base ") { wbc_base = substr(line, 6, len(line)); return; }
+            if (n > 4) { return; }
+        }
+    }
+}
+
+// WBC text -> cb / gl_names / c_caps.  1 on success, else 0 and c_errmsg.
+proc wbc_parse(text) {
+    clear(cb);
+    clear(gl_names);
+    c_caps = "";
+    local start = 1;
+    local inside = 0;
+    local want = 0;
+    for i = 1 to len(text) {
+        if (text[i] == "\n") {
+            local line = substr(text, start, i - 1);
+            start = i + 1;
+            if (inside == 1) {
+                if (len(cb) < want) { add(cb, wbc_unesc(line)); }
+            } else if (substr(line, 1, 6) == "names ") {
+                local cur = "";
+                for k = 7 to len(line) {
+                    if (line[k] == "|") { add(gl_names, cur); cur = ""; } else { cur = cur .. line[k]; }
+                }
+            } else if (substr(line, 1, 5) == "caps ") {
+                c_caps = substr(line, 6, len(line));
+            } else if (substr(line, 1, 5) == "code ") {
+                want = substr(line, 6, len(line)) * 1;
+                inside = 1;
+            }
+        }
+    }
+    if (inside == 0 || len(cb) != want) { c_errmsg = "damaged compiled code"; return 0; }
+    // cells come back as text; plain integers (opcodes, jumps, slots) are
+    // made numbers again for speed.  Other text stays as it is, so a string
+    // constant like "1.0" or "007" keeps its exact spelling.
+    for k = 1 to len(cb) {
+        if (wbc_int(cb[k]) == 1) { cb[k] = cb[k] * 1; }
+    }
+    return 1;
+}
+
+// 1 if s is an integer written the way the VM would print it ("0", "-12")
+proc wbc_int(s) {
+    local n = len(s);
+    if (n == 0 || n > 15) { return 0; }
+    local i = 1;
+    if (s[1] == "-") {
+        if (n == 1) { return 0; }
+        i = 2;
+    }
+    if (s[i] == "0") {
+        if (n == 1) { return 1; }
+        return 0;
+    }
+    while (i <= n) {
+        if (!contains("0123456789", s[i])) { return 0; }
+        i += 1;
+    }
+    return 1;
+}

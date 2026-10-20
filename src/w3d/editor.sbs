@@ -1,0 +1,1475 @@
+// ===========================================================================
+// editor.sbs - the Whisker 3D engine's user interface (included inside
+// sprite Kernel, after the Whisker IDE, which provides the menu bar, the
+// code editor, the output panel, prompts and dialogs; ide.sbs calls the
+// w3e_* hooks below when W3D_ENGINE is 1)
+//
+// Modes (w3e_mode): 0 the start screen (projects), 1 the scene editor, 2
+// code (the IDE itself), 3 playing (the game on the whole stage).
+//
+// Scene editor layout (cells):
+//   row 0         menu bar, Scene / Code switch, Play
+//   row 1         tool bar: tools, snap, the scene's name
+//   left          the object list (Project, Scene, then the objects)
+//   middle        the 3D viewport (cells marked -3; drawn by w3e_view)
+//   right         the inspector for what is selected
+//   bottom        the output panel (what scripts print), the status line
+// ===========================================================================
+
+const HI_W = 26;             // object list width
+const IN_W = 40;             // inspector width
+const T_SELECT = 0;          // tools
+const T_MOVE = 1;
+const T_ROTATE = 2;
+const T_SCALE = 3;
+
+var w3e_back = 1;            // mode to return to after playing
+var w3e_ready = 0;
+var sel = 0;                 // selected object (0 = none)
+var sel_what = 1;            // 0 an object, 1 the scene, 2 the project
+var tool = T_MOVE;
+var snap = 1;                // snap moves to 0.25 / rotations to 15 degrees
+var sc_dirty = 0;            // the scene has unsaved changes
+var ovl_was = 0;             // a menu / dialog was open last frame
+var vp_c0 = HI_W;            // viewport in cells
+var vp_c1 = 0;
+var vp_r0 = 2;
+var vp_r1 = 0;
+var hi_top = 1;              // object list scroll
+var in_top = 1;              // inspector scroll
+var ec_tx = 0;               // editor camera: orbit target, distance, angles
+var ec_ty = 0.5;
+var ec_tz = 0;
+var ec_dist = 14;
+var ec_yaw = 35;
+var ec_pitch = 28;
+var dg = 0;                  // drag: 0 none, 1 orbit, 2 pan, 3 move, 4 rotate, 5 scale, 6 click
+var dg_x = 0;                // pointer at the press
+var dg_y = 0;
+var dg_moved = 0;
+var dg_a = 0;                // values at the press
+var dg_b = 0;
+var dg_c = 0;
+var dg_d = 0;
+var dg_e = 0;
+var dg_f = 0;
+var st_sel = 1;              // start screen: selected project
+var np_name = "";            // new project being made
+var np_res = 720;
+var np_tpl = "starter";
+var st_stage = 0;            // 0 project list, 1 new project form
+
+list hi_ob;                  // object list rows: object id, -1 project, -2 scene
+list in_key;                 // inspector rows: field key ("" = heading)
+list in_lab;
+list in_val;
+list st_proj;                // projects on the start screen
+list st_ex;                  // examples
+list un_text;                // scene undo (scene text before each change)
+
+const SCRIPT_TEMPLATE = "-- This script runs for every object that uses it.\n-- self is the object; store its own values in it (self.speed = 5).\n\nfunction start(self)\nend\n\nfunction update(self, dt)\nend\n";
+
+// --- start up ------------------------------------------------------------------------
+
+proc w3e_init() {
+    w3e_mode = 0;
+    out_h = OUT_SMALL;
+    ide_layout();
+    w3e_layout();
+    w3e_ready = 1;
+    st_scan();
+    // a project saved inside this Scratch project (the export list, kept
+    // when the .sb3 is saved) comes back
+    if (len(w3d_export) > 0) {
+        clear(bl_out);
+        for i = 1 to len(w3d_export) { add(bl_out, w3d_export[i]); }
+        local nm = bundle_name();
+        if (len(nm) > 0 && fs_lookup("/projects/" .. safe_name(nm), 1) == 0) {
+            bundle_import("/projects/" .. safe_name(nm));
+            st_scan();
+        }
+    }
+    tty_write(ide_con, "\e[97mWhisker 3D\e[0m - make 3D games in Whisker.  "
+        .. "Open or make a project; \e[93mHelp\e[0m has the guide.\n");
+}
+
+proc w3e_layout() {
+    vp_c0 = HI_W;
+    vp_c1 = IC - IN_W - 1;
+    vp_r0 = 2;
+    vp_r1 = out_top - 1;
+    w3e_vdirty = 1;
+}
+
+// a name usable as a folder name
+proc safe_name(s) {
+    local out = "";
+    for i = 1 to len(s) {
+        local ch = s[i];
+        if (contains("abcdefghijklmnopqrstuvwxyz0123456789-_ ", str_lower(ch))) { out = out .. ch; }
+    }
+    if (len(out) == 0) { out = "Game"; }
+    return out;
+}
+
+// projects in /projects and examples in /examples, for the start screen
+proc st_scan() {
+    clear(st_proj);
+    clear(st_ex);
+    local d = fs_lookup("/projects", 1);
+    if (d == 0) { d = fs_mkdir_p("/projects"); }
+    fs_list(d);
+    for i = 1 to len(fs_tmp) {
+        if (fs_type[fs_tmp[i]] == FT_DIR) { add(st_proj, fs_name[fs_tmp[i]]); }
+    }
+    local e = fs_lookup("/examples", 1);
+    if (e > 0) {
+        fs_list(e);
+        for i = 1 to len(fs_tmp) {
+            if (fs_type[fs_tmp[i]] == FT_DIR) { add(st_ex, fs_name[fs_tmp[i]]); }
+        }
+    }
+}
+
+// --- projects --------------------------------------------------------------------------
+
+proc w3e_open(dir) {
+    w3_proj = dir;
+    if (pj_load_settings() == 0) { dialog(1, "Cannot open the project", pj_err, "", ""); return 0; }
+    ide_root = w3_proj;
+    ide_proj = w3_proj;
+    p_cwd[host] = fs_lookup(w3_proj, 1);
+    clear(tr_exp);
+    add(tr_exp, w3_proj);
+    add(tr_exp, w3_proj .. "/scripts");
+    add(tr_exp, w3_proj .. "/scenes");
+    // close the tabs of the last project
+    while (len(tab_path) > 0) { close_tab(1); }
+    tree_build();
+    if (w3e_load_scene(pj_scene) == 0) { return 0; }
+    w3e_mode = 1;
+    w3e_reset_view();
+    ide_status("Opened " .. pj_name);
+    ide_full = 1;
+    ide_dirty = 1;
+    return 1;
+}
+
+proc w3e_load_scene(path) {
+    if (scene_load(path) == 0) {
+        dialog(1, "Cannot open the scene", sc_err, "", "");
+        return 0;
+    }
+    if (len(sc_err) > 0) { tty_write(ide_con, "\e[93m" .. path .. ": " .. sc_err .. "\e[0m\n"); }
+    clear(un_text);
+    sel = 0;
+    sel_what = 1;
+    sc_dirty = 0;
+    w3e_vdirty = 1;
+    ide_dirty = 1;
+    return 1;
+}
+
+proc w3e_save_scene() {
+    if (len(sc_path) == 0) { return; }
+    if (scene_save(sc_path) == 1) { sc_dirty = 0; } else { ide_status(pj_err); }
+    ide_dirty = 1;
+}
+
+// copy a folder of the file system (templates, examples) to dest
+proc copy_tree(src, dest) {
+    local s = fs_lookup(src, 1);
+    if (s == 0) { return 0; }
+    local d = fs_lookup(dest, 1);
+    if (d > 0) { return 0; }
+    local dp = fs_mkdir_p(dest);
+    if (dp == 0) { return 0; }
+    fs_remove(dp, 1);
+    local parent = fs_lookup_parent(dest, 1);
+    fs_copy(s, parent, fs_base);
+    return 1;
+}
+
+// make a new project from the start screen's form
+proc w3e_new_project() {
+    local nm = safe_name(np_name);
+    local dir = "/projects/" .. nm;
+    if (fs_lookup(dir, 1) > 0) { dialog(1, "New project", "There is already a project called " .. nm .. ".", "", ""); return; }
+    if (copy_tree("/templates/" .. np_tpl, dir) == 0) { fs_mkdir_p(dir); }
+    w3_proj = dir;
+    pj_load_settings();
+    pj_name = np_name;
+    pj_res = np_res;
+    res_apply();
+    pj_save_settings();
+    st_scan();
+    st_stage = 0;
+    w3e_open(dir);
+}
+
+// --- scene changes and undo -----------------------------------------------------------
+
+proc w3e_change() {
+    add(un_text, scene_text());
+    if (len(un_text) > 40) { del(un_text, 1); }
+    sc_dirty = 1;
+    w3e_vdirty = 1;
+    ide_dirty = 1;
+}
+
+proc w3e_undo() {
+    if (len(un_text) == 0) { ide_status("Nothing to undo"); return; }
+    local keep = sel;
+    local t = un_text[len(un_text)];
+    del(un_text, len(un_text));
+    scene_parse(t);
+    if (keep > len(ob_name)) { keep = 0; }
+    sel = keep;
+    if (sel == 0 && sel_what == 0) { sel_what = 1; }
+    sc_dirty = 1;
+    w3e_vdirty = 1;
+    ide_dirty = 1;
+}
+
+// add an object in front of the editor camera's target
+proc w3e_add(kind, mesh, name) {
+    w3e_change();
+    local o = ob_new(ob_unique(name), kind);
+    if (kind == K_MESH) { ob_setmesh(o, mesh); }
+    ob_px[o] = snapv(ec_tx);
+    ob_pz[o] = snapv(ec_tz);
+    ob_py[o] = 0.5;
+    if (mesh == "plane") { ob_py[o] = 0; ob_sx[o] = 10; ob_sz[o] = 10; }
+    if (kind == K_LIGHT) { ob_py[o] = 3; ob_col[o] = 16767306; }
+    if (kind == K_CAMERA) { ob_vis[o] = 0; ob_py[o] = 3; ob_pz[o] = ec_tz - 8; ob_rx[o] = 15; }
+    if (kind == K_MESH && mesh != "plane") { ob_col[o] = 9425151; }
+    sel = o;
+    sel_what = 0;
+    return o;
+}
+
+proc snapv(v) {
+    if (snap == 0) { return round(v * 1000) / 1000; }
+    return round(v * 4) / 4;
+}
+
+proc snapa(v) {
+    if (snap == 0) { return round(v * 10) / 10; }
+    return round(v / 15) * 15;
+}
+
+proc w3e_delete() {
+    if (sel_what != 0 || sel == 0) { return; }
+    w3e_change();
+    ob_alive[sel] = 0;
+    if (sel == cam_ob) { cam_ob = 0; }
+    // keep the slots dense in the file: rebuild from the text
+    scene_parse(scene_text());
+    sel = 0;
+    sel_what = 1;
+}
+
+proc w3e_duplicate() {
+    if (sel_what != 0 || sel == 0) { return; }
+    w3e_change();
+    local o = ob_copy(sel, ob_unique(ob_name[sel]));
+    ob_px[o] = ob_px[o] + 1;
+    sel = o;
+}
+
+proc w3e_reset_view() {
+    ec_tx = 0;
+    ec_ty = 0.5;
+    ec_tz = 0;
+    ec_dist = 14;
+    ec_yaw = 35;
+    ec_pitch = 28;
+    w3e_vdirty = 1;
+}
+
+proc w3e_focus() {
+    if (sel_what != 0 || sel == 0) { return; }
+    ec_tx = ob_px[sel];
+    ec_ty = ob_py[sel];
+    ec_tz = ob_pz[sel];
+    local s = abs(ob_sx[sel]);
+    if (abs(ob_sy[sel]) > s) { s = abs(ob_sy[sel]); }
+    if (abs(ob_sz[sel]) > s) { s = abs(ob_sz[sel]); }
+    ec_dist = 3 + s * 2.5;
+    w3e_vdirty = 1;
+}
+
+// --- menus -----------------------------------------------------------------------------
+
+proc w3e_menus() {
+    clear(mn_title);
+    add(mn_title, "File"); add(mn_title, "Edit"); add(mn_title, "Scene"); add(mn_title, "Game");
+    add(mn_title, "View"); add(mn_title, "Help");
+    mi(1, "Projects...", "", "projects");
+    mi(1, "New project...", "", "newproj");
+    mi(1, "-", "", "");
+    mi(1, "Save", "Ctrl+S", "save");
+    mi(1, "Export project (.txt)", "", "exportproj");
+    mi(1, "Import project (.txt)", "", "importproj");
+    mi(1, "Import model (.obj)", "", "importobj");
+    mi(1, "-", "", "");
+    mi(1, "New script...", "", "newscript");
+    mi(1, "New scene...", "", "newscene");
+    mi(1, "Open scene...", "", "openscene");
+    mi(1, "New file...", "", "new");
+    mi(1, "Close tab", "", "close");
+    mi(2, "Undo", "Ctrl+Z", "undo");
+    mi(2, "Redo", "Ctrl+Y", "redo");
+    mi(2, "-", "", "");
+    mi(2, "Cut", "Ctrl+X", "cut");
+    mi(2, "Copy", "Ctrl+C", "copy");
+    mi(2, "Paste", "Ctrl+V", "paste");
+    mi(2, "Select all", "Ctrl+A", "selall");
+    mi(2, "-", "", "");
+    mi(2, "Duplicate object", "Ctrl+D", "dupobj");
+    mi(2, "Delete object", "Delete", "delobj");
+    mi(2, "-", "", "");
+    mi(2, "Find...", "Ctrl+F", "find");
+    mi(2, "Replace...", "", "replace");
+    mi(2, "Go to line...", "Ctrl+G", "goto");
+    mi(2, "Toggle comment", "Ctrl+/", "comment");
+    mi(3, "Add cube", "", "add:cube");
+    mi(3, "Add sphere", "", "add:sphere");
+    mi(3, "Add plane", "", "add:plane");
+    mi(3, "Add cylinder", "", "add:cylinder");
+    mi(3, "Add cone", "", "add:cone");
+    mi(3, "Add pyramid", "", "add:pyramid");
+    mi(3, "Add wedge (ramp)", "", "add:wedge");
+    mi(3, "Add torus", "", "add:torus");
+    mi(3, "Add capsule", "", "add:capsule");
+    mi(3, "Add quad", "", "add:quad");
+    mi(3, "Add model...", "", "addmodel");
+    mi(3, "Add empty", "", "add:empty");
+    mi(3, "Add point light", "", "add:light");
+    mi(3, "Add camera", "", "add:camera");
+    mi(3, "-", "", "");
+    mi(3, "Focus on selection", "F", "focus");
+    mi(3, "Scene settings", "", "scenesettings");
+    mi(4, "Play", "Ctrl+Enter", "play");
+    mi(4, "Stop", "Esc", "stopgame");
+    mi(4, "-", "", "");
+    mi(4, "Check scripts", "", "checkall");
+    mi(4, "Project settings", "", "projsettings");
+    mi(5, "Scene editor", "Ctrl+1", "vscene");
+    mi(5, "Code", "Ctrl+2", "vcode");
+    mi(5, "-", "", "");
+    mi(5, "Tool: select / orbit", "Q", "tool0");
+    mi(5, "Tool: move", "W", "tool1");
+    mi(5, "Tool: rotate", "E", "tool2");
+    mi(5, "Tool: scale", "R", "tool3");
+    mi(5, "Snap to grid on / off", "G", "snap");
+    mi(5, "Reset the view", "", "resetview");
+    mi(5, "-", "", "");
+    mi(5, "Output: small", "", "out3");
+    mi(5, "Output: large", "", "out9");
+    mi(5, "Output: hidden", "", "out0");
+    mi(5, "Theme: dark", "", "theme0");
+    mi(5, "Theme: light", "", "theme1");
+    mi(6, "Getting started", "", "w3help");
+    mi(6, "Whisker 3D reference", "", "w3ref");
+    mi(6, "Whisker language", "", "ref");
+    mi(6, "Keyboard and mouse", "", "w3keys");
+    mi(6, "About", "", "w3about");
+    clear(mn_x);
+    local x = 5;
+    for i = 1 to len(mn_title) {
+        add(mn_x, x);
+        x += len(mn_title[i]) + 2;
+    }
+}
+
+// --- commands --------------------------------------------------------------------------
+
+proc w3e_cmd(cmd) {
+    if (cmd == "run" || cmd == "play") { w3e_play(); return 1; }
+    if (cmd == "stopgame" || cmd == "stop") { if (g_on == 1) { w3e_stop_play(); } return 1; }
+    if (cmd == "projects") {
+        if (sc_dirty == 1) { w3e_save_scene(); }
+        st_scan();
+        st_stage = 0;
+        w3e_mode = 0;
+        return 1;
+    }
+    if (cmd == "newproj") { st_scan(); w3e_mode = 0; prompt("newproj", "New project name: ", ""); return 1; }
+    if (cmd == "save") {
+        if (w3e_mode == 2 || cur_tab > 0) { save_tab(); }
+        if (w3e_mode != 0) { w3e_save_scene(); pj_save_settings(); ide_status("Saved"); }
+        return 1;
+    }
+    if (cmd == "exportproj") { w3e_export(); return 1; }
+    if (cmd == "importproj") {
+        if (len(w3d_import) == 0) {
+            show_list(w3d_import);
+            dialog(1, "Import a project", "Right-click the list 'w3d_import' on the stage,\nchoose 'import' and pick the project's .txt file.\nThen choose File > Import project again.", "", "");
+            return 1;
+        }
+        clear(bl_out);
+        for i = 1 to len(w3d_import) { add(bl_out, w3d_import[i]); }
+        local nm = bundle_name();
+        if (len(nm) == 0) { nm = "Imported"; }
+        prompt("importproj", "Import as project: ", safe_name(nm));
+        return 1;
+    }
+    if (cmd == "importobj") {
+        if (w3e_mode == 0) { ide_status("Open a project first"); return 1; }
+        if (len(w3d_import) == 0) {
+            show_list(w3d_import);
+            dialog(1, "Import a model", "Right-click the list 'w3d_import' on the stage,\nchoose 'import' and pick an .obj file.\nThen choose File > Import model again.", "", "");
+            return 1;
+        }
+        prompt("importobj", "Save the model as: models/", "model.obj");
+        return 1;
+    }
+    if (cmd == "newscript") {
+        if (w3e_mode == 0) { return 1; }
+        local d = "player";
+        if (sel_what == 0 && sel > 0) { d = str_lower(safe_name(ob_name[sel])); }
+        prompt("newscript", "New script: scripts/", d .. ".wsk");
+        return 1;
+    }
+    if (cmd == "newscene") { if (w3e_mode != 0) { prompt("newscene", "New scene: scenes/", "level2.scene"); } return 1; }
+    if (cmd == "openscene") { if (w3e_mode != 0) { prompt("openscene", "Open scene: scenes/", "main.scene"); } return 1; }
+    if (cmd == "undo" && w3e_mode == 1) { w3e_undo(); return 1; }
+    if (cmd == "redo" && w3e_mode == 1) { ide_status("Redo is for code; scenes have undo (Ctrl+Z)"); return 1; }
+    if (cmd == "dupobj") { w3e_duplicate(); return 1; }
+    if (cmd == "delobj") { w3e_delete(); return 1; }
+    if (substr(cmd, 1, 4) == "add:") {
+        if (w3e_mode == 0) { return 1; }
+        w3e_mode = 1;
+        local m = substr(cmd, 5, len(cmd));
+        if (m == "empty") { w3e_add(K_EMPTY, "", "Empty"); }
+        else if (m == "light") { w3e_add(K_LIGHT, "", "Light"); }
+        else if (m == "camera") { w3e_add(K_CAMERA, "", "Camera"); }
+        else {
+            local nm2 = str_upper(m[1]) .. substr(m, 2, len(m));
+            w3e_add(K_MESH, m, nm2);
+        }
+        return 1;
+    }
+    if (cmd == "addmodel") {
+        if (w3e_mode != 0) { w3e_mode = 1; prompt("addmodel", "Model file: models/", "model.obj"); }
+        return 1;
+    }
+    if (cmd == "focus") { w3e_focus(); return 1; }
+    if (cmd == "scenesettings") { w3e_mode = 1; sel_what = 1; sel = 0; return 1; }
+    if (cmd == "projsettings") { w3e_mode = 1; sel_what = 2; sel = 0; return 1; }
+    if (cmd == "checkall") { w3e_check(); return 1; }
+    if (cmd == "vscene") { if (w3e_mode != 0) { if (cur_tab > 0) { save_tab(); } w3e_mode = 1; w3e_vdirty = 1; } return 1; }
+    if (cmd == "vcode") { if (w3e_mode != 0) { w3e_mode = 2; } return 1; }
+    if (substr(cmd, 1, 4) == "tool") { tool = substr(cmd, 5, 5) * 1; w3e_vdirty = 1; return 1; }
+    if (cmd == "snap") { snap = 1 - snap; return 1; }
+    if (cmd == "resetview") { w3e_reset_view(); return 1; }
+    if (cmd == "out3" || cmd == "out9" || cmd == "out0" || cmd == "out5") {
+        if (cmd == "out3") { out_h = OUT_SMALL; }
+        if (cmd == "out5") { out_h = OUT_MEDIUM; }
+        if (cmd == "out9") { out_h = OUT_LARGE; }
+        if (cmd == "out0") { out_h = 0; }
+        ide_layout();
+        w3e_layout();
+        return 1;
+    }
+    if (cmd == "w3help") { w3e_doc("/docs/getting-started.txt"); return 1; }
+    if (cmd == "w3ref") { w3e_doc("/docs/w3d-library.txt"); return 1; }
+    if (cmd == "ref") { w3e_doc("/docs/whisker/reference.txt"); return 1; }
+    if (cmd == "w3keys") {
+        dialog(1, "Keyboard and mouse", "Scene editor:\n  drag the viewport      move / rotate / scale (tool) or orbit\n  Shift + drag           pan the view (move tool: up and down)\n  wheel                  zoom\n  click                  select an object\n  Q W E R                select, move, rotate, scale tools\n  G                      snap to grid on / off\n  F                      focus on the selection\n  arrows, Page Up / Down nudge the selection\n  Delete, Ctrl+D         delete, duplicate\n  Ctrl+Z                 undo\n  Ctrl+1 / Ctrl+2        scene editor / code\nCtrl+Enter plays; Esc stops the game.", "", "");
+        return 1;
+    }
+    if (cmd == "w3about") {
+        dialog(1, "About Whisker 3D", "Whisker 3D - a 3D game engine for Scratch / TurboWarp.\nGames are written in Whisker (docs/whisker3d).\nTriangles are filled with the incircle method of\nTriangle Filler.sb3; text uses JetBrains Mono (OFL).", "", "");
+        return 1;
+    }
+    return 0;
+}
+
+proc w3e_doc(path) {
+    if (fs_lookup(path, 1) == 0) { ide_status("Missing " .. path); return; }
+    w3e_mode = 2;
+    open_file(path);
+}
+
+// --- prompts ---------------------------------------------------------------------------
+
+// the numbers in s (space or comma separated) into w3_tok
+proc nums(s) {
+    local t = "";
+    for i = 1 to len(s) {
+        if (s[i] == ",") { t = t .. " "; } else { t = t .. s[i]; }
+    }
+    w3_split(t);
+}
+
+proc w3e_prompt(kind, v) {
+    if (kind == "newproj") {
+        if (len(v) == 0) { return 1; }
+        np_name = v;
+        st_stage = 1;
+        w3e_mode = 0;
+        return 1;
+    }
+    if (kind == "importproj") {
+        if (len(v) == 0) { return 1; }
+        local dir = "/projects/" .. safe_name(v);
+        if (fs_lookup(dir, 1) > 0) { dialog(1, "Import", "There is already a project called " .. safe_name(v) .. ".", "", ""); return 1; }
+        if (bundle_import(dir) == 0) { dialog(1, "Import", pj_err, "", ""); return 1; }
+        clear(w3d_import);
+        hide_list(w3d_import);
+        st_scan();
+        w3e_open(dir);
+        return 1;
+    }
+    if (kind == "importobj") {
+        if (len(v) == 0) { return 1; }
+        local t = "";
+        for i = 1 to len(w3d_import) { t = t .. w3d_import[i] .. "\n"; }
+        if (pj_write("models/" .. v, t) == 0) { ide_status(pj_err); return 1; }
+        clear(w3d_import);
+        hide_list(w3d_import);
+        tree_build();
+        local o = w3e_add(K_MESH, "", safe_name(v));
+        if (ob_setmesh(o, "models/" .. v) == 0) { ide_status(mesh_err); }
+        else { ide_status("Imported models/" .. v .. " (" .. ms_tn[ob_mesh[o]] .. " triangles)"); }
+        return 1;
+    }
+    if (kind == "addmodel") {
+        local o = w3e_add(K_MESH, "", safe_name(v));
+        if (ob_setmesh(o, "models/" .. v) == 0) { ide_status(mesh_err); }
+        return 1;
+    }
+    if (kind == "newscript") {
+        if (len(v) == 0) { return 1; }
+        local path = "scripts/" .. v;
+        if (!contains(v, ".")) { path = path .. ".wsk"; }
+        pj_read(path);
+        if (w3_ino == 0) { pj_write(path, SCRIPT_TEMPLATE); }
+        if (sel_what == 0 && sel > 0) { w3e_change(); ob_script[sel] = path; }
+        tree_build();
+        w3e_mode = 2;
+        open_file(w3_proj .. "/" .. path);
+        return 1;
+    }
+    if (kind == "newscene") {
+        if (len(v) == 0) { return 1; }
+        local p = "scenes/" .. v;
+        if (!contains(v, ".")) { p = p .. ".scene"; }
+        if (sc_dirty == 1) { w3e_save_scene(); }
+        pj_read(p);
+        if (w3_ino == 0) { pj_write(p, "scene \"" .. v .. "\"\nsky #6d8fe8 #dcecff\n\nobject \"Ground\" mesh\n  mesh plane\n  scale 20 1 20\n  color #5aa864\n  body static\n  collider box\n\nobject \"Camera\" camera\n  pos 0 4 -10\n  rot 15 0 0\n"); }
+        tree_build();
+        w3e_load_scene(p);
+        w3e_mode = 1;
+        return 1;
+    }
+    if (kind == "openscene") {
+        if (len(v) == 0) { return 1; }
+        if (sc_dirty == 1) { w3e_save_scene(); }
+        local p2 = "scenes/" .. v;
+        if (!contains(v, ".")) { p2 = p2 .. ".scene"; }
+        w3e_load_scene(p2);
+        w3e_mode = 1;
+        return 1;
+    }
+    if (substr(kind, 1, 3) == "in:") { w3e_set_field(substr(kind, 4, len(kind)), v); return 1; }
+    return 0;
+}
+
+// --- the inspector ---------------------------------------------------------------------
+
+proc in_row(key, lab, val) {
+    add(in_key, key);
+    add(in_lab, lab);
+    add(in_val, val);
+}
+
+proc v3(a, b, c) { return w3_num(a) .. "  " .. w3_num(b) .. "  " .. w3_num(c); }
+
+proc onoff(v) {
+    if (v == 1) { return "on"; }
+    return "off";
+}
+
+proc in_build() {
+    clear(in_key); clear(in_lab); clear(in_val);
+    if (sel_what == 2) {
+        in_row("", "Project", "");
+        in_row("pname", "Name", pj_name);
+        local r = "1280 x 720 (TurboWarp)";
+        if (pj_res == 480) { r = "480 x 360 (Scratch)"; }
+        in_row("pres", "Resolution", r);
+        in_row("pscene", "First scene", pj_scene);
+        in_row("", "Quality", "");
+        in_row("pbudget", "Triangle budget", q_budget);
+        in_row("pfar", "Draw distance", q_far);
+        in_row("pfill", "Fill coarseness", q_fill);
+        in_row("", "Exported with File > Export project", "");
+        return;
+    }
+    if (sel_what == 1 || sel == 0) {
+        in_row("", "Scene", "");
+        in_row("sname", "Name", sc_name);
+        in_row("ssky1", "Sky (top)", w3_hex(sky_top));
+        in_row("ssky2", "Sky (horizon)", w3_hex(sky_bot));
+        in_row("samb", "Ambient light", w3_num(amb));
+        in_row("ssun", "Sun direction", v3(sun_x, sun_y, sun_z));
+        in_row("ssuni", "Sun strength", w3_num(sun_i));
+        in_row("sfog", "Fog", onoff(fog_on));
+        if (fog_on == 1) {
+            in_row("sfogd", "Fog near / far", w3_num(fog_near) .. "  " .. w3_num(fog_far));
+            in_row("sfogc", "Fog colour", w3_hex(fog_col));
+        }
+        in_row("sgrav", "Gravity", w3_num(grav));
+        in_row("sfov", "View angle", w3_num(cam_fov));
+        in_row("", "File " .. sc_path, "");
+        return;
+    }
+    local o = sel;
+    local k = ob_kind[o];
+    in_row("", kind_name(k), "");
+    in_row("name", "Name", ob_name[o]);
+    if (k == K_MESH) { in_row("mesh", "Shape", ob_meshname[o]); }
+    in_row("pos", "Position", v3(ob_px[o], ob_py[o], ob_pz[o]));
+    in_row("rot", "Rotation", v3(ob_rx[o], ob_ry[o], ob_rz[o]));
+    if (k == K_MESH || k == K_EMPTY) { in_row("scale", "Scale", v3(ob_sx[o], ob_sy[o], ob_sz[o])); }
+    if (k == K_MESH) {
+        in_row("", "Looks", "");
+        in_row("color", "Colour", w3_hex(ob_col[o]));
+        in_row("alpha", "Transparency", w3_num(ob_alpha[o]));
+        in_row("vis", "Visible", onoff(ob_vis[o]));
+        in_row("unlit", "Unlit", onoff(ob_unlit[o]));
+        in_row("two", "Two-sided", onoff(ob_twoside[o]));
+    }
+    if (k == K_LIGHT) {
+        in_row("", "Light", "");
+        in_row("range", "Range", w3_num(ob_lrange[o]));
+        in_row("power", "Strength", w3_num(ob_lpow[o]));
+    }
+    if (k == K_CAMERA) { in_row("sfov", "View angle", w3_num(cam_fov)); }
+    in_row("", "Behaviour", "");
+    in_row("tag", "Tag", ob_tag[o]);
+    local sp = ob_script[o];
+    if (len(sp) == 0) { sp = "(none)"; }
+    in_row("script", "Script", sp);
+    if (len(ob_script[o]) > 0) { in_row("editscript", "> Edit the script", ""); }
+    else { in_row("newscript", "> New script", ""); }
+    in_row("", "Physics", "");
+    in_row("body", "Body", body_name(ob_body[o]));
+    in_row("coll", "Collider", coll_name(ob_coll[o]));
+    in_row("trig", "Trigger", onoff(ob_trig[o]));
+    in_row("bounce", "Bounce", w3_num(ob_bounce[o]));
+}
+
+// a click on inspector row i: toggles flip, the rest ask on the status line
+proc in_click(i) {
+    local key = in_key[i];
+    if (len(key) == 0) { return; }
+    local o = sel;
+    if (key == "vis") { w3e_change(); ob_vis[o] = 1 - ob_vis[o]; return; }
+    if (key == "unlit") { w3e_change(); ob_unlit[o] = 1 - ob_unlit[o]; return; }
+    if (key == "two") { w3e_change(); ob_twoside[o] = 1 - ob_twoside[o]; return; }
+    if (key == "trig") { w3e_change(); ob_trig[o] = 1 - ob_trig[o]; return; }
+    if (key == "sfog") { w3e_change(); fog_on = 1 - fog_on; return; }
+    if (key == "pres") {
+        if (pj_res == 720) { pj_res = 480; } else { pj_res = 720; }
+        res_apply();
+        pj_save_settings();
+        ide_dirty = 1;
+        return;
+    }
+    if (key == "editscript") {
+        local path = w3_proj .. "/" .. ob_script[o];
+        if (fs_lookup(path, 1) == 0) { pj_write(ob_script[o], SCRIPT_TEMPLATE); tree_build(); }
+        w3e_mode = 2;
+        open_file(path);
+        return;
+    }
+    if (key == "newscript") { ide_cmd("newscript"); return; }
+    local lab = in_lab[i];
+    local hint = "";
+    if (key == "mesh") { hint = " (cube sphere plane cylinder cone pyramid wedge torus capsule quad, or models/...)"; }
+    if (key == "body") { hint = " (none static dynamic kinematic)"; }
+    if (key == "coll") { hint = " (none box sphere)"; }
+    if (key == "color" || key == "ssky1" || key == "ssky2" || key == "sfogc") { hint = " (#rrggbb)"; }
+    if (key == "pos" || key == "rot" || key == "scale" || key == "ssun") { hint = " (x y z)"; }
+    if (key == "alpha") { hint = " (0 solid .. 100 invisible)"; }
+    if (key == "pfill") { hint = " (1 finest .. 6 fastest)"; }
+    local cur = in_val[i];
+    if (cur == "(none)") { cur = ""; }
+    prompt("in:" .. key, lab .. hint .. ": ", cur);
+}
+
+proc w3e_set_field(key, v) {
+    local o = sel;
+    if (key == "pname") { pj_name = v; pj_save_settings(); return; }
+    if (key == "pscene") { pj_scene = v; pj_save_settings(); return; }
+    if (key == "pbudget") { q_budget = v * 1; if (q_budget < 20) { q_budget = 20; } pj_save_settings(); w3e_vdirty = 1; return; }
+    if (key == "pfar") { q_far = v * 1; if (q_far < 5) { q_far = 5; } pj_save_settings(); w3e_vdirty = 1; return; }
+    if (key == "pfill") { q_fill = v * 1; if (q_fill < 1) { q_fill = 1; } pj_save_settings(); w3e_vdirty = 1; return; }
+    w3e_change();
+    nums(v);
+    if (key == "sname") { sc_name = v; return; }
+    if (key == "ssky1") { local c = w3_hexcol(v); if (c >= 0) { sky_top = c; } return; }
+    if (key == "ssky2") { local c2 = w3_hexcol(v); if (c2 >= 0) { sky_bot = c2; } return; }
+    if (key == "samb") { amb = v * 1; return; }
+    if (key == "ssun") { if (len(w3_tok) >= 3) { sun_x = w3_tok[1] * 1; sun_y = w3_tok[2] * 1; sun_z = w3_tok[3] * 1; } return; }
+    if (key == "ssuni") { sun_i = v * 1; return; }
+    if (key == "sfogd") { if (len(w3_tok) >= 2) { fog_near = w3_tok[1] * 1; fog_far = w3_tok[2] * 1; } return; }
+    if (key == "sfogc") { local c3 = w3_hexcol(v); if (c3 >= 0) { fog_col = c3; } return; }
+    if (key == "sgrav") { grav = v * 1; return; }
+    if (key == "sfov") { cam_fov = v * 1; if (cam_fov < 10) { cam_fov = 10; } if (cam_fov > 150) { cam_fov = 150; } return; }
+    if (o == 0) { return; }
+    if (key == "name") { if (len(v) > 0) { ob_name[o] = v; } return; }
+    if (key == "mesh") { if (ob_setmesh(o, v) == 0) { ide_status(mesh_err); } return; }
+    if (key == "pos") { if (len(w3_tok) >= 3) { ob_px[o] = w3_tok[1] * 1; ob_py[o] = w3_tok[2] * 1; ob_pz[o] = w3_tok[3] * 1; } return; }
+    if (key == "rot") { if (len(w3_tok) >= 3) { ob_rx[o] = w3_tok[1] * 1; ob_ry[o] = w3_tok[2] * 1; ob_rz[o] = w3_tok[3] * 1; } return; }
+    if (key == "scale") {
+        if (len(w3_tok) >= 3) { ob_sx[o] = w3_tok[1] * 1; ob_sy[o] = w3_tok[2] * 1; ob_sz[o] = w3_tok[3] * 1; }
+        else if (len(w3_tok) == 1) { ob_sx[o] = w3_tok[1] * 1; ob_sy[o] = ob_sx[o]; ob_sz[o] = ob_sx[o]; }
+        return;
+    }
+    if (key == "color") { local c4 = w3_hexcol(v); if (c4 >= 0) { ob_col[o] = c4; } else { ide_status("A colour looks like #ff8800"); } return; }
+    if (key == "alpha") { ob_alpha[o] = v * 1; if (ob_alpha[o] < 0) { ob_alpha[o] = 0; } if (ob_alpha[o] > 100) { ob_alpha[o] = 100; } return; }
+    if (key == "range") { ob_lrange[o] = v * 1; return; }
+    if (key == "power") { ob_lpow[o] = v * 1; return; }
+    if (key == "tag") { ob_tag[o] = v; return; }
+    if (key == "script") {
+        ob_script[o] = v;
+        if (len(v) > 0) {
+            pj_read(v);
+            if (w3_ino == 0) { ide_status(v .. " does not exist yet: '> Edit the script' makes it"); }
+        }
+        return;
+    }
+    if (key == "body") { ob_body[o] = body_of(v); if (ob_body[o] != B_NONE && ob_coll[o] == C_NONE) { ob_coll[o] = C_BOX; } return; }
+    if (key == "coll") { ob_coll[o] = coll_of(v); return; }
+    if (key == "bounce") { ob_bounce[o] = v * 1; return; }
+}
+
+// --- checking and exporting -------------------------------------------------------------
+
+// compile every script of the project; report the first error
+proc w3e_check() {
+    if (w3e_mode == 0) { return; }
+    if (cur_tab > 0) { save_tab(); }
+    w3e_save_scene();
+    if (export_compile() == 0) {
+        tty_write(ide_con, "\e[91m" .. xs_err .. "\e[0m\n");
+        w3e_error_at(xs_err);
+        return;
+    }
+    local old = fs_lookup(w3_proj .. "/.build", 1);
+    if (old > 0) { fs_remove(old, 1); }
+    ide_status("All " .. len(xs_scripts) .. " scripts compile");
+}
+
+// open the script and line named in "path: line N: message" or "path:N: ..."
+proc w3e_error_at(msg) {
+    local k = str_find(msg, ":", 1);
+    if (k == 0) { return; }
+    local path = substr(msg, 1, k - 1);
+    local rest = substr(msg, k + 1, len(msg));
+    local num = "";
+    local i = 1;
+    if (substr(rest, 1, 6) == " line ") { i = 7; }
+    while (i <= len(rest) && char_class[ord(rest[i]) + 1] == 2) { num = num .. rest[i]; i += 1; }
+    if (fs_lookup(w3_proj .. "/" .. path, 1) == 0) { return; }
+    w3e_mode = 2;
+    open_file(w3_proj .. "/" .. path);
+    if (len(num) > 0 && cur_tab > 0) {
+        err_path = w3_proj .. "/" .. path;
+        err_line = num * 1;
+        if (err_line > len(ed)) { err_line = len(ed); }
+        ide_goto_error();
+    }
+}
+
+proc w3e_export() {
+    if (w3e_mode == 0) { ide_status("Open a project first"); return; }
+    if (cur_tab > 0) { save_tab(); }
+    w3e_save_scene();
+    pj_save_settings();
+    if (export_compile() == 0) {
+        tty_write(ide_con, "\e[91mExport stopped: " .. xs_err .. "\e[0m\n");
+        dialog(1, "Export project", "A script does not compile:\n" .. xs_err, "", "");
+        return;
+    }
+    bundle_export();
+    clear(w3d_export);
+    for i = 1 to len(bl_out) { add(w3d_export, bl_out[i]); }
+    show_list(w3d_export);
+    local where = "TurboWarp (Whisker3D-Player-720p.sb3)";
+    if (pj_res == 480) { where = "Scratch (Whisker3D-Player-480x360.sb3)"; }
+    dialog(1, "Export project", "The project is in the list 'w3d_export' on the stage\n(" .. len(bl_out) .. " lines).  Right-click it and choose 'export'\nto save it as a .txt file.\n\nTo play it, import that file into the list 'game'\nof the player for " .. where .. ".\nSaving this .sb3 now also keeps the project in it.", "", "");
+}
+
+// --- playing ---------------------------------------------------------------------------
+
+proc w3e_play() {
+    if (w3e_mode == 0) { ide_status("Open a project first"); return; }
+    if (g_on == 1) { return; }
+    if (cur_tab > 0) { save_tab(); }
+    w3e_save_scene();
+    if (len(sc_path) == 0) { return; }
+    w3e_back = w3e_mode;
+    if (w3e_back == 3) { w3e_back = 1; }
+    tty_write(ide_con, "\n\e[90m> play " .. sc_path .. "\e[0m\n");
+    g_full = 1;
+    if (game_start(sc_path, host, FD_TTY, ide_con) == 0) {
+        w3e_game_error();
+        return;
+    }
+    w3e_mode = 3;
+    pen_clear();
+}
+
+proc w3e_game_error() {
+    if (len(g_err) == 0) { return; }
+    tty_write(ide_con, "\e[91m" .. g_err .. "\e[0m\n");
+    ide_status("The game stopped: " .. g_err);
+    if (len(g_err_path) > 0) { w3e_error_at(g_err_path .. ":" .. g_err_line .. ":"); }
+}
+
+proc w3e_stop_play() {
+    game_stop("");
+    w3e_after_play();
+}
+
+// back to the editor, with the scene as it was saved
+proc w3e_after_play() {
+    local keep = sel;
+    local kw = sel_what;
+    scene_load(sc_path);
+    sel = keep;
+    sel_what = kw;
+    if (sel > len(ob_name)) { sel = 0; sel_what = 1; }
+    w3e_mode = w3e_back;
+    tty_write(ide_con, "\e[90m> stopped after " .. floor(g_t * 10) / 10 .. "s\e[0m\n");
+    w3e_game_error();
+    pen_clear();
+    ide_full = 1;
+    ide_dirty = 1;
+    w3e_vdirty = 1;
+    tty_full[ide_con] = 1;
+}
+
+// --- composing the screen ----------------------------------------------------------------
+
+list bt_r;                   // clickable areas of this frame: row, columns, command
+list bt_c0;
+list bt_c1;
+list bt_cmd;
+
+proc bt(c, r, s, at, cmd) {
+    puts(c, r, s, at);
+    add(bt_r, r);
+    add(bt_c0, c);
+    add(bt_c1, c + len(s) - 1);
+    add(bt_cmd, cmd);
+}
+
+// Scene / Code on the menu bar (both views)
+proc w3e_compose_modebar() {
+    clear(bt_r); clear(bt_c0); clear(bt_c1); clear(bt_cmd);
+    if (w3e_mode == 0) { return; }
+    local x = IC - 27;
+    local on = C_ONACC + AB * C_ACCENT;
+    local off = C_TEXT + AB * C_BUTTON;
+    local a = off;
+    local b = off;
+    if (w3e_mode == 1) { a = on; } else { b = on; }
+    bt(x, 0, " Scene ", a, "vscene");
+    bt(x + 8, 0, " Code ", b, "vcode");
+    local dirty = "";
+    if (sc_dirty == 1) { dirty = "*"; }
+    local nm = pj_name .. dirty;
+    local nx = x - 2 - len(nm);
+    if (nx > mn_x[len(mn_title)] + 8) { puts(nx, 0, nm, C_DIM + AB * C_PANEL); }
+}
+
+proc w3e_compose() {
+    w3e_compose_modebar();
+    if (w3e_mode == 0) { w3e_compose_start(); return; }
+    if (w3e_mode == 3) { return; }
+    w3e_compose_tools();
+    w3e_compose_list();
+    w3e_compose_inspector();
+    // the viewport draws itself
+    for r = vp_r0 to vp_r1 {
+        local b = r * IC;
+        for c = vp_c0 to vp_c1 { sc_ch[b + c + 1] = -3; }
+    }
+}
+
+proc w3e_compose_tools() {
+    local bar = C_TEXT + AB * C_PANEL;
+    fill_row(1, 0, IC - 1, bar);
+    local names = "Select Move Rotate Scale";
+    local x = 1;
+    local start = 1;
+    local t = 0;
+    for i = 1 to len(names) + 1 {
+        if (i > len(names) || names[i] == " ") {
+            local w = " " .. substr(names, start, i - 1) .. " ";
+            local at = C_TEXT + AB * C_BUTTON;
+            if (t == tool) { at = C_ONACC + AB * C_ACCENT; }
+            bt(x, 1, w, at, "tool" .. t);
+            x += len(w) + 1;
+            t += 1;
+            start = i + 1;
+        }
+    }
+    local sn = " Snap: off ";
+    if (snap == 1) { sn = " Snap: on "; }
+    bt(x + 1, 1, sn, C_TEXT + AB * C_BUTTON, "snap");
+    x += len(sn) + 3;
+    bt(x, 1, " + Cube ", C_TEXT + AB * C_BUTTON, "add:cube");
+    bt(x + 9, 1, " + Sphere ", C_TEXT + AB * C_BUTTON, "add:sphere");
+    bt(x + 20, 1, " + Light ", C_TEXT + AB * C_BUTTON, "add:light");
+    local info = sc_path .. "   " .. game_w .. "x" .. game_h;
+    puts(IC - len(info) - 2, 1, info, C_DIM + AB * C_PANEL);
+    deco_row(1, 0, IC - 1, D_BOTTOM);
+}
+
+proc kind_icon(k) {
+    if (k == K_CAMERA) { return "@"; }
+    if (k == K_LIGHT) { return "*"; }
+    if (k == K_EMPTY) { return "+"; }
+    return "#";
+}
+
+proc w3e_compose_list() {
+    local bg = C_TEXT + AB * C_PANEL;
+    for r = 2 to vp_r1 { fill_row(r, 0, HI_W - 1, bg); }
+    puts(1, 2, "Objects", C_HEADER + AB * C_PANEL);
+    clear(hi_ob);
+    add(hi_ob, -1);
+    add(hi_ob, -2);
+    for i = 1 to len(ob_name) {
+        if (ob_alive[i] == 1) { add(hi_ob, i); }
+    }
+    local rows = vp_r1 - 3;
+    if (hi_top > len(hi_ob) - rows + 1) { hi_top = len(hi_ob) - rows + 1; }
+    if (hi_top < 1) { hi_top = 1; }
+    for k = 0 to rows - 1 {
+        local i = hi_top + k;
+        local r = 3 + k;
+        if (i <= len(hi_ob)) {
+            local o = hi_ob[i];
+            local label = "";
+            local at = bg;
+            local on = 0;
+            if (o == -1) { label = "  Project: " .. pj_name; if (sel_what == 2) { on = 1; } }
+            else if (o == -2) { label = "  Scene: " .. sc_name; if (sel_what == 1) { on = 1; } }
+            else {
+                label = "  " .. kind_icon(ob_kind[o]) .. " " .. ob_name[o];
+                if (len(ob_script[o]) > 0) { label = label .. "  ~"; }
+                if (sel_what == 0 && sel == o) { on = 1; }
+            }
+            if (on == 1) { at = C_TEXT + AB * C_SEL; fill_row(r, 0, HI_W - 2, at); }
+            if (len(label) > HI_W - 2) { label = substr(label, 1, HI_W - 3) .. "~"; }
+            puts(0, r, label, at);
+            if (o > 0 && ob_vis[o] == 0 && ob_kind[o] == K_MESH) { put(HI_W - 3, r, ord("h"), C_DIM + AB * C_PANEL); }
+        }
+    }
+    for r = 2 to vp_r1 { put(HI_W - 1, r, 179, C_BORDER + AB * C_PANEL); }
+}
+
+proc w3e_compose_inspector() {
+    local x0 = vp_c1 + 1;
+    local bg = C_TEXT + AB * C_PANEL;
+    for r = 2 to vp_r1 { fill_row(r, x0, IC - 1, bg); put(x0, r, 179, C_BORDER + AB * C_PANEL); }
+    in_build();
+    local rows = vp_r1 - 2;
+    if (in_top > len(in_key) - rows + 1) { in_top = len(in_key) - rows + 1; }
+    if (in_top < 1) { in_top = 1; }
+    for k = 0 to rows - 1 {
+        local i = in_top + k;
+        local r = 2 + k;
+        if (i <= len(in_key)) {
+            if (len(in_key[i]) == 0) {
+                puts(x0 + 2, r, in_lab[i], C_HEADER + AB * C_PANEL);
+            } else if (letter(in_lab[i], 1) == ">") {
+                puts(x0 + 2, r, in_lab[i], C_ACCENT + AB * C_PANEL);
+            } else {
+                puts(x0 + 2, r, in_lab[i], C_DIM + AB * C_PANEL);
+                local v = "" .. in_val[i];
+                local w = IC - x0 - 19;
+                if (len(v) > w) { v = substr(v, 1, w - 1) .. "~"; }
+                puts(x0 + 18, r, v, C_TEXT + AB * C_PANEL);
+                if (in_lab[i] == "Colour" || substr(in_lab[i], 1, 3) == "Sky" || in_lab[i] == "Fog colour") {
+                    local col = w3_hexcol(in_val[i]);
+                    if (col >= 0) {
+                        local p = gfx_nearest(col);
+                        puts(IC - 4, r, "  ", C_TEXT + AB * p);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// the start screen: projects, examples, the new-project form
+proc w3e_compose_start() {
+    local bg = C_TEXT + AB * C_EDBG;
+    for r = 1 to ROW_STATUS - 1 { fill_row(r, 0, IC - 1, bg); }
+    local x = 6;
+    puts(x, 3, "Whisker 3D", C_ACCENT + AB * C_EDBG);
+    puts(x, 4, "Make 3D games with Whisker, for TurboWarp and Scratch.", C_DIM + AB * C_EDBG);
+    if (st_stage == 1) {
+        puts(x, 7, "New project", C_HEADER + AB * C_EDBG);
+        puts(x, 9, "Name        " .. np_name, C_TEXT + AB * C_EDBG);
+        puts(x, 11, "Screen", C_TEXT + AB * C_EDBG);
+        local a = "( ) ";
+        local b = "( ) ";
+        if (np_res == 720) { a = "(o) "; } else { b = "(o) "; }
+        bt(x + 12, 11, a .. "1280 x 720  - for TurboWarp (sharper, faster)", C_TEXT + AB * C_EDBG, "np720");
+        bt(x + 12, 12, b .. "480 x 360   - for scratch.mit.edu", C_TEXT + AB * C_EDBG, "np480");
+        puts(x, 14, "Start with", C_TEXT + AB * C_EDBG);
+        local c = "( ) ";
+        local d = "( ) ";
+        if (np_tpl == "starter") { c = "(o) "; } else { d = "(o) "; }
+        bt(x + 12, 14, c .. "Starter: a player you can walk with, a camera that follows, coins", C_TEXT + AB * C_EDBG, "tplstarter");
+        bt(x + 12, 15, d .. "Empty: ground, light and a camera", C_TEXT + AB * C_EDBG, "tplempty");
+        bt(x + 12, 18, "  Create  ", C_ONACC + AB * C_ACCENT, "create");
+        bt(x + 25, 18, "  Cancel  ", C_TEXT + AB * C_BUTTON, "cancel");
+        return;
+    }
+    puts(x, 7, "Your projects", C_HEADER + AB * C_EDBG);
+    bt(x, 9, "  + New project  ", C_ONACC + AB * C_ACCENT, "newproj");
+    bt(x + 19, 9, "  Import project (.txt)  ", C_TEXT + AB * C_BUTTON, "importproj");
+    if (len(st_proj) == 0) { puts(x, 11, "No projects yet.", C_DIM + AB * C_EDBG); }
+    for i = 1 to len(st_proj) {
+        if (i <= 24) { bt(x, 10 + i, "  > " .. st_proj[i] .. "  ", C_TEXT + AB * C_EDBG, "open:" .. st_proj[i]); }
+    }
+    local ex = 84;
+    puts(ex, 7, "Examples (opens a copy)", C_HEADER + AB * C_EDBG);
+    for i = 1 to len(st_ex) {
+        bt(ex, 8 + i, "  > " .. st_ex[i] .. "  ", C_TEXT + AB * C_EDBG, "example:" .. st_ex[i]);
+    }
+    local y = ROW_STATUS - 7;
+    puts(x, y, "Projects live in this project's memory: use File > Export project to keep one", C_DIM + AB * C_EDBG);
+    puts(x, y + 1, "as a .txt file.  Saving the .sb3 after exporting keeps it inside the .sb3 too.", C_DIM + AB * C_EDBG);
+    puts(x, y + 3, "Help > Getting started explains the editor and the Whisker 3D library.", C_DIM + AB * C_EDBG);
+}
+
+// --- mouse -------------------------------------------------------------------------------
+
+proc bt_hit(c, r) {
+    for i = 1 to len(bt_r) {
+        if (bt_r[i] == r && c >= bt_c0[i] && c <= bt_c1[i]) { return i; }
+    }
+    return 0;
+}
+
+proc w3e_button(cmd) {
+    if (substr(cmd, 1, 5) == "open:") { w3e_open("/projects/" .. substr(cmd, 6, len(cmd))); return; }
+    if (substr(cmd, 1, 8) == "example:") {
+        local nm = substr(cmd, 9, len(cmd));
+        local dest = "/projects/" .. nm;
+        if (fs_lookup(dest, 1) == 0) { copy_tree("/examples/" .. nm, dest); }
+        st_scan();
+        w3e_open(dest);
+        return;
+    }
+    if (cmd == "np720") { np_res = 720; return; }
+    if (cmd == "np480") { np_res = 480; return; }
+    if (cmd == "tplstarter") { np_tpl = "starter"; return; }
+    if (cmd == "tplempty") { np_tpl = "empty"; return; }
+    if (cmd == "create") { w3e_new_project(); return; }
+    if (cmd == "cancel") { st_stage = 0; return; }
+    ide_cmd(cmd);
+}
+
+// clicks on the menu bar row (Scene / Code)
+proc w3e_press_bar(c) {
+    local b = bt_hit(c, 0);
+    if (b > 0) { w3e_button(bt_cmd[b]); return 1; }
+    return 0;
+}
+
+proc in_vp(c, r) {
+    if (w3e_mode == 1 && c >= vp_c0 && c <= vp_c1 && r >= vp_r0 && r <= vp_r1) { return 1; }
+    return 0;
+}
+
+proc w3e_press(c, r) {
+    if (w3e_mode == 2) { return 0; }
+    if (w3e_mode == 3) { return 1; }
+    local b = bt_hit(c, r);
+    if (b > 0) { w3e_button(bt_cmd[b]); ide_dirty = 1; return 1; }
+    if (w3e_mode == 0) { return 1; }
+    if (r >= out_top) { return 0; }       // the output panel and status line
+    if (c < HI_W - 1 && r >= 3 && r <= vp_r1) {
+        local i = hi_top + r - 3;
+        if (i <= len(hi_ob)) {
+            local o = hi_ob[i];
+            if (o == -1) { sel_what = 2; sel = 0; }
+            else if (o == -2) { sel_what = 1; sel = 0; }
+            else {
+                // a second click on the selection focuses the view on it
+                if (sel == o && sel_what == 0) { w3e_focus(); }
+                sel = o;
+                sel_what = 0;
+            }
+            in_top = 1;
+            w3e_vdirty = 1;
+        }
+        return 1;
+    }
+    if (c > vp_c1 && r >= 2 && r <= vp_r1) {
+        local i2 = in_top + r - 2;
+        if (i2 <= len(in_key)) { in_click(i2); }
+        return 1;
+    }
+    if (in_vp(c, r) == 1) {
+        dg = 6;
+        dg_x = mx;
+        dg_y = my;
+        dg_moved = 0;
+        focus = 4;
+        return 1;
+    }
+    return 1;
+}
+
+// the point where the ray through screen pixel (x, y) meets the plane y = h:
+// ray_x, ray_z (0 if it does not)
+var ray_x = 0;
+var ray_z = 0;
+proc ray_plane(x, y, h) {
+    local dx = (x - vp_cx) / vp_f;
+    local dy = (vp_cy - y) / vp_f;
+    // camera-space direction (dx, dy, 1) into world space
+    local wx = rc00 * dx + rc01 * dy + rc02;
+    local wy = rc10 * dx + rc11 * dy + rc12;
+    local wz = rc20 * dx + rc21 * dy + rc22;
+    if (abs(wy) < 0.0001) { return 0; }
+    local t = (h - rc_y) / wy;
+    if (t <= 0 || t > 500) { return 0; }
+    ray_x = rc_x + wx * t;
+    ray_z = rc_z + wz * t;
+    return 1;
+}
+
+proc w3e_drag(c, r) {
+    if (w3e_mode != 1 || dg == 0) { return 0; }
+    local dx = mx - dg_x;
+    local dy = my - dg_y;
+    if (dg == 6) {
+        if (abs(dx) + abs(dy) < 4) { return 1; }
+        // decide what this drag does
+        local shift = 0;
+        if (key("shift")) { shift = 1; }
+        if (tool == T_SELECT || sel_what != 0 || sel == 0) {
+            if (shift == 1) { dg = 2; } else { dg = 1; }
+            dg_a = ec_yaw; dg_b = ec_pitch; dg_c = ec_tx; dg_d = ec_ty; dg_e = ec_tz;
+        } else {
+            w3e_change();
+            dg = 2 + tool;
+            if (tool == T_MOVE) {
+                dg_a = ob_px[sel]; dg_b = ob_py[sel]; dg_c = ob_pz[sel];
+                dg_f = shift;           // shift: up and down
+                w3e_cam();
+                dg_d = 0; dg_e = 0;
+                if (ray_plane(dg_x, dg_y, ob_py[sel]) == 1) { dg_d = ray_x - ob_px[sel]; dg_e = ray_z - ob_pz[sel]; }
+            } else if (tool == T_ROTATE) {
+                dg_a = ob_rx[sel]; dg_b = ob_ry[sel]; dg_c = ob_rz[sel]; dg_f = shift;
+            } else {
+                dg_a = ob_sx[sel]; dg_b = ob_sy[sel]; dg_c = ob_sz[sel]; dg_f = shift;
+            }
+        }
+    }
+    if (dg == 1) {
+        ec_yaw = dg_a + dx * 0.4;
+        ec_pitch = dg_b + dy * 0.3;
+        if (ec_pitch > 89) { ec_pitch = 89; }
+        if (ec_pitch < -89) { ec_pitch = -89; }
+    } else if (dg == 2) {
+        // pan along the view's right and up axes
+        local k = ec_dist / 600;
+        w3_rot(ec_pitch, ec_yaw, 0);
+        ec_tx = dg_c - (m00 * dx - m01 * dy) * k;
+        ec_ty = dg_d - (m10 * dx - m11 * dy) * k;
+        ec_tz = dg_e - (m20 * dx - m21 * dy) * k;
+    } else if (dg == 3) {
+        w3e_cam();
+        if (dg_f == 1) {
+            r3_tocam(dg_a, dg_b, dg_c);
+            local upp = r3_z / vp_f;
+            ob_py[sel] = snapv(dg_b - dy * upp);
+        } else if (ray_plane(mx, my, dg_b) == 1) {
+            ob_px[sel] = snapv(ray_x - dg_d);
+            ob_pz[sel] = snapv(ray_z - dg_e);
+        }
+    } else if (dg == 4) {
+        if (dg_f == 1) { ob_rx[sel] = snapa(ang_wrap(dg_a + dy * 0.5)); }
+        else { ob_ry[sel] = snapa(ang_wrap(dg_b + dx * 0.5)); }
+    } else if (dg == 5) {
+        local f = pow10(0 - dy / 200);
+        if (dg_f == 1) { ob_sy[sel] = round(dg_b * f * 100) / 100; }
+        else {
+            ob_sx[sel] = round(dg_a * f * 100) / 100;
+            ob_sy[sel] = round(dg_b * f * 100) / 100;
+            ob_sz[sel] = round(dg_c * f * 100) / 100;
+        }
+    }
+    w3e_vdirty = 1;
+    ide_dirty = 1;
+    return 1;
+}
+
+proc w3e_release(c, r) {
+    if (w3e_mode == 1 && dg == 6) {
+        // a click: pick what is under the pointer
+        local o = w3e_pick(mx, my);
+        if (o > 0) { sel = o; sel_what = 0; } else { sel = 0; sel_what = 1; }
+        in_top = 1;
+        w3e_vdirty = 1;
+        ide_dirty = 1;
+    }
+    dg = 0;
+}
+
+// faces first; cameras, lights and empties by their marker
+proc w3e_pick(x, y) {
+    local o = r3_pick(x, y);
+    if (o > 0) { return o; }
+    w3e_cam();
+    for i = 1 to len(ob_name) {
+        if (ob_alive[i] == 1 && (ob_kind[i] != K_MESH || ob_mesh[i] == 0)) {
+            if (r3_project(ob_px[i], ob_py[i], ob_pz[i]) == 1) {
+                if (abs(r3_sx - x) < 12 && abs(r3_sy - y) < 12) { return i; }
+            }
+        }
+    }
+    return 0;
+}
+
+proc w3e_wheel(c, r, lines) {
+    if (w3e_mode == 0) { return 1; }
+    if (w3e_mode != 1) { return 0; }
+    if (in_vp(c, r) == 1) {
+        ec_dist = ec_dist * pow10(lines / 30);
+        if (ec_dist < 1) { ec_dist = 1; }
+        if (ec_dist > 200) { ec_dist = 200; }
+        w3e_vdirty = 1;
+        return 1;
+    }
+    if (c < HI_W && r < out_top) { hi_top += lines; ide_dirty = 1; return 1; }
+    if (c > vp_c1 && r < out_top) { in_top += lines; ide_dirty = 1; return 1; }
+    return 0;
+}
+
+// --- keys ----------------------------------------------------------------------------------
+
+proc nudge(dx, dy, dz) {
+    if (sel_what != 0 || sel == 0) { return; }
+    w3e_change();
+    local st = 0.25;
+    if (snap == 0) { st = 0.05; }
+    ob_px[sel] = ob_px[sel] + dx * st;
+    ob_py[sel] = ob_py[sel] + dy * st;
+    ob_pz[sel] = ob_pz[sel] + dz * st;
+}
+
+proc w3e_key(ev) {
+    if (w3e_mode == 3) {
+        if (ev == "escape" || ev == "^c") { w3e_stop_play(); }
+        return 1;
+    }
+    if (ev == "^1") { ide_cmd("vscene"); return 1; }
+    if (ev == "^2") { ide_cmd("vcode"); return 1; }
+    if (ev == "^enter") { ide_cmd("play"); return 1; }
+    if (w3e_mode == 0) {
+        if (ev == "escape") { return 0; }
+        return 1;
+    }
+    if (w3e_mode != 1) { return 0; }
+    if (ev == "^s") { ide_cmd("save"); return 1; }
+    if (ev == "^z") { w3e_undo(); return 1; }
+    if (ev == "^d") { w3e_duplicate(); return 1; }
+    if (ev == "delete" || ev == "backspace") { w3e_delete(); return 1; }
+    if (ev == "q" || ev == "Q") { tool = T_SELECT; return 1; }
+    if (ev == "w" || ev == "W") { tool = T_MOVE; return 1; }
+    if (ev == "e" || ev == "E") { tool = T_ROTATE; return 1; }
+    if (ev == "r" || ev == "R") { tool = T_SCALE; return 1; }
+    if (ev == "g" || ev == "G") { snap = 1 - snap; return 1; }
+    if (ev == "f" || ev == "F") { w3e_focus(); return 1; }
+    if (ev == "left arrow") { nudge(-1, 0, 0); return 1; }
+    if (ev == "right arrow") { nudge(1, 0, 0); return 1; }
+    if (ev == "up arrow") { nudge(0, 0, 1); return 1; }
+    if (ev == "down arrow") { nudge(0, 0, -1); return 1; }
+    if (ev == "page up") { nudge(0, 1, 0); return 1; }
+    if (ev == "page down") { nudge(0, -1, 0); return 1; }
+    if (ev == "escape") { return 0; }
+    return 1;
+}
+
+// --- the viewport ------------------------------------------------------------------------
+
+// the editor camera into the renderer (orbiting ec_t* at ec_dist)
+proc w3e_cam() {
+    local fov = cam_fov;
+    cam_fov = 60;
+    r3_viewport(vp_c0 * 8, vp_r0 * 16, (vp_c1 - vp_c0 + 1) * 8, (vp_r1 - vp_r0 + 1) * 16, 1);
+    cam_fov = fov;
+    w3_rot(ec_pitch, ec_yaw, 0);
+    r3_camera(ec_tx - m02 * ec_dist, ec_ty - m12 * ec_dist, ec_tz - m22 * ec_dist, ec_pitch, ec_yaw, 0);
+}
+
+proc w3e_view() {
+    if (w3e_mode != 1) { return; }
+    local ovl = 0;
+    if (imenu_open > 0 || idlg_kind > 0) { ovl = 1; }
+    if (ovl == 1) { ovl_was = 1; return; }
+    if (ovl_was == 1) { ovl_was = 0; w3e_vdirty = 1; }
+    if (w3e_vdirty == 0) { return; }
+    w3e_vdirty = 0;
+    w3e_cam();
+    r3_render_begin(1);
+    w3e_grid();
+    r3_draw();
+    w3e_gizmos();
+    w3e_vp_text(vp_x + 8, vp_y + 6, w3e_hint(), 16777215);
+    gfx_pen_col = -1;
+    gfx_pen_size = -1;
+}
+
+proc w3e_hint() {
+    if (tool == T_SELECT) { return "Select: click to pick, drag to orbit, Shift+drag to pan, wheel to zoom"; }
+    if (tool == T_MOVE) { return "Move: drag the selection (Shift: up / down); drag empty space to orbit"; }
+    if (tool == T_ROTATE) { return "Rotate: drag left / right to turn (Shift: tilt)"; }
+    return "Scale: drag up / down (Shift: height only)";
+}
+
+proc w3e_vp_text(x, y, s, rgb) {
+    local c = gfx_nearest(rgb);
+    for i = 1 to len(s) {
+        if (s[i] != " ") { gfx_glyph(x + (i - 1) * 8, y, ord(s[i]), c); }
+    }
+}
+
+// the ground grid (1 unit; red x axis, blue z axis), in 2-unit pieces sorted
+// with the faces so objects hide it
+proc w3e_grid() {
+    for i = -10 to 10 {
+        local c = 8817838;
+        if (i % 5 == 0) { c = 6250335; }
+        local cx = c;
+        local cz = c;
+        local sz = 1;
+        if (i == 0) { cx = 14830387; cz = 3768537; sz = 2; }
+        for j = -5 to 4 {
+            r3_sline(j * 2, 0.01, i, j * 2 + 2, 0.01, i, cx, sz);
+            r3_sline(i, 0.01, j * 2, i, 0.01, j * 2 + 2, cz, sz);
+        }
+    }
+}
+
+proc w3e_gizmos() {
+    for i = 1 to len(ob_name) {
+        if (ob_alive[i] == 1) {
+            local k = ob_kind[i];
+            local x = ob_px[i];
+            local y = ob_py[i];
+            local z = ob_pz[i];
+            if (k == K_LIGHT) {
+                r3_line3(x - 0.3, y, z, x + 0.3, y, z, 16767306, 2);
+                r3_line3(x, y - 0.3, z, x, y + 0.3, z, 16767306, 2);
+                r3_line3(x, y, z - 0.3, x, y, z + 0.3, 16767306, 2);
+            } else if (k == K_CAMERA) {
+                w3_rot(ob_rx[i], ob_ry[i], ob_rz[i]);
+                local fx = m02;
+                local fy = m12;
+                local fz = m22;
+                local rx = m00 * 0.5;
+                local ry = m10 * 0.5;
+                local rz = m20 * 0.5;
+                local ux = m01 * 0.35;
+                local uy = m11 * 0.35;
+                local uz = m21 * 0.35;
+                local cx = x + fx;
+                local cy = y + fy;
+                local cz = z + fz;
+                r3_line3(x, y, z, cx + rx + ux, cy + ry + uy, cz + rz + uz, 15658734, 1);
+                r3_line3(x, y, z, cx - rx + ux, cy - ry + uy, cz - rz + uz, 15658734, 1);
+                r3_line3(x, y, z, cx + rx - ux, cy + ry - uy, cz + rz - uz, 15658734, 1);
+                r3_line3(x, y, z, cx - rx - ux, cy - ry - uy, cz - rz - uz, 15658734, 1);
+                r3_line3(cx + rx + ux, cy + ry + uy, cz + rz + uz, cx - rx + ux, cy - ry + uy, cz - rz + uz, 15658734, 1);
+                r3_line3(cx + rx - ux, cy + ry - uy, cz + rz - uz, cx - rx - ux, cy - ry - uy, cz - rz - uz, 15658734, 1);
+                r3_line3(cx + rx + ux, cy + ry + uy, cz + rz + uz, cx + rx - ux, cy + ry - uy, cz + rz - uz, 15658734, 1);
+                r3_line3(cx - rx + ux, cy - ry + uy, cz - rz + uz, cx - rx - ux, cy - ry - uy, cz - rz - uz, 15658734, 1);
+            } else if (k == K_EMPTY || ob_mesh[i] == 0) {
+                r3_line3(x - 0.25, y, z, x + 0.25, y, z, 13421772, 1);
+                r3_line3(x, y - 0.25, z, x, y + 0.25, z, 13421772, 1);
+                r3_line3(x, y, z - 0.25, x, y, z + 0.25, 13421772, 1);
+            }
+        }
+    }
+    if (sel_what == 0 && sel > 0 && ob_alive[sel] == 1) {
+        // the selection: its box, and the axes of the move tool
+        phys_box(sel);
+        local x0 = cb_x0[sel];
+        local y0 = cb_y0[sel];
+        local z0 = cb_z0[sel];
+        local x1 = cb_x1[sel];
+        local y1 = cb_y1[sel];
+        local z1 = cb_z1[sel];
+        local a = 16753920;
+        r3_line3(x0, y0, z0, x1, y0, z0, a, 2); r3_line3(x0, y1, z0, x1, y1, z0, a, 2);
+        r3_line3(x0, y0, z1, x1, y0, z1, a, 2); r3_line3(x0, y1, z1, x1, y1, z1, a, 2);
+        r3_line3(x0, y0, z0, x0, y1, z0, a, 2); r3_line3(x1, y0, z0, x1, y1, z0, a, 2);
+        r3_line3(x0, y0, z1, x0, y1, z1, a, 2); r3_line3(x1, y0, z1, x1, y1, z1, a, 2);
+        r3_line3(x0, y0, z0, x0, y0, z1, a, 2); r3_line3(x1, y0, z0, x1, y0, z1, a, 2);
+        r3_line3(x0, y1, z0, x0, y1, z1, a, 2); r3_line3(x1, y1, z0, x1, y1, z1, a, 2);
+        if (tool == T_MOVE) {
+            local cx = ob_px[sel];
+            local cy = ob_py[sel];
+            local cz = ob_pz[sel];
+            local l = 1 + (x1 - x0) / 2;
+            r3_line3(cx, cy, cz, cx + l, cy, cz, 15087667, 3);
+            r3_line3(cx, cy, cz, cx, cy + l, cz, 5025616, 3);
+            r3_line3(cx, cy, cz, cx, cy, cz + l, 3381759, 3);
+        }
+    }
+}
+
+// --- the frame -----------------------------------------------------------------------------
+
+var w3e_testcmd = "";       // tests: a menu command to run (set from outside)
+
+proc w3e_tick() {
+    if (len(w3e_testcmd) > 0) {
+        local tc = w3e_testcmd;
+        w3e_testcmd = "";
+        if (substr(tc, 1, 7) == "prompt:") {
+            // "prompt:<kind>:<answer>": answer a prompt
+            local rest = substr(tc, 8, len(tc));
+            local k = str_find(rest, ":", 1);
+            w3e_prompt(substr(rest, 1, k - 1), substr(rest, k + 1, len(rest)));
+        } else if (substr(tc, 1, 7) == "button:") { w3e_button(substr(tc, 8, len(tc))); }
+        else { ide_cmd(tc); }
+        ide_dirty = 1;
+    }
+    if (w3e_mode == 3) {
+        frames += 1;
+        // keys typed while playing: only Esc means something
+        local n = 0;
+        while (len(kb_queue) > 0 && n < 48) {
+            local ev = kb_queue[1];
+            del(kb_queue, 1);
+            w3e_key(ev);
+            n += 1;
+        }
+        if (w3e_mode == 3) {
+            if (game_tick() == 0) { w3e_after_play(); }
+        }
+        return;
+    }
+    ide_tick();
+    w3e_view();
+}

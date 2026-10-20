@@ -1,0 +1,33 @@
+scene "Main"
+sky #5b7fe0 #cfe3ff
+ambient 0.35
+sun -0.4 -1 0.5 0.8
+gravity -20
+
+object "Ground"
+  mesh plane
+  scale 20 1 20
+  color #4caf50
+  body static
+  collider box
+
+object "Ball"
+  mesh sphere
+  pos 0 5 4
+  color #ff7043
+  body dynamic
+  collider sphere
+  script scripts/ball.wsk
+
+object "Spinner"
+  mesh cube
+  pos -2 1 4
+  color #42a5f5
+  script scripts/spin.wsk
+  tag spinner
+
+object "Camera" camera
+  pos 0 3 -6
+  rot 15 0 0
+  fov 60
+  script scripts/hud.wsk

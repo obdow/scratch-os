@@ -1,0 +1,115 @@
+// ===========================================================================
+// sound.sbs - Whisker 3D sound: the queue the Kernel fills (snd_queue) and
+// the Sound sprite that plays it.  Include at the top level of a project.
+//
+// Sound effects come from the built-in library (tools/w3d_sounds.py); four
+// clones of the Sound sprite play them, each with its own volume and pitch.
+// Music uses the Music extension: four more clones are voices 1-4, each
+// playing its queue of notes, drums and rests one after another (voice 4 is
+// where drums go by default).
+// ===========================================================================
+
+global list snd_k;           // 1 effect, 2 note, 3 drum, 4 rest, 5 tempo, 6 volume, 9 stop
+global list snd_a;
+global list snd_b;
+global list snd_c;
+global list snd_v;           // channel (effects) or voice (music)
+global list snd_names = data("snd_names");
+global snd_rr = 0;           // next effect channel
+global snd_master = 100;     // sound.volume
+
+sprite Sound {
+    costumes "blank";
+    sounds "w3d_sfx";
+    var ch = 0;              // 0: the sprite itself; 1-4 effect channels; 5-8 voices 1-4
+
+    // (queue scans are custom blocks, which run without screen refresh;
+    // the music blocks stay in the scripts, where they can wait)
+    proc snd_control() {
+        local k = 1;
+        while (k <= len(snd_k)) {
+            local kind = snd_k[k];
+            if (kind == 5 || kind == 6 || kind == 9) {
+                if (kind == 5) { music_tempo(snd_a[k]); }
+                if (kind == 6) { snd_master = snd_a[k]; }
+                if (kind == 9) {
+                    sound_stop_all();
+                    clear(snd_k); clear(snd_a); clear(snd_b); clear(snd_c); clear(snd_v);
+                    return;
+                }
+                del(snd_k, k); del(snd_a, k); del(snd_b, k); del(snd_c, k); del(snd_v, k);
+            } else { k += 1; }
+        }
+    }
+
+    proc snd_effects() {
+        local k = 1;
+        while (k <= len(snd_k)) {
+            if (snd_k[k] == 1 && snd_v[k] == ch) {
+                sound_volume(snd_b[k] * snd_master / 100);
+                sound_pitch(snd_c[k]);
+                sound_start(snd_a[k]);
+                del(snd_k, k); del(snd_a, k); del(snd_b, k); del(snd_c, k); del(snd_v, k);
+            } else { k += 1; }
+        }
+    }
+
+    // the next music item for this voice into nk / na / nb / nc (nk = 0: none)
+    var nk = 0;
+    var na = 0;
+    var nb = 0;
+    var nc = 0;
+    proc snd_next(voice) {
+        nk = 0;
+        for k = 1 to len(snd_k) {
+            if (snd_k[k] >= 2 && snd_k[k] <= 4 && snd_v[k] == voice) {
+                nk = snd_k[k];
+                na = snd_a[k];
+                nb = snd_b[k];
+                nc = snd_c[k];
+                del(snd_k, k); del(snd_a, k); del(snd_b, k); del(snd_c, k); del(snd_v, k);
+                return;
+            }
+        }
+    }
+
+    on flag {
+        ch = 0;
+        clear(snd_k); clear(snd_a); clear(snd_b); clear(snd_c); clear(snd_v);
+        for i = 1 to 8 {
+            ch = i;
+            clone_self();
+        }
+        ch = 0;
+        music_tempo(120);
+        forever {
+            snd_control();
+            wait(0);
+        }
+    }
+
+    on clone {
+        if (ch <= 4) {
+            forever {
+                snd_effects();
+                wait(0);
+            }
+        } else {
+            forever {
+                snd_next(ch - 4);
+                if (nk == 0) { wait(0); }
+                else {
+                    sound_volume(snd_master);
+                    if (nk == 2) {
+                        if (nc > 0) { music_instrument(nc); }
+                        music_note(na, nb);
+                    } else if (nk == 3) {
+                        music_drum(na, nb);
+                    } else {
+                        music_rest(nb);
+                    }
+                }
+            }
+        }
+    }
+}

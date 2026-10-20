@@ -179,7 +179,7 @@ proc fd_write(kind, id, s) {
     } else if (kind == FD_PIPE) {
         pipe_write(id, s);
     } else if (kind == FD_MSG) {
-        msg_write(s);
+        if (HAS_WM == 1) { msg_write(s); }
     } else if (kind == FD_FILE) {
         if (fs_used[id] == 1) {
             fs_data[id] = fs_data[id] .. s;
@@ -276,7 +276,7 @@ proc proc_exit(s, code) {
     fd_close_ref(p_out_k[s], p_out_i[s], 1);
     fd_close_ref(p_err_k[s], p_err_i[s], 1);
     if (p_kind[s] == PK_VM) { vm_release(s); }
-    wm_proc_exit(pid);
+    if (HAS_WM == 1) { wm_proc_exit(pid); }
     if (batch_pid == pid) { batch_pid = 0; }
     caps_proc_exit(pid);
     // drop queued raw keys

@@ -1,0 +1,147 @@
+// ===========================================================================
+// Whisker 3D player - entry point
+//
+// Plays a game exported from Whisker 3D.  Import the game's .txt into the
+// list "game" (right-click the list on the stage > import), then click the
+// green flag.  Built twice: 1280x720 for TurboWarp, 480x360 for Scratch.
+// ===========================================================================
+
+include "../kbd.sbs";
+include "sound.sbs";
+
+global list game;            // the game, imported from its .txt file
+
+sprite Kernel {
+    costumes "ide_glyphs", "pen";
+    include "../gfx.sbs";
+    include "../ui.sbs";
+    include "../str.sbs";
+    include "../tty.sbs";
+    include "../fs.sbs";
+    include "../proc.sbs";
+    include "../shell_lite.sbs";  // (no shell in a game)
+    include "../boot.sbs";
+    include "../heap.sbs";
+    include "../wcore.sbs";       // compiled code (games are exported compiled)
+    include "../vm.sbs";
+    include "../natives.sbs";
+    include "../natives_sys.sbs";
+    include "../caps.sbs";
+    include "../image.sbs";
+    include "objects.sbs";
+    include "mesh.sbs";
+    include "r3d.sbs";
+    include "phys.sbs";
+    include "project.sbs";
+    include "game.sbs";
+    include "natives3d.sbs";
+
+    var con = 0;
+    var gui = 0;
+    var frames = 0;
+    var w3_stats = "";
+    var log_ino = 0;
+    var shown = 0;           // the end / help screen has been drawn
+
+    proc kernel_boot() { }
+
+    proc pl_text(x, y, s, c) {
+        for i = 1 to len(s) {
+            if (s[i] != " ") { gfx_glyph(x + (i - 1) * 8, y, ord(s[i]), c); }
+        }
+    }
+
+    proc pl_center(y, s, c) {
+        pl_text(floor((SCR_W - len(s) * 8) / 2), y, s, c);
+    }
+
+    // a screen of text lines (help, or why the game stopped)
+    proc pl_screen(title, body) {
+        pen_clear();
+        r3_rect(0, 0, SCR_W, SCR_H, 1775144, 0);
+        local y = 24;
+        pl_center(y, title, gfx_nearest(16777215));
+        y += 32;
+        local start = 1;
+        for i = 1 to len(body) + 1 {
+            if (i > len(body) || body[i] == "\n") {
+                local line = substr(body, start, i - 1);
+                start = i + 1;
+                // wrap long lines
+                local cols = floor(SCR_W / 8) - 4;
+                while (len(line) > cols) {
+                    pl_text(16, y, substr(line, 1, cols), gfx_nearest(13421772));
+                    line = substr(line, cols + 1, len(line));
+                    y += 16;
+                }
+                pl_text(16, y, line, gfx_nearest(13421772));
+                y += 16;
+            }
+        }
+    }
+
+    proc pl_boot() {
+        gfx_init();
+        ui_theme(0);
+        tty_init();
+        fs_init();
+        fs_load_rootfs();
+        proc_init();
+        shell_init();
+        vm_init();
+        caps_init();
+        mesh_init();
+        r3_init();
+        game_init();
+        g_full = 1;
+        local host = proc_alloc("game", 9, 0);
+        p_state[host] = PS_BLOCKED;
+        p_block[host] = BLK_PROMPT;
+        p_caps[host] = "|files|proc|system|net|";
+        log_ino = fs_create("/log.txt", FT_FILE, 1);
+        p_cwd[host] = 1;
+        if (len(game) == 0) {
+            show_list(game);
+            pl_screen("Whisker 3D player",
+                "No game is loaded.\n\nTo play a game made with Whisker 3D:\n"
+                .. "1. In Whisker 3D, use File > Export project, and save the list as a .txt file.\n"
+                .. "2. Here, right-click the list 'game' on the stage and choose 'import',\n"
+                .. "   then pick that .txt file.\n"
+                .. "3. Click the green flag.\n\n"
+                .. "Save this project afterwards to keep the game inside it.");
+            shown = 1;
+            return;
+        }
+        hide_list(game);
+        clear(bl_out);
+        for i = 1 to len(game) { add(bl_out, game[i]); }
+        if (bundle_import("/game") == 0) { pl_screen("This game cannot be loaded", pj_err); shown = 1; return; }
+        w3_proj = "/game";
+        if (pj_load_settings() == 0) { pl_screen("This game cannot be loaded", pj_err); shown = 1; return; }
+        if (game_start(pj_scene, host, FD_FILE, log_ino) == 0) { pl_end(); return; }
+    }
+
+    // the game stopped: show why (and the end of what scripts printed)
+    proc pl_end() {
+        if (shown == 1) { return; }
+        shown = 1;
+        if (len(g_err) == 0) {
+            pl_screen(pj_name, "The game has ended.\n\nClick the green flag to play again.");
+            return;
+        }
+        local logt = fs_data[log_ino];
+        if (len(logt) > 1200) { logt = "..." .. substr(logt, len(logt) - 1200, len(logt)); }
+        pl_screen(pj_name .. " stopped with an error", g_err .. "\n\n" .. logt);
+    }
+
+    on flag {
+        pl_boot();
+        forever {
+            if (g_on == 1) {
+                if (game_tick() == 0) { pl_end(); }
+                frames += 1;
+                w3_stats = r3_tris .. " triangles, " .. g_fps .. " fps";
+            }
+        }
+    }
+}

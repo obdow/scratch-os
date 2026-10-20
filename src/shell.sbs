@@ -716,7 +716,8 @@ proc sh_builtin(s, out_k, out_i, err_k, err_i) {
         return 0;
     }
     if (name == "startx") {
-        return wm_start(s);
+        if (HAS_WM == 1) { return wm_start(s); }
+        return 1;
     }
     if (name == "ide") {
         // open the Whisker IDE (on the desktop), optionally with a file
@@ -730,7 +731,7 @@ proc sh_builtin(s, out_k, out_i, err_k, err_i) {
             }
             path = fs_path(ino);
         }
-        wm_open_ide(path);
+        if (HAS_WM == 1) { wm_open_ide(path); }
         return 0;
     }
     if (name == "shutdown" || name == "halt") {

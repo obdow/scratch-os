@@ -55,8 +55,10 @@ proc heap_init() {
     gc_runs = 0;
     heap_live = 0;
     // the wallpaper picture lived in the old heap
-    wall_img = 0;
-    wall_path = "";
+    if (HAS_WM == 1) {
+        wall_img = 0;
+        wall_path = "";
+    }
 }
 
 proc heap_alloc(n) {

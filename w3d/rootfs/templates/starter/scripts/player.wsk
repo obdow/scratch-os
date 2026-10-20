@@ -1,0 +1,35 @@
+-- The player: walk with the arrow keys or WASD, jump with Space.
+local SPEED = 6
+local JUMP = 9
+
+function update(self, dt)
+  local h = input.axis("horizontal")
+  local v = input.axis("vertical")
+  -- walk relative to where the camera looks
+  local cam = w3d.camera()
+  local fx, fy, fz = cam:forward()
+  local rx, ry, rz = cam:right()
+  local l = math.sqrt(fx * fx + fz * fz)
+  if l > 0 then
+    fx = fx / l
+    fz = fz / l
+  end
+  local vx = (rx * h + fx * v) * SPEED
+  local vz = (rz * h + fz * v) * SPEED
+  local ox, vy, oz = self:velocity()
+  if self:grounded() and input.pressed("space") then
+    vy = JUMP
+    sound.play("jump")
+  end
+  self:setvelocity(vx, vy, vz)
+  local x, y, z = self:pos()
+  if h ~= 0 or v ~= 0 then
+    -- face the way we walk
+    self:lookat(x + vx, y, z + vz)
+  end
+  -- fell off the world: start again
+  if y < -10 then
+    self:setpos(0, 2, 0)
+    self:setvelocity(0, 0, 0)
+  end
+end

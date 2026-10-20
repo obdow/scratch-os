@@ -1,0 +1,6 @@
+function update(self, dt)
+  local w, h = w3d.screen()
+  w3d.rect(10, 10, 300, 40, "#000000", 50)
+  w3d.text(20, 22, "Whisker 3D  fps " .. w3d.fps(), "#ffffff")
+  if w3d.get("landed") then w3d.text(20, 60, "The ball has landed", "#ffeb3b", 2) end
+end

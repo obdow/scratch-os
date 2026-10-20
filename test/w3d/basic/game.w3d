@@ -1,0 +1,6 @@
+name Basic Test
+resolution 1280x720
+scene scenes/main.scene
+budget 600
+distance 120
+fill 2

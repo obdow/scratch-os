@@ -14,12 +14,13 @@ proc nat_fail(msg) {
 }
 
 proc nat_sys(id) {
+    if (id >= N_W3D_FIND) { nat_w3d(id); return; }
     if (id >= N_NET_STATUS) {
-        nat_net(id);
+        if (HAS_NET == 1) { nat_net(id); } else { vm_raise(nat_names[id] .. " is not available here"); }
         return;
     }
     if (id >= N_GUI_WINDOW && id < N_SYS_VERSION) {
-        nat_gui(id);
+        if (HAS_WM == 1) { nat_gui(id); } else { vm_raise(nat_names[id] .. " is not available in a game"); }
         return;
     }
     local s = vm_slot;

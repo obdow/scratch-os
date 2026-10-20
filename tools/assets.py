@@ -75,6 +75,9 @@ def costume_group(group):
         svg = b'<svg xmlns="http://www.w3.org/2000/svg" width="480" height="360" viewBox="0 0 480 360">' \
               b'<rect width="480" height="360" fill="#000000"/></svg>'
         out.append(make_costume('black', svg, 'svg', 240, 180, 1))
+    elif group == 'pen':
+        svg = b'<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2" viewBox="0 0 2 2"></svg>'
+        out.append(make_costume('pen', svg, 'svg', 1, 1, 1))
     elif group == 'blank':
         svg = b'<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2" viewBox="0 0 2 2"></svg>'
         out.append(make_costume('blank', svg, 'svg', 1, 1, 1))
@@ -82,3 +85,9 @@ def costume_group(group):
         raise KeyError(group)
     _cache[group] = out
     return [dict(c) for c in out]
+
+
+def sound_group(group):
+    """Sounds for a sprite's `sounds "group";` (see tools/w3d_sounds.py)."""
+    import w3d_sounds
+    return w3d_sounds.sounds(group)

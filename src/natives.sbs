@@ -814,9 +814,16 @@ proc vm_load_chunk(src, extra) {
     local s = vm_slot;
     local names = p_glnames[s];
     if (len(extra) > 0) { names = names .. extra .. "\x01"; }
-    if (wcompile_ex(src, names, 1) == 0) {
-        vm_err = c_errmsg;
-        return 0;
+    if (HAS_COMPILER == 1) {
+        if (wcompile_ex(src, names, 1) == 0) {
+            vm_err = c_errmsg;
+            return 0;
+        }
+    } else {
+        // no compiler: a module compiled ahead of time for exactly these
+        // global names (see wbc_find_module)
+        if (len(extra) == 0) { vm_err = "load() is not available in an exported game"; return 0; }
+        if (wbc_find_module(substr(extra, 7, len(extra)), names) == 0) { return 0; }
     }
     local sg = seg_alloc(len(cb));
     if (sg == 0) { vm_err = "out of code memory"; return 0; }

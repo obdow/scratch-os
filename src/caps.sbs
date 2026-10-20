@@ -107,10 +107,12 @@ proc caps_prompt(s, cap) {
     prompt_cap = cap;
     prompt_gui = 0;
     prompt_tty = 0;
-    if (gui == 1 && (p_tty[s] == 0 || tty_win[p_tty[s]] > 0)) {
-        prompt_gui = 1;
-        wm_caps_dialog(p_path[s], cap, cap_description(cap));
-        return;
+    if (HAS_WM == 1) {
+        if (gui == 1 && (p_tty[s] == 0 || tty_win[p_tty[s]] > 0)) {
+            prompt_gui = 1;
+            wm_caps_dialog(p_path[s], cap, cap_description(cap));
+            return;
+        }
     }
     local t = p_tty[s];
     if (t == 0 || tty_used[t] == 0) { t = con; }
@@ -163,7 +165,7 @@ proc caps_policy_add(path, cap) {
 // cancel a prompt whose process died
 proc caps_proc_exit(pid) {
     if (prompt_pid == pid) {
-        if (prompt_gui == 1) { wm_caps_dialog_close(); }
+        if (HAS_WM == 1) { if (prompt_gui == 1) { wm_caps_dialog_close(); } }
         if (prompt_tty > 0 && tty_used[prompt_tty] == 1) { tty_write(prompt_tty, "\n"); }
         prompt_pid = 0;
     }

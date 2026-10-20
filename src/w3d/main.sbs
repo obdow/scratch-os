@@ -1,0 +1,79 @@
+// ===========================================================================
+// Whisker 3D - entry point (the engine: Whisker3D.sb3, 1280 x 720)
+//
+// The Whisker IDE (src/ide) with a scene editor and a game runtime around
+// it: src/w3d/editor.sbs is the user interface, game.sbs runs games,
+// r3d.sbs draws them.  Games are exported as .txt bundles and played by
+// the two player projects (src/w3d/player.sbs).
+// ===========================================================================
+
+include "../kbd.sbs";
+include "sound.sbs";
+
+global list ide_export;      // the IDE's own File > Export / Import (unused here)
+global list w3d_export;      // File > Export project puts the project here
+global list w3d_import;      // ... and File > Import project / model reads it here
+
+include "../cloud.sbs";
+
+sprite Kernel {
+    costumes "ide_glyphs", "pen";
+    include "../gfx.sbs";
+    include "../ui.sbs";
+    include "../str.sbs";
+    include "../tty.sbs";
+    include "../fs.sbs";
+    include "../proc.sbs";
+    include "../shell.sbs";
+    include "../boot.sbs";
+    include "../heap.sbs";
+    include "../wcore.sbs";
+    include "../wcomp.sbs";
+    include "../vm.sbs";
+    include "../natives.sbs";
+    include "../natives_sys.sbs";
+    include "../caps.sbs";
+    include "../image.sbs";
+    include "../net.sbs";
+    include "../wm.sbs";
+    include "../ide/ide.sbs";
+    include "../ide/textview.sbs";
+    include "../ide/yarnhl.sbs";
+    include "objects.sbs";
+    include "mesh.sbs";
+    include "r3d.sbs";
+    include "phys.sbs";
+    include "project.sbs";
+    include "game.sbs";
+    include "natives3d.sbs";
+    include "export.sbs";
+    include "editor.sbs";
+
+    var con = 0;
+    var frames = 0;
+    var gui = 0;
+    var w3_stats = "";
+
+    proc kernel_boot() { }
+
+    on key "up arrow" {
+        if (!(key("up arrow"))) { wheel -= 1; }
+    }
+    on key "down arrow" {
+        if (!(key("down arrow"))) { wheel += 1; }
+    }
+
+    on flag {
+        ide_splash();
+        wait(0);
+        ide_boot();
+        mesh_init();
+        r3_init();
+        game_init();
+        w3e_init();
+        forever {
+            w3e_tick();
+            w3_stats = w3e_mode .. " " .. r3_tris;
+        }
+    }
+}

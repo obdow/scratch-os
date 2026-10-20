@@ -376,32 +376,35 @@ proc img_decode(owner, text) {
 // draw image table h with its top-left at screen pixel (sx, sy), `scale`
 // screen pixels per image pixel (any positive number), clipped to cl_*
 proc img_draw(h, sx, sy, scale) {
-    if (h < 1 || h > len(tb_used)) { return; }
-    if (tb_used[h] == 0) { return; }
-    if (img_ok(h) == 0) { return; }
-    local w = img_w(h);
-    local ht = img_h(h);
-    local b = tb_ab[h];
-    for y = 0 to ht - 1 {
-        local ry0 = floor(sy + y * scale);
-        local ry1 = floor(sy + (y + 1) * scale);
-        if (ry0 < cl_y0) { ry0 = cl_y0; }
-        if (ry1 > cl_y1) { ry1 = cl_y1; }
-        if (ry1 > ry0) {
-            local x = 0;
-            local rb = b + y * w;
-            while (x < w) {
-                local c = HV[rb + x + 1];
-                local n = 1;
-                while (x + n < w && HV[rb + x + n + 1] == c) { n += 1; }
-                if (c >= 0) {
-                    local rx0 = floor(sx + x * scale);
-                    local rx1 = floor(sx + (x + n) * scale);
-                    if (rx0 < cl_x0) { rx0 = cl_x0; }
-                    if (rx1 > cl_x1) { rx1 = cl_x1; }
-                    if (rx1 > rx0) { rgb_clipped(rx0, ry0, rx1, ry1, c); }
+    // (windows only exist with the window manager)
+    if (HAS_WM == 1) {
+        if (h < 1 || h > len(tb_used)) { return; }
+        if (tb_used[h] == 0) { return; }
+        if (img_ok(h) == 0) { return; }
+        local w = img_w(h);
+        local ht = img_h(h);
+        local b = tb_ab[h];
+        for y = 0 to ht - 1 {
+            local ry0 = floor(sy + y * scale);
+            local ry1 = floor(sy + (y + 1) * scale);
+            if (ry0 < cl_y0) { ry0 = cl_y0; }
+            if (ry1 > cl_y1) { ry1 = cl_y1; }
+            if (ry1 > ry0) {
+                local x = 0;
+                local rb = b + y * w;
+                while (x < w) {
+                    local c = HV[rb + x + 1];
+                    local n = 1;
+                    while (x + n < w && HV[rb + x + n + 1] == c) { n += 1; }
+                    if (c >= 0) {
+                        local rx0 = floor(sx + x * scale);
+                        local rx1 = floor(sx + (x + n) * scale);
+                        if (rx0 < cl_x0) { rx0 = cl_x0; }
+                        if (rx1 > cl_x1) { rx1 = cl_x1; }
+                        if (rx1 > rx0) { rgb_clipped(rx0, ry0, rx1, ry1, c); }
+                    }
+                    x += n;
                 }
-                x += n;
             }
         }
     }

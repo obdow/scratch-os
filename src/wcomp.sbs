@@ -17,61 +17,6 @@
 // ===========================================================================
 
 // opcodes
-const OP_PUSHNIL = 1;
-const OP_PUSHTRUE = 2;
-const OP_PUSHFALSE = 3;
-const OP_PUSHN = 4;
-const OP_PUSHS = 5;
-const OP_GETL = 6;
-const OP_SETL = 7;
-const OP_GETG = 8;
-const OP_SETG = 9;
-const OP_POP = 10;
-const OP_ADD = 11;
-const OP_SUB = 12;
-const OP_MUL = 13;
-const OP_DIV = 14;
-const OP_MOD = 15;
-const OP_POW = 16;
-const OP_IDIV = 17;
-const OP_CONCAT = 18;
-const OP_NEG = 19;
-const OP_NOT = 20;
-const OP_LEN = 21;
-const OP_EQ = 22;
-const OP_NE = 23;
-const OP_LT = 24;
-const OP_LE = 25;
-const OP_GT = 26;
-const OP_GE = 27;
-const OP_JMP = 28;
-const OP_JF = 29;
-const OP_JT = 30;
-const OP_JFK = 31;
-const OP_JTK = 32;
-const OP_NEWTABLE = 33;
-const OP_GETINDEX = 34;
-const OP_SETINDEX = 35;
-const OP_APPEND = 36;
-const OP_SETFIELDK = 37;
-const OP_CALL = 38;
-const OP_CALLN = 39;
-const OP_RET = 40;
-const OP_RETNIL = 41;
-const OP_FUNC = 42;
-const OP_PUSHNAT = 43;
-const OP_SELF = 44;
-const OP_FORCHK = 45;
-const OP_FORINC = 46;
-const OP_ITERP = 47;
-const OP_ITERI = 48;
-const OP_LINE = 49;
-const OP_DUP = 50;
-const OP_GETFIELD = 51;
-const OP_SETFIELD = 52;
-const OP_HALT = 53;
-const OP_GETM = 54;
-const OP_SETM = 55;
 
 // token types
 const TK_EOF = 0;
@@ -95,10 +40,8 @@ list tk_t;
 list tk_v;
 list tk_l;
 
-list cb;                 // code buffer
 list lc_name;            // active local names
 list lc_slot;            // their frame slots
-list gl_names;           // global names of this program
 list brk_pos;            // pending break jumps: operand position
 list brk_loop;           // ... and the loop id they belong to
 list cnt_pos;
@@ -106,12 +49,10 @@ list cnt_loop;
 
 list wkeywords = ["and", "break", "do", "else", "elseif", "end", "false", "for", "function", "if", "in",
                   "local", "nil", "not", "or", "repeat", "return", "then", "true", "until", "while", "continue"];
-list nat_names = data("nat_names");
-list nat_mods = ["string", "math", "table", "os", "io", "fs", "proc", "term", "gui", "gfx", "sys", "utf8", "image", "net"];
+list nat_mods = ["string", "math", "table", "os", "io", "fs", "proc", "term", "gui", "gfx", "sys", "utf8", "image", "net", "w3d", "input", "sound"];
 
 var c_i = 1;             // current token index
 var c_fail = 0;
-var c_errmsg = "";
 var c_fnbase = 0;
 var c_nlocals = 0;
 var c_maxlocals = 0;
@@ -120,7 +61,6 @@ var c_loopn = 0;
 var c_line = 0;
 var c_depth = 0;         // function nesting depth (0 = main chunk)
 var c_main_top = 0;      // number of main-chunk locals visible to nested functions
-var c_caps = "";         // capabilities declared with --@caps
 // expression descriptor
 var e_kind = 0;
 var e_slot = 0;
@@ -1256,10 +1196,4 @@ proc wcompile_ex(src, preset, depth0) {
     if (depth0 == 0) { emit(OP_HALT); } else { emit(OP_RETNIL); }
     cb[2] = c_maxlocals;
     return 1 - c_fail;
-}
-
-proc gl_names_encode() {
-    local out = "";
-    for k = 1 to len(gl_names) { out = out .. gl_names[k] .. "\x01"; }
-    return out;
 }

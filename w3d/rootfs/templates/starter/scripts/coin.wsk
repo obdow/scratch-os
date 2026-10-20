@@ -1,0 +1,9 @@
+-- A coin spins, and is collected when the player touches it.
+function update(self, dt)
+  self:rotate(0, 150 * dt, 0)
+  if self:touching("#player") then
+    sound.play("coin")
+    w3d.set("coins", w3d.get("coins", 0) + 1)
+    w3d.destroy(self)
+  end
+end

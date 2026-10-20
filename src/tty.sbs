@@ -500,7 +500,10 @@ proc tty_cell_visible(t, row, col) {
     if (tty_vis[t] == 0) { return 0; }
     local wid = tty_win[t];
     if (wid == 0) { return 1; }
-    return wm_owner_at(floor(tty_ox[t] / 8) + col, floor(tty_oy[t] / 16) + row) == wid;
+    if (HAS_WM == 1) {
+        return wm_owner_at(floor(tty_ox[t] / 8) + col, floor(tty_oy[t] / 16) + row) == wid;
+    }
+    return 1;
 }
 
 proc tty_render_cell(t, row, col) {

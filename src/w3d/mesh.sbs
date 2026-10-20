@@ -1,0 +1,503 @@
+// ===========================================================================
+// mesh.sbs - Whisker 3D meshes: storage, built-in shapes and .obj import
+// (included inside sprite Kernel)
+//
+// Coordinates are left-handed: x right, y up, z forward (away from a camera
+// with no rotation).  A face is a triangle whose corners run clockwise when
+// seen from the front; its normal cross(b - a, c - a) points out.
+//
+// Storage: every mesh's vertices are in mv_*, its triangles in mt_* (corner
+// numbers relative to the mesh's first vertex, 1-based) with a colour per
+// face (-1 = use the object's colour).  ms_* describe each mesh.
+// ===========================================================================
+
+list ms_name;        // "cube", "sphere", ... or the model's path
+list ms_v0;          // index of the vertex before the first one
+list ms_vn;
+list ms_t0;          // index of the triangle before the first one
+list ms_tn;
+list ms_rad;         // bounding radius around the origin
+list ms_x0;          // bounding box
+list ms_y0;
+list ms_z0;
+list ms_x1;
+list ms_y1;
+list ms_z1;
+list ms_key;         // models: "<inode>:<mtime>" of the file it came from
+
+list mv_x;
+list mv_y;
+list mv_z;
+list mt_a;
+list mt_b;
+list mt_c;
+list mt_col;
+
+var mesh_err = "";
+var mb_mesh = 0;     // mesh being built
+
+// the shapes every project has, in the order Scene > Add lists them
+list mesh_builtin = ["cube", "plane", "sphere", "cylinder", "cone", "pyramid", "wedge", "torus", "capsule", "quad"];
+
+proc mesh_init() {
+    clear(ms_name); clear(ms_v0); clear(ms_vn); clear(ms_t0); clear(ms_tn); clear(ms_rad);
+    clear(ms_x0); clear(ms_y0); clear(ms_z0); clear(ms_x1); clear(ms_y1); clear(ms_z1); clear(ms_key);
+    clear(mv_x); clear(mv_y); clear(mv_z);
+    clear(mt_a); clear(mt_b); clear(mt_c); clear(mt_col);
+    mesh_cube();
+    mesh_plane();
+    mesh_sphere(12, 8);
+    mesh_cylinder(16);
+    mesh_cone(16);
+    mesh_pyramid();
+    mesh_wedge();
+    mesh_torus(16, 8);
+    mesh_capsule(12, 4);
+    mesh_quad();
+}
+
+// mesh number by name (0 if there is none)
+proc mesh_find(name) {
+    for i = 1 to len(ms_name) {
+        if (ms_name[i] == name && streq(ms_name[i], name) == 1) { return i; }
+    }
+    return 0;
+}
+
+// --- building ------------------------------------------------------------------------
+
+proc mb_begin(name) {
+    add(ms_name, name);
+    add(ms_v0, len(mv_x));
+    add(ms_vn, 0);
+    add(ms_t0, len(mt_a));
+    add(ms_tn, 0);
+    add(ms_rad, 0);
+    add(ms_x0, 0); add(ms_y0, 0); add(ms_z0, 0);
+    add(ms_x1, 0); add(ms_y1, 0); add(ms_z1, 0);
+    add(ms_key, "");
+    mb_mesh = len(ms_name);
+    return mb_mesh;
+}
+
+// add a vertex; returns its number in the mesh (1-based)
+proc mb_v(x, y, z) {
+    add(mv_x, x);
+    add(mv_y, y);
+    add(mv_z, z);
+    ms_vn[mb_mesh] = ms_vn[mb_mesh] + 1;
+    return ms_vn[mb_mesh];
+}
+
+proc mb_t(a, b, c, col) {
+    add(mt_a, a);
+    add(mt_b, b);
+    add(mt_c, c);
+    add(mt_col, col);
+    ms_tn[mb_mesh] = ms_tn[mb_mesh] + 1;
+}
+
+// a quad a-b-c-d, clockwise from the front
+proc mb_q(a, b, c, d, col) {
+    mb_t(a, b, c, col);
+    mb_t(a, c, d, col);
+}
+
+// bounds and radius of the mesh just built
+proc mb_end() {
+    local m = mb_mesh;
+    local v0 = ms_v0[m];
+    local n = ms_vn[m];
+    if (n == 0) { return; }
+    local x0 = mv_x[v0 + 1];
+    local x1 = x0;
+    local y0 = mv_y[v0 + 1];
+    local y1 = y0;
+    local z0 = mv_z[v0 + 1];
+    local z1 = z0;
+    local r = 0;
+    for i = v0 + 1 to v0 + n {
+        local x = mv_x[i];
+        local y = mv_y[i];
+        local z = mv_z[i];
+        if (x < x0) { x0 = x; }
+        if (x > x1) { x1 = x; }
+        if (y < y0) { y0 = y; }
+        if (y > y1) { y1 = y; }
+        if (z < z0) { z0 = z; }
+        if (z > z1) { z1 = z; }
+        local d = x * x + y * y + z * z;
+        if (d > r) { r = d; }
+    }
+    ms_x0[m] = x0; ms_y0[m] = y0; ms_z0[m] = z0;
+    ms_x1[m] = x1; ms_y1[m] = y1; ms_z1[m] = z1;
+    ms_rad[m] = sqrt(r);
+}
+
+// --- built-in shapes (all fit in a 1 x 1 x 1 box around the origin) -----------------
+
+proc mesh_cube() {
+    mb_begin("cube");
+    // corners: bit 1 = +x, 2 = +y, 4 = +z
+    for i = 0 to 7 {
+        local x = -0.5;
+        local y = -0.5;
+        local z = -0.5;
+        if (i % 2 == 1) { x = 0.5; }
+        if (floor(i / 2) % 2 == 1) { y = 0.5; }
+        if (floor(i / 4) == 1) { z = 0.5; }
+        mb_v(x, y, z);
+    }
+    // vertex numbers are i + 1
+    mb_q(1, 3, 4, 2, -1);       // front (-z)
+    mb_q(6, 8, 7, 5, -1);       // back (+z)
+    mb_q(5, 7, 3, 1, -1);       // left (-x)
+    mb_q(2, 4, 8, 6, -1);       // right (+x)
+    mb_q(3, 7, 8, 4, -1);       // top (+y)
+    mb_q(5, 1, 2, 6, -1);       // bottom (-y)
+    mb_end();
+}
+
+// a 1 x 1 square in the xz plane, facing up, split into 8 x 8 tiles: it
+// sorts well against objects standing on it, and lights and fog vary
+// across it (faces are lit flat)
+proc mesh_plane() {
+    mb_begin("plane");
+    for j = 0 to 8 {
+        for i = 0 to 8 {
+            mb_v(i / 8 - 0.5, 0, j / 8 - 0.5);
+        }
+    }
+    for j = 0 to 7 {
+        for i = 0 to 7 {
+            local a = j * 9 + i + 1;
+            mb_q(a, a + 9, a + 10, a + 1, -1);
+        }
+    }
+    mb_end();
+}
+
+// a single upright square facing -z (signs, billboards)
+proc mesh_quad() {
+    mb_begin("quad");
+    mb_v(-0.5, -0.5, 0);
+    mb_v(-0.5, 0.5, 0);
+    mb_v(0.5, 0.5, 0);
+    mb_v(0.5, -0.5, 0);
+    mb_q(1, 2, 3, 4, -1);
+    mb_end();
+}
+
+proc mesh_sphere(seg, rings) {
+    mb_begin("sphere");
+    local top = mb_v(0, 0.5, 0);
+    for j = 1 to rings - 1 {
+        local a = 180 * j / rings;
+        local y = 0.5 * cos(a);
+        local r = 0.5 * sin(a);
+        for i = 0 to seg - 1 {
+            local b = 360 * i / seg;
+            mb_v(r * sin(b), y, r * cos(b));
+        }
+    }
+    local bot = mb_v(0, -0.5, 0);
+    // ring j vertex i: 1 + (j - 1) * seg + i + 1
+    for i = 0 to seg - 1 {
+        local i2 = (i + 1) % seg;
+        mb_t(top, 2 + i, 2 + i2, -1);
+        local last = 2 + (rings - 2) * seg;
+        mb_t(bot, last + i2, last + i, -1);
+    }
+    for j = 1 to rings - 2 {
+        for i = 0 to seg - 1 {
+            local i2 = (i + 1) % seg;
+            local a1 = 2 + (j - 1) * seg + i;
+            local b1 = 2 + (j - 1) * seg + i2;
+            local a2 = 2 + j * seg + i;
+            local b2 = 2 + j * seg + i2;
+            mb_q(a1, a2, b2, b1, -1);
+        }
+    }
+    mb_end();
+}
+
+proc mesh_cylinder(seg) {
+    mb_begin("cylinder");
+    for i = 0 to seg - 1 {
+        local b = 360 * i / seg;
+        mb_v(0.5 * sin(b), 0.5, 0.5 * cos(b));
+        mb_v(0.5 * sin(b), -0.5, 0.5 * cos(b));
+    }
+    local ct = mb_v(0, 0.5, 0);
+    local cb = mb_v(0, -0.5, 0);
+    for i = 0 to seg - 1 {
+        local i2 = (i + 1) % seg;
+        local t1 = 2 * i + 1;
+        local b1 = 2 * i + 2;
+        local t2 = 2 * i2 + 1;
+        local b2 = 2 * i2 + 2;
+        mb_q(t1, b1, b2, t2, -1);
+        mb_t(ct, t1, t2, -1);
+        mb_t(cb, b2, b1, -1);
+    }
+    mb_end();
+}
+
+proc mesh_cone(seg) {
+    mb_begin("cone");
+    local tip = mb_v(0, 0.5, 0);
+    for i = 0 to seg - 1 {
+        local b = 360 * i / seg;
+        mb_v(0.5 * sin(b), -0.5, 0.5 * cos(b));
+    }
+    local cb = mb_v(0, -0.5, 0);
+    for i = 0 to seg - 1 {
+        local i2 = (i + 1) % seg;
+        mb_t(tip, 2 + i, 2 + i2, -1);
+        mb_t(cb, 2 + i2, 2 + i, -1);
+    }
+    mb_end();
+}
+
+proc mesh_pyramid() {
+    mb_begin("pyramid");
+    local tip = mb_v(0, 0.5, 0);
+    mb_v(-0.5, -0.5, -0.5);
+    mb_v(0.5, -0.5, -0.5);
+    mb_v(0.5, -0.5, 0.5);
+    mb_v(-0.5, -0.5, 0.5);
+    mb_t(tip, 3, 2, -1);
+    mb_t(tip, 4, 3, -1);
+    mb_t(tip, 5, 4, -1);
+    mb_t(tip, 2, 5, -1);
+    mb_q(2, 3, 4, 5, -1);
+    mb_end();
+}
+
+// a ramp: full height at +z, zero at -z
+proc mesh_wedge() {
+    mb_begin("wedge");
+    mb_v(-0.5, -0.5, -0.5);    // 1
+    mb_v(0.5, -0.5, -0.5);     // 2
+    mb_v(-0.5, -0.5, 0.5);     // 3
+    mb_v(0.5, -0.5, 0.5);      // 4
+    mb_v(-0.5, 0.5, 0.5);      // 5
+    mb_v(0.5, 0.5, 0.5);       // 6
+    mb_q(1, 5, 6, 2, -1);      // slope
+    mb_q(4, 6, 5, 3, -1);      // back
+    mb_q(1, 2, 4, 3, -1);      // bottom
+    mb_t(1, 3, 5, -1);         // left
+    mb_t(2, 6, 4, -1);         // right
+    mb_end();
+}
+
+proc mesh_torus(seg, sides) {
+    mb_begin("torus");
+    // ring radius 0.35, tube radius 0.15, lying in the xz plane
+    for i = 0 to seg - 1 {
+        local b = 360 * i / seg;
+        for j = 0 to sides - 1 {
+            local a = 360 * j / sides;
+            local r = 0.35 + 0.15 * cos(a);
+            mb_v(r * sin(b), 0.15 * sin(a), r * cos(b));
+        }
+    }
+    for i = 0 to seg - 1 {
+        local i2 = (i + 1) % seg;
+        for j = 0 to sides - 1 {
+            local j2 = (j + 1) % sides;
+            mb_q(i * sides + j + 1, i2 * sides + j + 1, i2 * sides + j2 + 1, i * sides + j2 + 1, -1);
+        }
+    }
+    mb_end();
+}
+
+// a pill: a cylinder with half-spheres, 1 tall and 0.5 wide
+proc mesh_capsule(seg, rings) {
+    mb_begin("capsule");
+    local top = mb_v(0, 0.5, 0);
+    // upper cap rings 1..rings, then lower cap rings
+    for j = 1 to rings {
+        local a = 90 * j / rings;
+        local y = 0.25 + 0.25 * cos(a);
+        local r = 0.25 * sin(a);
+        for i = 0 to seg - 1 {
+            local b = 360 * i / seg;
+            mb_v(r * sin(b), y, r * cos(b));
+        }
+    }
+    for j = 0 to rings - 1 {
+        local a = 90 * j / rings;
+        local y = -0.25 - 0.25 * sin(a);
+        local r = 0.25 * cos(a);
+        for i = 0 to seg - 1 {
+            local b = 360 * i / seg;
+            mb_v(r * sin(b), y, r * cos(b));
+        }
+    }
+    local bot = mb_v(0, -0.5, 0);
+    local nr = 2 * rings;
+    for i = 0 to seg - 1 {
+        local i2 = (i + 1) % seg;
+        mb_t(top, 2 + i, 2 + i2, -1);
+        local last = 2 + (nr - 1) * seg;
+        mb_t(bot, last + i2, last + i, -1);
+    }
+    for j = 1 to nr - 1 {
+        for i = 0 to seg - 1 {
+            local i2 = (i + 1) % seg;
+            local a1 = 2 + (j - 1) * seg + i;
+            local b1 = 2 + (j - 1) * seg + i2;
+            local a2 = 2 + j * seg + i;
+            local b2 = 2 + j * seg + i2;
+            mb_q(a1, a2, b2, b1, -1);
+        }
+    }
+    mb_end();
+}
+
+// --- .obj models -----------------------------------------------------------------------
+//
+// Supported: v x y z [r g b] (vertex colours 0..1 give face colours), f with
+// 3 or more corners (v, v/vt, v/vt/vn, v//vn; negative numbers count from
+// the end), usemtl NAME (a colour: "#rrggbb", or a name from the .mtl file
+// given by mtllib, whose Kd sets the colour).  Other lines are ignored.
+// .obj files are right-handed, so z is mirrored.
+
+list ob_tok;         // the words of the line being read
+list mtl_name;
+list mtl_col;
+list obj_vcol;       // colour per vertex (-1 none)
+
+proc obj_split(line) {
+    clear(ob_tok);
+    local w = "";
+    for i = 1 to len(line) {
+        local ch = line[i];
+        if (ch == " " || ch == "\t" || ch == "\r") {
+            if (len(w) > 0) { add(ob_tok, w); w = ""; }
+        } else { w = w .. ch; }
+    }
+    if (len(w) > 0) { add(ob_tok, w); }
+}
+
+// "#rrggbb" -> number, or -1
+proc w3_hexcol(s) {
+    if (len(s) != 7 || s[1] != "#") { return -1; }
+    local v = 0;
+    for i = 2 to 7 {
+        local d = str_find("0123456789abcdef", str_lower(s[i]), 1);
+        if (d == 0) { return -1; }
+        v = v * 16 + d - 1;
+    }
+    return v;
+}
+
+proc w3_rgb01(r, g, b) {
+    local rr = round(r * 255);
+    local gg = round(g * 255);
+    local bb = round(b * 255);
+    if (rr < 0) { rr = 0; }
+    if (rr > 255) { rr = 255; }
+    if (gg < 0) { gg = 0; }
+    if (gg > 255) { gg = 255; }
+    if (bb < 0) { bb = 0; }
+    if (bb > 255) { bb = 255; }
+    return rr * 65536 + gg * 256 + bb;
+}
+
+// read a .mtl file (Kd lines) into mtl_name / mtl_col
+proc obj_read_mtl(text) {
+    local cur = "";
+    local start = 1;
+    for i = 1 to len(text) + 1 {
+        if (i > len(text) || text[i] == "\n") {
+            obj_split(substr(text, start, i - 1));
+            start = i + 1;
+            if (len(ob_tok) >= 2 && ob_tok[1] == "newmtl") { cur = ob_tok[2]; }
+            if (len(ob_tok) >= 4 && ob_tok[1] == "Kd" && len(cur) > 0) {
+                add(mtl_name, cur);
+                add(mtl_col, w3_rgb01(ob_tok[2], ob_tok[3], ob_tok[4]));
+            }
+        }
+    }
+}
+
+// the vertex number of an "f" corner like "7", "7/2", "7/2/3", "7//3"
+proc obj_corner(tok, nv) {
+    local s = tok;
+    local k = str_find(s, "/", 1);
+    if (k > 0) { s = substr(s, 1, k - 1); }
+    local v = s * 1;
+    if (v < 0) { v = nv + v + 1; }
+    return v;
+}
+
+// build a mesh named `name` from .obj text; dir is where mtllib files are.
+// Returns the mesh number, or 0 with mesh_err set.
+proc mesh_from_obj(name, text, dir) {
+    clear(mtl_name); clear(mtl_col); clear(obj_vcol);
+    local m = mb_begin(name);
+    local col = -1;
+    local start = 1;
+    local nv = 0;
+    local nl = 0;
+    for i = 1 to len(text) + 1 {
+        if (i > len(text) || text[i] == "\n") {
+            nl += 1;
+            obj_split(substr(text, start, i - 1));
+            start = i + 1;
+            if (len(ob_tok) >= 4 && ob_tok[1] == "v") {
+                mb_v(ob_tok[2] * 1, ob_tok[3] * 1, 0 - ob_tok[4] * 1);
+                nv += 1;
+                if (len(ob_tok) >= 7) { add(obj_vcol, w3_rgb01(ob_tok[5], ob_tok[6], ob_tok[7])); }
+                else { add(obj_vcol, -1); }
+            } else if (len(ob_tok) >= 4 && ob_tok[1] == "f") {
+                local a = obj_corner(ob_tok[2], nv);
+                local fc = col;
+                if (fc == -1 && a >= 1 && a <= nv) { fc = obj_vcol[a]; }
+                for k = 3 to len(ob_tok) - 1 {
+                    local b = obj_corner(ob_tok[k], nv);
+                    local c = obj_corner(ob_tok[k + 1], nv);
+                    if (a >= 1 && b >= 1 && c >= 1 && a <= nv && b <= nv && c <= nv) {
+                        // mirrored z flips the winding back to clockwise
+                        mb_t(a, b, c, fc);
+                    } else {
+                        mesh_err = "line " .. nl .. ": face uses a vertex that does not exist";
+                    }
+                }
+            } else if (len(ob_tok) >= 2 && ob_tok[1] == "usemtl") {
+                col = w3_hexcol(ob_tok[2]);
+                if (col == -1) {
+                    local mi = index(mtl_name, ob_tok[2]);
+                    if (mi > 0) { col = mtl_col[mi]; }
+                }
+            } else if (len(ob_tok) >= 2 && ob_tok[1] == "mtllib") {
+                local mino = fs_lookup(ob_tok[2], fs_lookup(dir, 1));
+                if (mino > 0 && fs_type[mino] == FT_FILE) { obj_read_mtl(fs_data[mino]); }
+            }
+        }
+    }
+    mb_end();
+    if (ms_tn[m] == 0) {
+        mesh_err = name .. " has no faces";
+        return 0;
+    }
+    return m;
+}
+
+// the mesh for a model file (loaded once per version of the file); 0 on error
+proc mesh_model(path) {
+    local ino = fs_lookup(path, fs_lookup(w3_proj, 1));
+    if (ino == 0 || fs_type[ino] != FT_FILE) {
+        mesh_err = "model not found: " .. path;
+        return 0;
+    }
+    local key = ino .. ":" .. fs_mtime[ino] .. ":" .. len(fs_data[ino]);
+    for i = 1 to len(ms_name) {
+        if (ms_key[i] == key) { return i; }
+    }
+    local m = mesh_from_obj(path, fs_data[ino], fs_path(fs_parent[ino]));
+    if (m > 0) { ms_key[m] = key; }
+    return m;
+}

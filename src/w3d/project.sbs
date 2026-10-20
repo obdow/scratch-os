@@ -1,0 +1,513 @@
+// ===========================================================================
+// project.sbs - Whisker 3D projects: settings, scene files and the .txt
+// bundle (included inside sprite Kernel)
+//
+// A project is a folder:
+//   game.w3d          settings: name, resolution, first scene, quality
+//   scenes/*.scene    scenes (text, see docs/whisker3d/scenes.md)
+//   scripts/*.wsk     Whisker scripts attached to objects
+//   models/*.obj      models (and .mtl colour files)
+// Paths inside a project are relative to its folder.
+//
+// The bundle packs a whole project into lines of one list (one line per
+// item), which Scratch can export to and import from a .txt file:
+//   WHISKER3D 1
+//   name <project name>
+//   @file <path> <number of lines>
+//   ... that many lines ...
+//   @end
+// Scratch reads an imported list file as CSV, so a line must not contain a
+// comma, semicolon, bar, tab or double quote, and must not be empty: each
+// line is escaped (bl_esc): "~" ~~, "," ~c, ";" ~s, "|" ~p, tab ~t, '"' ~q,
+// and an empty line is "~0".
+// ===========================================================================
+
+var w3_proj = "/game";       // the open project's folder
+var pj_name = "Game";
+var pj_res = 720;            // 720: 1280 x 720 (TurboWarp); 480: 480 x 360 (Scratch)
+var pj_scene = "scenes/main.scene";
+var game_w = 1280;
+var game_h = 720;
+var pj_err = "";
+var sc_path = "";            // the scene file now loaded
+var sc_err = "";
+
+list w3_tok;                 // words of the line being read
+list bl_out;                 // lines being written
+
+// --- small helpers -------------------------------------------------------------------
+
+// split a line into words; "quoted text" is one word (without the quotes)
+proc w3_split(line) {
+    clear(w3_tok);
+    local w = "";
+    local q = 0;
+    local have = 0;
+    for i = 1 to len(line) {
+        local ch = line[i];
+        if (q == 1) {
+            if (ch == "\"") { q = 0; } else { w = w .. ch; }
+        } else if (ch == "\"") {
+            q = 1;
+            have = 1;
+        } else if (ch == " " || ch == "\t" || ch == "\r") {
+            if (len(w) > 0 || have == 1) { add(w3_tok, w); w = ""; have = 0; }
+        } else {
+            w = w .. ch;
+        }
+    }
+    if (len(w) > 0 || have == 1) { add(w3_tok, w); }
+}
+
+// "#rrggbb" for a colour
+proc w3_hex(c) {
+    local h = "0123456789abcdef";
+    local v = floor(c);
+    local out = "";
+    repeat (6) {
+        out = h[v % 16 + 1] .. out;
+        v = floor(v / 16);
+    }
+    return "#" .. out;
+}
+
+// a number as short text (4 decimals at most)
+proc w3_num(v) {
+    local r = round(v * 10000) / 10000;
+    if (r == 0) { return "0"; }
+    return "" .. r;
+}
+
+// a word as written in a file: quoted if it has spaces or is empty
+proc w3_word(s) {
+    if (len(s) == 0 || contains(s, " ")) { return "\"" .. s .. "\""; }
+    return s;
+}
+
+// the file at a project path ("" if missing); w3_ino is its inode
+var w3_ino = 0;
+proc pj_read(path) {
+    w3_ino = fs_lookup(path, fs_lookup(w3_proj, 1));
+    if (w3_ino == 0 || fs_type[w3_ino] != FT_FILE) { w3_ino = 0; return ""; }
+    return fs_data[w3_ino];
+}
+
+proc pj_write(path, text) {
+    local root = fs_lookup(w3_proj, 1);
+    if (root == 0) { root = fs_mkdir_p(w3_proj); }
+    // make the folders on the way
+    local k = len(path);
+    while (k > 0 && path[k] != "/") { k -= 1; }
+    if (k > 1) { fs_mkdir_p(w3_proj .. "/" .. substr(path, 1, k - 1)); }
+    local ino = fs_create(path, FT_FILE, root);
+    if (ino == 0) { pj_err = "cannot write " .. path .. ": " .. fs_err; return 0; }
+    fs_data[ino] = text;
+    fs_mtime[ino] = fs_now();
+    return 1;
+}
+
+proc res_apply() {
+    if (pj_res == 480) { game_w = 480; game_h = 360; } else { game_w = 1280; game_h = 720; }
+}
+
+// --- settings (game.w3d) ---------------------------------------------------------------
+
+proc pj_load_settings() {
+    pj_name = "Game";
+    pj_res = 720;
+    pj_scene = "scenes/main.scene";
+    q_budget = 600;
+    q_far = 120;
+    q_fill = 2;
+    local text = pj_read("game.w3d");
+    if (w3_ino == 0) { pj_err = "this folder has no game.w3d"; return 0; }
+    local start = 1;
+    for i = 1 to len(text) + 1 {
+        if (i > len(text) || text[i] == "\n") {
+            w3_split(substr(text, start, i - 1));
+            start = i + 1;
+            if (len(w3_tok) >= 2) {
+                local k = w3_tok[1];
+                if (k == "name") {
+                    pj_name = w3_tok[2];
+                    for j = 3 to len(w3_tok) { pj_name = pj_name .. " " .. w3_tok[j]; }
+                }
+                else if (k == "resolution") { if (contains(w3_tok[2], "480")) { pj_res = 480; } else { pj_res = 720; } }
+                else if (k == "scene") { pj_scene = w3_tok[2]; }
+                else if (k == "budget") { q_budget = w3_tok[2] * 1; }
+                else if (k == "distance") { q_far = w3_tok[2] * 1; }
+                else if (k == "fill") { q_fill = w3_tok[2] * 1; }
+            }
+        }
+    }
+    if (q_budget < 20) { q_budget = 20; }
+    if (q_far < 5) { q_far = 5; }
+    if (q_fill < 1) { q_fill = 1; }
+    res_apply();
+    return 1;
+}
+
+proc pj_save_settings() {
+    local r = "1280x720";
+    if (pj_res == 480) { r = "480x360"; }
+    local t = "-- Whisker 3D project settings\n"
+        .. "name " .. pj_name .. "\n"
+        .. "resolution " .. r .. "\n"
+        .. "scene " .. pj_scene .. "\n"
+        .. "budget " .. q_budget .. "\n"
+        .. "distance " .. q_far .. "\n"
+        .. "fill " .. q_fill .. "\n";
+    return pj_write("game.w3d", t);
+}
+
+// --- scenes ----------------------------------------------------------------------------
+
+proc kind_of(word) {
+    if (word == "camera") { return K_CAMERA; }
+    if (word == "light") { return K_LIGHT; }
+    if (word == "empty") { return K_EMPTY; }
+    return K_MESH;
+}
+
+proc kind_name(k) {
+    if (k == K_CAMERA) { return "camera"; }
+    if (k == K_LIGHT) { return "light"; }
+    if (k == K_EMPTY) { return "empty"; }
+    return "mesh";
+}
+
+proc body_of(word) {
+    if (word == "static") { return B_STATIC; }
+    if (word == "dynamic") { return B_DYNAMIC; }
+    if (word == "kinematic") { return B_KINEMATIC; }
+    return B_NONE;
+}
+
+proc body_name(b) {
+    if (b == B_STATIC) { return "static"; }
+    if (b == B_DYNAMIC) { return "dynamic"; }
+    if (b == B_KINEMATIC) { return "kinematic"; }
+    return "none";
+}
+
+proc coll_of(word) {
+    if (word == "box") { return C_BOX; }
+    if (word == "sphere") { return C_SPHERE; }
+    return C_NONE;
+}
+
+proc coll_name(c) {
+    if (c == C_BOX) { return "box"; }
+    if (c == C_SPHERE) { return "sphere"; }
+    return "none";
+}
+
+proc tok_num(i, dflt) {
+    if (i > len(w3_tok)) { return dflt; }
+    return w3_tok[i] * 1;
+}
+
+proc tok_col(i, dflt) {
+    if (i > len(w3_tok)) { return dflt; }
+    local c = w3_hexcol(w3_tok[i]);
+    if (c == -1) { return dflt; }
+    return c;
+}
+
+// load a scene file into the object lists.  1 on success; on failure 0 and
+// sc_err ("line N: ...").  Unknown words are reported; missing models load as
+// empty objects with a warning in sc_err (the scene still loads).
+proc scene_load(path) {
+    local text = pj_read(path);
+    if (w3_ino == 0) { sc_err = "scene not found: " .. path; return 0; }
+    sc_path = path;
+    return scene_parse(text);
+}
+
+// read scene text (see scene_load)
+proc scene_parse(text) {
+    ob_clear();
+    env_defaults();
+    sc_err = "";
+    local cur = 0;
+    local nl = 0;
+    local start = 1;
+    for i = 1 to len(text) + 1 {
+        if (i > len(text) || text[i] == "\n") {
+            nl += 1;
+            w3_split(substr(text, start, i - 1));
+            start = i + 1;
+            if (len(w3_tok) > 0 && substr(w3_tok[1], 1, 2) != "--") {
+                local k = w3_tok[1];
+                local n = len(w3_tok);
+                if (k == "scene") { if (n >= 2) { sc_name = w3_tok[2]; } }
+                else if (k == "sky") { sky_top = tok_col(2, sky_top); sky_bot = tok_col(3, sky_top); }
+                else if (k == "ambient") { amb = tok_num(2, amb); }
+                else if (k == "sun") {
+                    sun_x = tok_num(2, sun_x); sun_y = tok_num(3, sun_y); sun_z = tok_num(4, sun_z);
+                    sun_i = tok_num(5, sun_i);
+                }
+                else if (k == "fog") {
+                    if (n >= 2 && w3_tok[2] == "off") { fog_on = 0; }
+                    else { fog_on = 1; fog_near = tok_num(2, fog_near); fog_far = tok_num(3, fog_far); fog_col = tok_col(4, fog_col); }
+                }
+                else if (k == "gravity") { grav = tok_num(2, grav); }
+                else if (k == "object") {
+                    local nm = "Object";
+                    if (n >= 2) { nm = w3_tok[2]; }
+                    local kd = K_MESH;
+                    if (n >= 3) { kd = kind_of(w3_tok[3]); }
+                    cur = ob_new(nm, kd);
+                    if (kd == K_CAMERA) { ob_vis[cur] = 0; }
+                }
+                else if (cur == 0) { if (len(sc_err) == 0) { sc_err = "line " .. nl .. ": '" .. k .. "' before the first object"; } }
+                else if (k == "mesh") {
+                    if (n >= 2 && ob_setmesh(cur, w3_tok[2]) == 0 && len(sc_err) == 0) {
+                        sc_err = "line " .. nl .. ": " .. mesh_err;
+                    }
+                }
+                else if (k == "pos") { ob_px[cur] = tok_num(2, 0); ob_py[cur] = tok_num(3, 0); ob_pz[cur] = tok_num(4, 0); }
+                else if (k == "rot") { ob_rx[cur] = tok_num(2, 0); ob_ry[cur] = tok_num(3, 0); ob_rz[cur] = tok_num(4, 0); }
+                else if (k == "scale") {
+                    ob_sx[cur] = tok_num(2, 1);
+                    ob_sy[cur] = tok_num(3, ob_sx[cur]);
+                    ob_sz[cur] = tok_num(4, ob_sx[cur]);
+                }
+                else if (k == "color") { ob_col[cur] = tok_col(2, ob_col[cur]); }
+                else if (k == "alpha") { ob_alpha[cur] = tok_num(2, 0); }
+                else if (k == "hidden") { ob_vis[cur] = 0; }
+                else if (k == "unlit") { ob_unlit[cur] = 1; }
+                else if (k == "twosided") { ob_twoside[cur] = 1; }
+                else if (k == "tag") { if (n >= 2) { ob_tag[cur] = w3_tok[2]; } }
+                else if (k == "script") { if (n >= 2) { ob_script[cur] = w3_tok[2]; } }
+                else if (k == "body") { if (n >= 2) { ob_body[cur] = body_of(w3_tok[2]); } }
+                else if (k == "collider") { if (n >= 2) { ob_coll[cur] = coll_of(w3_tok[2]); } }
+                else if (k == "trigger") { ob_trig[cur] = 1; }
+                else if (k == "bounce") { ob_bounce[cur] = tok_num(2, 0); }
+                else if (k == "range") { ob_lrange[cur] = tok_num(2, 8); }
+                else if (k == "power") { ob_lpow[cur] = tok_num(2, 1); }
+                else if (k == "fov") { cam_fov = tok_num(2, 60); }
+                else if (len(sc_err) == 0) { sc_err = "line " .. nl .. ": unknown setting '" .. k .. "'"; }
+            }
+        }
+    }
+    if (cam_ob == 0) {
+        // every scene has a camera
+        cam_ob = ob_new("Camera", K_CAMERA);
+        ob_vis[cam_ob] = 0;
+        ob_py[cam_ob] = 3;
+        ob_pz[cam_ob] = -8;
+        ob_rx[cam_ob] = 15;
+    }
+    return 1;
+}
+
+proc bl(s) { add(bl_out, s); }
+
+// the scene as text (objects made while playing are left out)
+proc scene_text() {
+    clear(bl_out);
+    bl("-- Whisker 3D scene");
+    bl("scene " .. w3_word(sc_name));
+    if (sky_top == sky_bot) { bl("sky " .. w3_hex(sky_top)); } else { bl("sky " .. w3_hex(sky_top) .. " " .. w3_hex(sky_bot)); }
+    bl("ambient " .. w3_num(amb));
+    bl("sun " .. w3_num(sun_x) .. " " .. w3_num(sun_y) .. " " .. w3_num(sun_z) .. " " .. w3_num(sun_i));
+    if (fog_on == 1) { bl("fog " .. w3_num(fog_near) .. " " .. w3_num(fog_far) .. " " .. w3_hex(fog_col)); } else { bl("fog off"); }
+    bl("gravity " .. w3_num(grav));
+    for i = 1 to len(ob_name) {
+        if (ob_alive[i] == 1 && ob_spawned[i] == 0) {
+            bl("");
+            bl("object " .. w3_word(ob_name[i]) .. " " .. kind_name(ob_kind[i]));
+            if (ob_kind[i] == K_MESH) { bl("  mesh " .. w3_word(ob_meshname[i])); }
+            bl("  pos " .. w3_num(ob_px[i]) .. " " .. w3_num(ob_py[i]) .. " " .. w3_num(ob_pz[i]));
+            if (ob_rx[i] != 0 || ob_ry[i] != 0 || ob_rz[i] != 0) {
+                bl("  rot " .. w3_num(ob_rx[i]) .. " " .. w3_num(ob_ry[i]) .. " " .. w3_num(ob_rz[i]));
+            }
+            if (ob_kind[i] == K_MESH || ob_kind[i] == K_EMPTY) {
+                if (ob_sx[i] != 1 || ob_sy[i] != 1 || ob_sz[i] != 1) {
+                    bl("  scale " .. w3_num(ob_sx[i]) .. " " .. w3_num(ob_sy[i]) .. " " .. w3_num(ob_sz[i]));
+                }
+            }
+            if (ob_kind[i] == K_MESH) {
+                bl("  color " .. w3_hex(ob_col[i]));
+                if (ob_alpha[i] != 0) { bl("  alpha " .. w3_num(ob_alpha[i])); }
+                if (ob_unlit[i] == 1) { bl("  unlit"); }
+                if (ob_twoside[i] == 1) { bl("  twosided"); }
+            }
+            if (ob_kind[i] == K_CAMERA) { bl("  fov " .. w3_num(cam_fov)); }
+            else if (ob_vis[i] == 0) { bl("  hidden"); }
+            if (ob_kind[i] == K_LIGHT) {
+                bl("  range " .. w3_num(ob_lrange[i]));
+                bl("  power " .. w3_num(ob_lpow[i]));
+            }
+            if (len(ob_tag[i]) > 0) { bl("  tag " .. w3_word(ob_tag[i])); }
+            if (len(ob_script[i]) > 0) { bl("  script " .. w3_word(ob_script[i])); }
+            if (ob_body[i] != B_NONE) { bl("  body " .. body_name(ob_body[i])); }
+            if (ob_coll[i] != C_NONE) { bl("  collider " .. coll_name(ob_coll[i])); }
+            if (ob_trig[i] == 1) { bl("  trigger"); }
+            if (ob_bounce[i] != 0) { bl("  bounce " .. w3_num(ob_bounce[i])); }
+        }
+    }
+    local t = "";
+    for i = 1 to len(bl_out) { t = t .. bl_out[i] .. "\n"; }
+    return t;
+}
+
+proc scene_save(path) {
+    return pj_write(path, scene_text());
+}
+
+// --- bundles ---------------------------------------------------------------------------
+
+proc bl_esc(line) {
+    if (len(line) == 0) { return "~0"; }
+    local plain = 1;
+    for i = 1 to len(line) {
+        if (contains("~,;|\t\"", line[i])) { plain = 0; }
+    }
+    if (plain == 1) { return line; }
+    local out = "";
+    for i = 1 to len(line) {
+        local ch = line[i];
+        if (ch == "~") { out = out .. "~~"; }
+        else if (ch == ",") { out = out .. "~c"; }
+        else if (ch == ";") { out = out .. "~s"; }
+        else if (ch == "|") { out = out .. "~p"; }
+        else if (ch == "\t") { out = out .. "~t"; }
+        else if (ch == "\"") { out = out .. "~q"; }
+        else { out = out .. ch; }
+    }
+    return out;
+}
+
+proc bl_unesc(line) {
+    if (line == "~0") { return ""; }
+    if (!contains(line, "~")) { return line; }
+    local out = "";
+    local i = 1;
+    while (i <= len(line)) {
+        local ch = line[i];
+        if (ch == "~" && i < len(line)) {
+            local e = line[i + 1];
+            if (e == "c") { out = out .. ","; }
+            else if (e == "s") { out = out .. ";"; }
+            else if (e == "p") { out = out .. "|"; }
+            else if (e == "t") { out = out .. "\t"; }
+            else if (e == "q") { out = out .. "\""; }
+            else if (e == "0") { out = out .. ""; }
+            else { out = out .. e; }
+            i += 2;
+        } else {
+            out = out .. ch;
+            i += 1;
+        }
+    }
+    return out;
+}
+
+list bd_files;           // project paths, collected by bd_walk
+
+proc bd_walk(dir, rel) recursive {
+    fs_list(dir);
+    local kids = "";
+    for i = 1 to len(fs_tmp) { kids = kids .. fs_tmp[i] .. ","; }
+    local start = 1;
+    for i = 1 to len(kids) {
+        if (kids[i] == ",") {
+            local c = substr(kids, start, i - 1) * 1;
+            start = i + 1;
+            local p = fs_name[c];
+            if (len(rel) > 0) { p = rel .. "/" .. fs_name[c]; }
+            local cn = fs_name[c];
+            // dot files stay out, except the compiled scripts (.build)
+            if (cn[1] != "." || (len(rel) == 0 && cn == ".build")) {
+                if (fs_type[c] == FT_DIR) { bd_walk(c, p); } else { add(bd_files, p); }
+            }
+        }
+    }
+}
+
+// write the open project into list `out` as bundle lines
+proc bundle_export() {
+    clear(bl_out);
+    clear(bd_files);
+    local root = fs_lookup(w3_proj, 1);
+    if (root == 0) { pj_err = "no project is open"; return 0; }
+    bd_walk(root, "");
+    bl("WHISKER3D 1");
+    bl(bl_esc("name " .. pj_name));
+    for f = 1 to len(bd_files) {
+        local ino = fs_lookup(bd_files[f], root);
+        local text = fs_data[ino];
+        // count the lines (a last line without a newline still counts)
+        local nlines = 0;
+        local start = 1;
+        local tl = len(text);
+        if (tl > 0 && text[tl] == "\n") { tl -= 1; }
+        if (len(text) > 0) {
+            for i = 1 to tl + 1 {
+                if (i > tl || text[i] == "\n") { nlines += 1; }
+            }
+        }
+        bl("@file " .. bd_files[f] .. " " .. nlines);
+        if (nlines > 0) {
+            for i = 1 to tl + 1 {
+                if (i > tl || text[i] == "\n") {
+                    bl(bl_esc(substr(text, start, i - 1)));
+                    start = i + 1;
+                }
+            }
+        }
+    }
+    bl("@end");
+    return 1;
+}
+
+// read bundle lines from bl_out into folder `dest` (made if needed).  1 on
+// success (pj_name set from the bundle), 0 with pj_err.
+proc bundle_import(dest) {
+    if (len(bl_out) < 2 || substr(bl_out[1], 1, 9) != "WHISKER3D") {
+        pj_err = "this is not a Whisker 3D project (the first line should be WHISKER3D)";
+        return 0;
+    }
+    local root = fs_lookup(dest, 1);
+    if (root == 0) { root = fs_mkdir_p(dest); }
+    if (root == 0) { pj_err = "cannot make " .. dest; return 0; }
+    local save = w3_proj;
+    w3_proj = dest;
+    for k = 1 to len(bl_out) { bl_out[k] = bl_unesc(bl_out[k]); }
+    local i = 2;
+    local n = len(bl_out);
+    while (i <= n) {
+        local line = bl_out[i];
+        if (substr(line, 1, 5) == "name ") {
+            i += 1;
+        } else if (substr(line, 1, 6) == "@file ") {
+            w3_split(line);
+            if (len(w3_tok) < 3) { pj_err = "bad line " .. i .. ": " .. line; w3_proj = save; return 0; }
+            local path = w3_tok[2];
+            local cnt = w3_tok[3] * 1;
+            local text = "";
+            for k = 1 to cnt {
+                if (i + k <= n) { text = text .. bl_out[i + k] .. "\n"; }
+            }
+            if (pj_write(path, text) == 0) { w3_proj = save; return 0; }
+            i += cnt + 1;
+        } else if (line == "@end") {
+            i = n + 1;
+        } else {
+            i += 1;
+        }
+    }
+    w3_proj = save;
+    return 1;
+}
+
+// the project name a bundle in bl_out carries ("" if none)
+proc bundle_name() {
+    for i = 2 to len(bl_out) {
+        if (substr(bl_out[i], 1, 5) == "name ") { return substr(bl_out[i], 6, len(bl_out[i])); }
+        if (substr(bl_out[i], 1, 1) == "@") { return ""; }
+    }
+    return "";
+}

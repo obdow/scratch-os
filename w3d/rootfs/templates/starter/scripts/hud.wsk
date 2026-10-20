@@ -1,0 +1,16 @@
+-- The heads-up display: coins collected, and a message at the end.
+local total = 0
+
+function start(self)
+  total = #w3d.objects("#coin")
+end
+
+function update(self, dt)
+  local coins = w3d.get("coins", 0)
+  local w, h = w3d.screen()
+  w3d.rect(12, 12, 210, 34, "#000000", 55)
+  w3d.text(24, 21, "Coins: " .. coins .. " / " .. total, "#ffd54f")
+  if coins == total and total > 0 then
+    w3d.text(w / 2 - 120, h / 2 - 16, "All coins found!", "#ffffff", 2)
+  end
+end

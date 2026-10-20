@@ -33,6 +33,9 @@ async function launch(sb3Path, opts = {}) {
     #project{width:${480 * scale}px;height:${360 * scale}px}
   </style></head><body><div id="project"></div></body></html>`);
   await page.addScriptTag({ path: SCAFFOLDING });
+  // warpTimer: custom blocks that loop forever yield after a while (debugging)
+  if (opts.warpTimer) await page.evaluate(() => { window.__warpTimer = true; });
+  if (opts.vanilla) await page.evaluate(() => { window.__vanilla = true; });
   const b64 = fs.readFileSync(sb3Path).toString('base64');
   await page.evaluate(async ({ b64, hq, cloud }) => {
     const bin = atob(b64);
@@ -51,6 +54,13 @@ async function launch(sb3Path, opts = {}) {
     window.vm = s.vm;
     await s.loadProject(buf.buffer);
     if (hq) s.renderer.setUseHighQualityRender(true);
+    if (window.__warpTimer) s.vm.setCompilerOptions({ warpTimer: true });
+    if (window.__vanilla) {
+      // like scratch.mit.edu: no compiler, fencing and limits on, 30 fps
+      s.vm.setCompilerOptions({ enabled: false });
+      s.vm.setRuntimeOptions({ fencing: true, miscLimits: true });
+      s.vm.setFramerate(30);
+    }
     s.start();
   }, { b64, hq: !!opts.hq, cloud: opts.cloud || null });
 
@@ -66,6 +76,16 @@ async function launch(sb3Path, opts = {}) {
       scaffolding.height = h;
       scaffolding.relayout();
     }, { w: stage.w * scale, h: stage.h * scale });
+  }
+  // lists to fill before the green flag: {name: [items]} (stage lists)
+  if (opts.lists) {
+    await page.evaluate((lists) => {
+      const st = vm.runtime.getTargetForStage();
+      for (const [name, items] of Object.entries(lists)) {
+        const l = Object.values(st.variables).find((v) => v.name === name && v.type === 'list');
+        if (l) l.value = items.slice();
+      }
+    }, opts.lists);
   }
   await page.evaluate(() => scaffolding.greenFlag());
 

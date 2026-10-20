@@ -1,0 +1,18 @@
+scene "Main"
+sky #6d8fe8 #dcecff
+ambient 0.35
+sun -0.4 -1 0.5 0.8
+fog off
+gravity -20
+
+object "Ground" mesh
+  mesh plane
+  scale 20 1 20
+  color #5aa864
+  body static
+  collider box
+
+object "Camera" camera
+  pos 0 4 -10
+  rot 15 0 0
+  fov 60

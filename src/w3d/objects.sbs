@@ -1,0 +1,234 @@
+// ===========================================================================
+// objects.sbs - Whisker 3D scene objects and the scene's environment
+// (included inside sprite Kernel)
+//
+// An object is a slot of the parallel ob_* lists.  Its number is its id for
+// the scene's lifetime (slots are not reused until the scene is reloaded),
+// so a stale id or table is detected by ob_alive.
+// ===========================================================================
+
+const K_MESH = 0;
+const K_CAMERA = 1;
+const K_LIGHT = 2;
+const K_EMPTY = 3;
+
+const B_NONE = 0;         // physics body kinds
+const B_STATIC = 1;
+const B_DYNAMIC = 2;
+const B_KINEMATIC = 3;
+
+const C_NONE = 0;         // collider shapes
+const C_BOX = 1;
+const C_SPHERE = 2;
+
+list ob_name;
+list ob_alive;
+list ob_kind;
+list ob_mesh;        // mesh number (0 = none)
+list ob_meshname;    // built-in shape name or model path, as saved
+list ob_px;
+list ob_py;
+list ob_pz;
+list ob_rx;          // rotation in degrees: pitch (x), yaw (y), roll (z)
+list ob_ry;
+list ob_rz;
+list ob_sx;
+list ob_sy;
+list ob_sz;
+list ob_col;         // colour 0xRRGGBB
+list ob_alpha;       // transparency 0 (solid) .. 100 (invisible)
+list ob_vis;
+list ob_unlit;       // 1: not shaded by lights or fog
+list ob_twoside;     // 1: faces are drawn from both sides
+list ob_tag;
+list ob_script;      // script path ("" = none)
+list ob_body;
+list ob_coll;
+list ob_trig;        // 1: the collider reports touches but does not block
+list ob_vx;          // velocity
+list ob_vy;
+list ob_vz;
+list ob_ground;      // 1 if standing on something this frame
+list ob_bounce;      // 0 .. 1
+list ob_lrange;      // point lights: range and intensity
+list ob_lpow;
+list ob_tab;         // Whisker table for scripts (0 = not made yet)
+list ob_spawned;     // 1 if made by w3d.spawn while playing
+
+// --- environment ---------------------------------------------------------------------
+var sc_name = "Scene";
+var sky_top = 7243482;       // #6e86da -> overwritten by scenes
+var sky_bot = 13161967;
+var amb = 0.35;              // ambient light 0..1
+var sun_x = -0.4;            // direction the sunlight travels
+var sun_y = -1;
+var sun_z = 0.5;
+var sun_i = 0.8;
+var fog_on = 0;
+var fog_near = 30;
+var fog_far = 80;
+var fog_col = 13161967;
+var grav = -20;
+var cam_ob = 0;              // the scene's camera object
+var cam_fov = 60;
+
+proc ob_clear() {
+    clear(ob_name); clear(ob_alive); clear(ob_kind); clear(ob_mesh); clear(ob_meshname);
+    clear(ob_px); clear(ob_py); clear(ob_pz); clear(ob_rx); clear(ob_ry); clear(ob_rz);
+    clear(ob_sx); clear(ob_sy); clear(ob_sz); clear(ob_col); clear(ob_alpha); clear(ob_vis);
+    clear(ob_unlit); clear(ob_twoside); clear(ob_tag); clear(ob_script); clear(ob_body); clear(ob_coll);
+    clear(ob_trig); clear(ob_vx); clear(ob_vy); clear(ob_vz); clear(ob_ground); clear(ob_bounce);
+    clear(ob_lrange); clear(ob_lpow); clear(ob_tab); clear(ob_spawned);
+    cam_ob = 0;
+}
+
+proc env_defaults() {
+    sc_name = "Scene";
+    sky_top = 7700718;       // #7580ee
+    sky_bot = 14544639;      // #ddeeff
+    amb = 0.35;
+    sun_x = -0.4;
+    sun_y = -1;
+    sun_z = 0.5;
+    sun_i = 0.8;
+    fog_on = 0;
+    fog_near = 30;
+    fog_far = 80;
+    fog_col = 14544639;
+    grav = -20;
+    cam_fov = 60;
+}
+
+// a new object with default settings; returns its id
+proc ob_new(name, kind) {
+    add(ob_name, name);
+    add(ob_alive, 1);
+    add(ob_kind, kind);
+    add(ob_mesh, 0);
+    add(ob_meshname, "");
+    add(ob_px, 0); add(ob_py, 0); add(ob_pz, 0);
+    add(ob_rx, 0); add(ob_ry, 0); add(ob_rz, 0);
+    add(ob_sx, 1); add(ob_sy, 1); add(ob_sz, 1);
+    add(ob_col, 12632256);   // #c0c0c0
+    add(ob_alpha, 0);
+    add(ob_vis, 1);
+    add(ob_unlit, 0);
+    add(ob_twoside, 0);
+    add(ob_tag, "");
+    add(ob_script, "");
+    add(ob_body, B_NONE);
+    add(ob_coll, C_NONE);
+    add(ob_trig, 0);
+    add(ob_vx, 0); add(ob_vy, 0); add(ob_vz, 0);
+    add(ob_ground, 0);
+    add(ob_bounce, 0);
+    add(ob_lrange, 8);
+    add(ob_lpow, 1);
+    add(ob_tab, 0);
+    add(ob_spawned, 0);
+    local id = len(ob_name);
+    if (kind == K_CAMERA && cam_ob == 0) { cam_ob = id; }
+    return id;
+}
+
+// set an object's shape from a name (built-in) or a model path; 1 if found
+proc ob_setmesh(id, name) {
+    ob_meshname[id] = name;
+    local m = mesh_find(name);
+    if (m == 0 && len(name) > 0) { m = mesh_model(name); }
+    ob_mesh[id] = m;
+    if (m == 0) { return 0; }
+    return 1;
+}
+
+// copy object `src` to a new slot (same settings, new name); returns the id
+proc ob_copy(src, name) {
+    local id = ob_new(name, ob_kind[src]);
+    ob_mesh[id] = ob_mesh[src];
+    ob_meshname[id] = ob_meshname[src];
+    ob_px[id] = ob_px[src]; ob_py[id] = ob_py[src]; ob_pz[id] = ob_pz[src];
+    ob_rx[id] = ob_rx[src]; ob_ry[id] = ob_ry[src]; ob_rz[id] = ob_rz[src];
+    ob_sx[id] = ob_sx[src]; ob_sy[id] = ob_sy[src]; ob_sz[id] = ob_sz[src];
+    ob_col[id] = ob_col[src];
+    ob_alpha[id] = ob_alpha[src];
+    ob_vis[id] = ob_vis[src];
+    ob_unlit[id] = ob_unlit[src];
+    ob_twoside[id] = ob_twoside[src];
+    ob_tag[id] = ob_tag[src];
+    ob_script[id] = ob_script[src];
+    ob_body[id] = ob_body[src];
+    ob_coll[id] = ob_coll[src];
+    ob_trig[id] = ob_trig[src];
+    ob_bounce[id] = ob_bounce[src];
+    ob_lrange[id] = ob_lrange[src];
+    ob_lpow[id] = ob_lpow[src];
+    return id;
+}
+
+// first live object with this name (case-sensitive), or 0
+proc ob_find(name) {
+    for i = 1 to len(ob_name) {
+        if (ob_alive[i] == 1 && ob_name[i] == name && streq(ob_name[i], name) == 1) { return i; }
+    }
+    return 0;
+}
+
+// a name not used yet: "Cube", "Cube 2", ...
+proc ob_unique(base) {
+    if (ob_find(base) == 0) { return base; }
+    local n = 2;
+    while (ob_find(base .. " " .. n) > 0) { n += 1; }
+    return base .. " " .. n;
+}
+
+// --- rotation matrices ---------------------------------------------------------------
+// R = Ry(yaw) * Rx(pitch) * Rz(roll); its columns are the object's right, up
+// and forward axes in world space.  w3_rot fills m00 .. m22.
+
+var m00 = 1;
+var m01 = 0;
+var m02 = 0;
+var m10 = 0;
+var m11 = 1;
+var m12 = 0;
+var m20 = 0;
+var m21 = 0;
+var m22 = 1;
+
+proc w3_rot(rx, ry, rz) {
+    local cx = cos(rx);
+    local sx = sin(rx);
+    local cy = cos(ry);
+    local sy = sin(ry);
+    local cz = cos(rz);
+    local sz = sin(rz);
+    m00 = cy * cz + sy * sx * sz;
+    m01 = sy * sx * cz - cy * sz;
+    m02 = sy * cx;
+    m10 = cx * sz;
+    m11 = cx * cz;
+    m12 = 0 - sx;
+    m20 = cy * sx * sz - sy * cz;
+    m21 = sy * sz + cy * sx * cz;
+    m22 = cy * cx;
+}
+
+// yaw and pitch that point the forward axis along (dx, dy, dz): w3_yaw, w3_pitch
+var w3_yaw = 0;
+var w3_pitch = 0;
+proc w3_aim(dx, dy, dz) {
+    local h = sqrt(dx * dx + dz * dz);
+    w3_yaw = 0;
+    if (h > 0.000001) {
+        w3_yaw = atan(dx / dz);
+        if (dz < 0) { w3_yaw += 180; }
+        if (w3_yaw > 180) { w3_yaw -= 360; }
+    } else if (dx != 0) {
+        if (dx > 0) { w3_yaw = 90; } else { w3_yaw = -90; }
+    }
+    if (h < 0.000001) {
+        if (dy > 0) { w3_pitch = -90; } else { w3_pitch = 90; }
+    } else {
+        w3_pitch = 0 - atan(dy / h);
+    }
+}

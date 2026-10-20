@@ -1,0 +1,12 @@
+local landed = false
+function start(self)
+  print("ball starts at", self:pos())
+end
+function update(self, dt)
+  if self:grounded() and not landed then
+    landed = true
+    local x, y, z = self:pos()
+    print("landed at y=" .. math.floor(y * 100 + 0.5) / 100 .. " t=" .. math.floor(w3d.time() * 10) / 10)
+    w3d.set("landed", true)
+  end
+end

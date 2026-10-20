@@ -56,7 +56,7 @@ proc vm_init() {
     repeat (MAX_PROC * STACK_SIZE) { add(STK, ""); add(STT, 0); }
     repeat (MAX_PROC * CS_SIZE) { add(CSK, 0); }
     heap_init();
-    net_init();
+    if (HAS_NET == 1) { net_init(); }
     clear(p_capq);
     clear(p_glnames);
     repeat (MAX_PROC) { add(p_capq, ""); add(p_glnames, ""); }
@@ -103,8 +103,16 @@ proc vm_load(ino) {
     local key = ino .. ":" .. fs_mtime[ino];
     local i = index(seg_key, key);
     if (i > 0) { return i; }
-    if (wcompile(fs_data[ino]) == 0) {
-        vm_err = c_errmsg;
+    if (is_wbc(fs_data[ino]) == 1) {
+        // a program compiled ahead of time (an exported Whisker 3D game)
+        if (wbc_parse(fs_data[ino]) == 0) { vm_err = c_errmsg; return 0; }
+    } else if (HAS_COMPILER == 1) {
+        if (wcompile(fs_data[ino]) == 0) {
+            vm_err = c_errmsg;
+            return 0;
+        }
+    } else {
+        vm_err = "this program has not been compiled";
         return 0;
     }
     local sg = seg_alloc(len(cb));

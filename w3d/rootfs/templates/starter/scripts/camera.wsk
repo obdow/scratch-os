@@ -1,0 +1,15 @@
+-- The camera follows the player from behind and above.
+local DIST = 9
+local HEIGHT = 4.5
+
+function update(self, dt)
+  local p = w3d.find("Player")
+  if not p then return end
+  local px, py, pz = p:pos()
+  local x, y, z = self:pos()
+  local tx, ty, tz = px, py + HEIGHT, pz - DIST
+  -- move part of the way each frame: a smooth follow
+  local k = math.min(1, dt * 4)
+  self:setpos(x + (tx - x) * k, y + (ty - y) * k, z + (tz - z) * k)
+  self:lookat(px, py + 1, pz)
+end

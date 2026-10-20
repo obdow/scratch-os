@@ -1,0 +1,735 @@
+// ===========================================================================
+// natives3d.sbs - the Whisker 3D library for Whisker programs: w3d.*,
+// input.* and sound.* (included inside sprite Kernel)
+//
+// Objects reach Whisker as tables: {id = n, name = "...", pos = <w3d.pos>,
+// ...}.  The method fields are the w3d functions themselves, so obj:pos()
+// is w3d.pos(obj).  Every function that takes an object also takes its id.
+// The tables are made once per object, pinned (never collected) and shared
+// by every script, so fields a script sets (self.health = 3) are seen by
+// all of them.
+// ===========================================================================
+
+// method names (w3d.<name> functions copied into every object table)
+list w3_mnames = ["pos", "setpos", "move", "moverel", "rot", "setrot", "rotate", "scale", "setscale",
+    "color", "setcolor", "alpha", "setalpha", "visible", "show", "tag", "settag", "forward", "right",
+    "lookat", "distance", "setmesh", "mesh", "velocity", "setvelocity", "push", "grounded", "touching",
+    "body", "setbody", "destroy", "alive", "contacts", "send", "light"];
+list w3_mids;
+
+proc w3n_init() {
+    clear(w3_mids);
+    for i = 1 to len(w3_mnames) { add(w3_mids, index(nat_names, "w3d." .. w3_mnames[i])); }
+}
+
+// the Whisker table for object id (made the first time)
+proc ob_table(id) {
+    if (ob_tab[id] > 0) { return ob_tab[id]; }
+    local h = table_new(0);
+    tb_pin[h] = 1;
+    tset_n(h, "id", id);
+    tset_s(h, "name", ob_name[id]);
+    for i = 1 to len(w3_mnames) { table_set(h, w3_mnames[i], TSTR, w3_mids[i], TNAT); }
+    ob_tab[id] = h;
+    return h;
+}
+
+// forget the tables (a scene is being unloaded)
+proc ob_tables_free() {
+    for i = 1 to len(ob_tab) {
+        if (ob_tab[i] > 0) { tb_pin[ob_tab[i]] = 0; ob_tab[i] = 0; }
+    }
+}
+
+// argument i as an object id (a table with .id, or a number); 0 and an error
+// if it is not a live object.  quiet = 1 returns 0 without an error.
+proc w3_arg_ob(i, fname, quiet) {
+    local t = nat_t(i);
+    local id = 0;
+    if (t == TTAB) {
+        table_get(nat_v(i), "id", TSTR);
+        if (ht_r == TNUM) { id = hv_r; }
+    } else if (t == TNUM) {
+        id = nat_v(i);
+    }
+    if (id >= 1 && id <= len(ob_name) && id == floor(id)) {
+        if (ob_alive[id] == 1) { return id; }
+        if (quiet == 0) { vm_raise("bad argument #" .. i .. " to '" .. fname .. "' (the object was destroyed)"); }
+        return 0;
+    }
+    if (quiet == 0) {
+        vm_raise("bad argument #" .. i .. " to '" .. fname .. "' (object expected, got " .. vm_typename(t) .. ")");
+    }
+    return 0;
+}
+
+// argument i as an object: an object, or a name, or a tag ("#tag"); for
+// touching(): 0 = any
+proc w3_match(id, i) {
+    local t = nat_t(i);
+    if (t == TNIL) { return 1; }
+    if (t == TSTR) {
+        local s = nat_v(i);
+        if (s[1] == "#") { if (streq(ob_tag[id], substr(s, 2, len(s))) == 1) { return 1; } return 0; }
+        if (streq(ob_name[id], s) == 1) { return 1; }
+        return 0;
+    }
+    local o = w3_arg_ob(i, "touching", 1);
+    if (o == id) { return 1; }
+    return 0;
+}
+
+proc w3_ret_ob(id) {
+    if (id == 0) { nat_retnil(); } else { nat_rett(ob_table(id)); }
+}
+
+// a colour argument: a number, or "#rrggbb"
+proc w3_arg_col(i, fname) {
+    if (nat_t(i) == TSTR) {
+        local c = w3_hexcol(nat_v(i));
+        if (c == -1) { vm_raise("bad argument #" .. i .. " to '" .. fname .. "' (colour like \"#ff8800\" expected)"); return 0; }
+        return c;
+    }
+    local n = nat_num(i, fname);
+    if (n < 0) { n = 0; }
+    if (n > 16777215) { n = 16777215; }
+    return floor(n);
+}
+
+// a value that can be stored outside a program (number, string, boolean, nil)
+proc w3_plain(i, fname) {
+    local t = nat_t(i);
+    if (t == TNIL || t == TNUM || t == TSTR || t == TBOOL) { return 1; }
+    if (t == TTAB) {
+        // objects travel as their table (they are pinned)
+        local o = w3_arg_ob(i, fname, 1);
+        if (o > 0) { return 1; }
+    }
+    vm_raise("bad argument #" .. i .. " to '" .. fname .. "' (a number, string, boolean or object expected)");
+    return 0;
+}
+
+proc nat_w3d(id) {
+    local s = vm_slot;
+    if (id >= N_INPUT_KEY && id < N_SOUND_PLAY) { nat_input(id); return; }
+    if (id >= N_SOUND_PLAY) { nat_sound(id); return; }
+    switch (id) {
+        // --- objects and scenes ---------------------------------------------------
+        case N_W3D_FIND: {
+            local nm = nat_str(1, "w3d.find");
+            if (vm_raised == 0) {
+                local f = 0;
+                if (nm[1] == "#") {
+                    local tg = substr(nm, 2, len(nm));
+                    for i = 1 to len(ob_name) { if (f == 0 && ob_alive[i] == 1 && streq(ob_tag[i], tg) == 1) { f = i; } }
+                } else { f = ob_find(nm); }
+                w3_ret_ob(f);
+            }
+        }
+        case N_W3D_OBJECTS: {
+            local filt = "";
+            if (nat_argc >= 1) { filt = nat_str(1, "w3d.objects"); }
+            if (vm_raised == 0) {
+                local h = table_new(p_pid[s]);
+                for i = 1 to len(ob_name) {
+                    if (ob_alive[i] == 1) {
+                        local ok = 1;
+                        if (len(filt) > 0) {
+                            ok = 0;
+                            if (filt[1] == "#") { if (streq(ob_tag[i], substr(filt, 2, len(filt))) == 1) { ok = 1; } }
+                            else if (streq(ob_name[i], filt) == 1) { ok = 1; }
+                        }
+                        if (ok == 1) { table_append(h, ob_table(i), TTAB); }
+                    }
+                }
+                nat_rett(h);
+            }
+        }
+        case N_W3D_SPAWN: {
+            // w3d.spawn(what, [x, y, z]): what = an object (copied, with its
+            // script) or the name of an object or of a shape
+            local src = 0;
+            local shape = "";
+            if (nat_t(1) == TSTR) {
+                src = ob_find(nat_v(1));
+                if (src == 0) {
+                    shape = nat_v(1);
+                    if (mesh_find(shape) == 0 && mesh_model(shape) == 0) {
+                        vm_raise("bad argument #1 to 'w3d.spawn' (no object or shape called '" .. shape .. "')");
+                    }
+                }
+            } else { src = w3_arg_ob(1, "w3d.spawn", 0); }
+            if (vm_raised == 0) {
+                local o = 0;
+                if (src > 0) { o = ob_copy(src, ob_name[src]); }
+                else { o = ob_new(shape, K_MESH); ob_setmesh(o, shape); }
+                ob_spawned[o] = 1;
+                if (nat_argc >= 4) {
+                    ob_px[o] = nat_num(2, "w3d.spawn");
+                    ob_py[o] = nat_num(3, "w3d.spawn");
+                    ob_pz[o] = nat_num(4, "w3d.spawn");
+                }
+                if (len(ob_script[o]) > 0) { game_need_script(ob_script[o]); }
+                w3_ret_ob(o);
+            }
+        }
+        case N_W3D_DESTROY: {
+            local o = w3_arg_ob(1, "w3d.destroy", 1);
+            if (o > 0) {
+                ob_alive[o] = 0;
+                if (ob_tab[o] > 0) { tb_pin[ob_tab[o]] = 0; }
+                if (o == cam_ob) { cam_ob = 0; }
+            }
+        }
+        case N_W3D_ALIVE: { if (w3_arg_ob(1, "w3d.alive", 1) > 0) { nat_retb(1); } else { nat_retb(0); } }
+        case N_W3D_INSTANCES: {
+            local h = table_new(p_pid[s]);
+            local gi = index(gs_pid, p_pid[s]);
+            if (gi > 0) {
+                local path = gs_path[gi];
+                for i = 1 to len(ob_name) {
+                    if (ob_alive[i] == 1 && streq(ob_script[i], path) == 1) { table_append(h, ob_table(i), TTAB); }
+                }
+            }
+            nat_rett(h);
+        }
+        case N_W3D_FRAME: {
+            if (gw_go[s] == 1) {
+                gw_go[s] = 0;
+                gw_wait[s] = 0;
+                nat_retn(g_dt);
+            } else if (g_on == 0) {
+                nat_retnil();
+            } else {
+                gw_wait[s] = 1;
+                nat_block(BLK_IO);
+            }
+        }
+        case N_W3D_MESSAGE: {
+            // the next message for an object of this script: obj, msg, data
+            local gi2 = index(gs_pid, p_pid[s]);
+            local found = 0;
+            if (gi2 > 0) {
+                local k = 1;
+                while (k <= len(mq_to) && found == 0) {
+                    local to = mq_to[k];
+                    if (ob_alive[to] == 1 && streq(ob_script[to], gs_path[gi2]) == 1) {
+                        found = 1;
+                        nat_rett(ob_table(to));
+                        nat_ret(mq_msg[k], mq_mt[k]);
+                        nat_ret(mq_v[k], mq_t[k]);
+                        del(mq_to, k); del(mq_msg, k); del(mq_mt, k); del(mq_v, k); del(mq_t, k);
+                    } else if (ob_alive[to] == 0) {
+                        del(mq_to, k); del(mq_msg, k); del(mq_mt, k); del(mq_v, k); del(mq_t, k);
+                    } else { k += 1; }
+                }
+            }
+            if (found == 0) { nat_retnil(); }
+        }
+        case N_W3D_BROADCAST: {
+            if (w3_plain(1, "w3d.broadcast") == 1 && w3_plain(2, "w3d.broadcast") == 1) {
+                for i = 1 to len(ob_name) {
+                    if (ob_alive[i] == 1 && len(ob_script[i]) > 0) { mq_add(i, 1); }
+                }
+            }
+        }
+        case N_W3D_SEND: {
+            local to2 = w3_arg_ob(1, "w3d.send", 0);
+            if (vm_raised == 0 && w3_plain(2, "w3d.send") == 1 && w3_plain(3, "w3d.send") == 1) { mq_add(to2, 2); }
+        }
+        case N_W3D_CONTACTS: {
+            local o = w3_arg_ob(1, "w3d.contacts", 0);
+            if (vm_raised == 0) {
+                local h = table_new(p_pid[s]);
+                for k = 1 to len(ct_a) {
+                    if (ct_a[k] == o && ob_alive[ct_b[k]] == 1) { table_append(h, ob_table(ct_b[k]), TTAB); }
+                }
+                nat_rett(h);
+            }
+        }
+        // --- transform ----------------------------------------------------------
+        case N_W3D_POS: {
+            local o = w3_arg_ob(1, "pos", 0);
+            if (vm_raised == 0) { nat_retn(ob_px[o]); nat_retn(ob_py[o]); nat_retn(ob_pz[o]); }
+        }
+        case N_W3D_SETPOS: {
+            local o = w3_arg_ob(1, "setpos", 0);
+            local x = nat_num(2, "setpos");
+            local y = nat_num(3, "setpos");
+            local z = nat_num(4, "setpos");
+            if (vm_raised == 0) { ob_px[o] = x; ob_py[o] = y; ob_pz[o] = z; }
+        }
+        case N_W3D_MOVE: {
+            local o = w3_arg_ob(1, "move", 0);
+            local x = nat_optnum(2, 0, "move");
+            local y = nat_optnum(3, 0, "move");
+            local z = nat_optnum(4, 0, "move");
+            if (vm_raised == 0) { ob_px[o] = ob_px[o] + x; ob_py[o] = ob_py[o] + y; ob_pz[o] = ob_pz[o] + z; }
+        }
+        case N_W3D_MOVEREL: {
+            // along the object's own right, up and forward axes
+            local o = w3_arg_ob(1, "moverel", 0);
+            local x = nat_optnum(2, 0, "moverel");
+            local y = nat_optnum(3, 0, "moverel");
+            local z = nat_optnum(4, 0, "moverel");
+            if (vm_raised == 0) {
+                w3_rot(ob_rx[o], ob_ry[o], ob_rz[o]);
+                ob_px[o] = ob_px[o] + m00 * x + m01 * y + m02 * z;
+                ob_py[o] = ob_py[o] + m10 * x + m11 * y + m12 * z;
+                ob_pz[o] = ob_pz[o] + m20 * x + m21 * y + m22 * z;
+            }
+        }
+        case N_W3D_ROT: {
+            local o = w3_arg_ob(1, "rot", 0);
+            if (vm_raised == 0) { nat_retn(ob_rx[o]); nat_retn(ob_ry[o]); nat_retn(ob_rz[o]); }
+        }
+        case N_W3D_SETROT: {
+            local o = w3_arg_ob(1, "setrot", 0);
+            local x = nat_num(2, "setrot");
+            local y = nat_num(3, "setrot");
+            local z = nat_optnum(4, 0, "setrot");
+            if (vm_raised == 0) { ob_rx[o] = ang_wrap(x); ob_ry[o] = ang_wrap(y); ob_rz[o] = ang_wrap(z); }
+        }
+        case N_W3D_ROTATE: {
+            local o = w3_arg_ob(1, "rotate", 0);
+            local x = nat_optnum(2, 0, "rotate");
+            local y = nat_optnum(3, 0, "rotate");
+            local z = nat_optnum(4, 0, "rotate");
+            if (vm_raised == 0) {
+                ob_rx[o] = ang_wrap(ob_rx[o] + x);
+                ob_ry[o] = ang_wrap(ob_ry[o] + y);
+                ob_rz[o] = ang_wrap(ob_rz[o] + z);
+            }
+        }
+        case N_W3D_SCALE: {
+            local o = w3_arg_ob(1, "scale", 0);
+            if (vm_raised == 0) { nat_retn(ob_sx[o]); nat_retn(ob_sy[o]); nat_retn(ob_sz[o]); }
+        }
+        case N_W3D_SETSCALE: {
+            local o = w3_arg_ob(1, "setscale", 0);
+            local x = nat_num(2, "setscale");
+            local y = nat_optnum(3, x, "setscale");
+            local z = nat_optnum(4, x, "setscale");
+            if (vm_raised == 0) { ob_sx[o] = x; ob_sy[o] = y; ob_sz[o] = z; }
+        }
+        case N_W3D_FORWARD, N_W3D_RIGHT: {
+            local o = w3_arg_ob(1, "forward", 0);
+            if (vm_raised == 0) {
+                w3_rot(ob_rx[o], ob_ry[o], ob_rz[o]);
+                if (id == N_W3D_FORWARD) { nat_retn(m02); nat_retn(m12); nat_retn(m22); }
+                else { nat_retn(m00); nat_retn(m10); nat_retn(m20); }
+            }
+        }
+        case N_W3D_LOOKAT: {
+            // turn to face a point or another object
+            local o = w3_arg_ob(1, "lookat", 0);
+            local tx = 0;
+            local ty = 0;
+            local tz = 0;
+            if (nat_t(2) == TTAB) {
+                local t = w3_arg_ob(2, "lookat", 0);
+                if (vm_raised == 0) { tx = ob_px[t]; ty = ob_py[t]; tz = ob_pz[t]; }
+            } else {
+                tx = nat_num(2, "lookat");
+                ty = nat_num(3, "lookat");
+                tz = nat_num(4, "lookat");
+            }
+            if (vm_raised == 0) {
+                w3_aim(tx - ob_px[o], ty - ob_py[o], tz - ob_pz[o]);
+                ob_ry[o] = w3_yaw;
+                ob_rx[o] = w3_pitch;
+                ob_rz[o] = 0;
+            }
+        }
+        case N_W3D_DISTANCE: {
+            local a = w3_arg_ob(1, "distance", 0);
+            local b = w3_arg_ob(2, "distance", 0);
+            if (vm_raised == 0) {
+                local dx = ob_px[a] - ob_px[b];
+                local dy = ob_py[a] - ob_py[b];
+                local dz = ob_pz[a] - ob_pz[b];
+                nat_retn(sqrt(dx * dx + dy * dy + dz * dz));
+            }
+        }
+        // --- looks ------------------------------------------------------------------
+        case N_W3D_COLOR: { local o = w3_arg_ob(1, "color", 0); if (vm_raised == 0) { nat_retn(ob_col[o]); } }
+        case N_W3D_SETCOLOR: {
+            local o = w3_arg_ob(1, "setcolor", 0);
+            local c = 0;
+            if (nat_argc >= 4) {
+                // r, g, b (0..255)
+                c = floor(clamp255(nat_num(2, "setcolor"))) * 65536 + floor(clamp255(nat_num(3, "setcolor"))) * 256 + floor(clamp255(nat_num(4, "setcolor")));
+            } else { c = w3_arg_col(2, "setcolor"); }
+            if (vm_raised == 0) { ob_col[o] = c; }
+        }
+        case N_W3D_ALPHA: { local o = w3_arg_ob(1, "alpha", 0); if (vm_raised == 0) { nat_retn(ob_alpha[o]); } }
+        case N_W3D_SETALPHA: {
+            local o = w3_arg_ob(1, "setalpha", 0);
+            local a = nat_num(2, "setalpha");
+            if (vm_raised == 0) {
+                if (a < 0) { a = 0; }
+                if (a > 100) { a = 100; }
+                ob_alpha[o] = a;
+            }
+        }
+        case N_W3D_VISIBLE: { local o = w3_arg_ob(1, "visible", 0); if (vm_raised == 0) { nat_retb(ob_vis[o]); } }
+        case N_W3D_SHOW: {
+            local o = w3_arg_ob(1, "show", 0);
+            if (vm_raised == 0) {
+                if (nat_argc < 2 || vm_truthy(nat_v(2), nat_t(2)) == 1) { ob_vis[o] = 1; } else { ob_vis[o] = 0; }
+            }
+        }
+        case N_W3D_NAME: { local o = w3_arg_ob(1, "name", 0); if (vm_raised == 0) { nat_rets(ob_name[o]); } }
+        case N_W3D_TAG: { local o = w3_arg_ob(1, "tag", 0); if (vm_raised == 0) { nat_rets(ob_tag[o]); } }
+        case N_W3D_SETTAG: {
+            local o = w3_arg_ob(1, "settag", 0);
+            local tg = nat_str(2, "settag");
+            if (vm_raised == 0) { ob_tag[o] = tg; }
+        }
+        case N_W3D_SETMESH: {
+            local o = w3_arg_ob(1, "setmesh", 0);
+            local mn = nat_str(2, "setmesh");
+            if (vm_raised == 0) {
+                if (ob_setmesh(o, mn) == 0) { vm_raise("bad argument #2 to 'setmesh' (" .. mesh_err .. ")"); }
+            }
+        }
+        case N_W3D_MESH: { local o = w3_arg_ob(1, "mesh", 0); if (vm_raised == 0) { nat_rets(ob_meshname[o]); } }
+        // --- physics ----------------------------------------------------------------
+        case N_W3D_VELOCITY: {
+            local o = w3_arg_ob(1, "velocity", 0);
+            if (vm_raised == 0) { nat_retn(ob_vx[o]); nat_retn(ob_vy[o]); nat_retn(ob_vz[o]); }
+        }
+        case N_W3D_SETVELOCITY: {
+            local o = w3_arg_ob(1, "setvelocity", 0);
+            local x = nat_num(2, "setvelocity");
+            local y = nat_num(3, "setvelocity");
+            local z = nat_num(4, "setvelocity");
+            if (vm_raised == 0) { ob_vx[o] = x; ob_vy[o] = y; ob_vz[o] = z; }
+        }
+        case N_W3D_PUSH: {
+            local o = w3_arg_ob(1, "push", 0);
+            local x = nat_optnum(2, 0, "push");
+            local y = nat_optnum(3, 0, "push");
+            local z = nat_optnum(4, 0, "push");
+            if (vm_raised == 0) { ob_vx[o] = ob_vx[o] + x; ob_vy[o] = ob_vy[o] + y; ob_vz[o] = ob_vz[o] + z; }
+        }
+        case N_W3D_GROUNDED: { local o = w3_arg_ob(1, "grounded", 0); if (vm_raised == 0) { nat_retb(ob_ground[o]); } }
+        case N_W3D_TOUCHING: {
+            local o = w3_arg_ob(1, "touching", 0);
+            if (vm_raised == 0) {
+                local hit = 0;
+                for k = 1 to len(ct_a) {
+                    if (hit == 0 && ct_a[k] == o && ob_alive[ct_b[k]] == 1) { hit = w3_match(ct_b[k], 2); }
+                }
+                nat_retb(hit);
+            }
+        }
+        case N_W3D_BODY: {
+            local o = w3_arg_ob(1, "body", 0);
+            if (vm_raised == 0) { nat_rets(body_name(ob_body[o])); nat_rets(coll_name(ob_coll[o])); }
+        }
+        case N_W3D_SETBODY: {
+            // setbody(obj, "dynamic" [, "box" | "sphere" | "none"])
+            local o = w3_arg_ob(1, "setbody", 0);
+            local b = nat_str(2, "setbody");
+            if (vm_raised == 0) {
+                ob_body[o] = body_of(b);
+                if (nat_argc >= 3) { ob_coll[o] = coll_of(nat_str(3, "setbody")); }
+                else if (ob_coll[o] == C_NONE && ob_body[o] != B_NONE) { ob_coll[o] = C_BOX; }
+            }
+        }
+        case N_W3D_GRAVITY: {
+            if (nat_argc >= 1) { grav = nat_num(1, "w3d.gravity"); }
+            if (vm_raised == 0) { nat_retn(grav); }
+        }
+        case N_W3D_RAYCAST: {
+            local x = nat_num(1, "w3d.raycast");
+            local y = nat_num(2, "w3d.raycast");
+            local z = nat_num(3, "w3d.raycast");
+            local dx = nat_num(4, "w3d.raycast");
+            local dy = nat_num(5, "w3d.raycast");
+            local dz = nat_num(6, "w3d.raycast");
+            local mx = nat_optnum(7, 1000, "w3d.raycast");
+            local ig = 0;
+            if (nat_argc >= 8) { ig = w3_arg_ob(8, "w3d.raycast", 1); }
+            if (vm_raised == 0) {
+                local hit = raycast(x, y, z, dx, dy, dz, mx, ig);
+                if (hit == 0) { nat_retnil(); }
+                else {
+                    nat_rett(ob_table(hit));
+                    nat_retn(rh_t);
+                    nat_retn(rh_x); nat_retn(rh_y); nat_retn(rh_z);
+                    nat_retn(rh_nx); nat_retn(rh_ny); nat_retn(rh_nz);
+                }
+            }
+        }
+        // --- camera, lights, environment -------------------------------------------
+        case N_W3D_CAMERA: { w3_ret_ob(cam_ob); }
+        case N_W3D_FOV: {
+            if (nat_argc >= 1) {
+                local f = nat_num(1, "w3d.fov");
+                if (f < 10) { f = 10; }
+                if (f > 150) { f = 150; }
+                cam_fov = f;
+            }
+            nat_retn(cam_fov);
+        }
+        case N_W3D_SKY: {
+            local a = w3_arg_col(1, "w3d.sky");
+            local b = a;
+            if (nat_argc >= 2) { b = w3_arg_col(2, "w3d.sky"); }
+            if (vm_raised == 0) { sky_top = a; sky_bot = b; }
+        }
+        case N_W3D_FOG: {
+            if (nat_argc == 0 || nat_t(1) == TNIL || (nat_t(1) == TBOOL && nat_v(1) == 0)) { fog_on = 0; }
+            else {
+                local a = nat_num(1, "w3d.fog");
+                local b = nat_num(2, "w3d.fog");
+                if (vm_raised == 0) {
+                    fog_on = 1;
+                    fog_near = a;
+                    fog_far = b;
+                    if (fog_far <= fog_near) { fog_far = fog_near + 1; }
+                    if (nat_argc >= 3) { fog_col = w3_arg_col(3, "w3d.fog"); }
+                }
+            }
+        }
+        case N_W3D_AMBIENT: {
+            if (nat_argc >= 1) { amb = nat_num(1, "w3d.ambient"); }
+            if (vm_raised == 0) { nat_retn(amb); }
+        }
+        case N_W3D_SUN: {
+            if (nat_argc >= 3) {
+                sun_x = nat_num(1, "w3d.sun");
+                sun_y = nat_num(2, "w3d.sun");
+                sun_z = nat_num(3, "w3d.sun");
+                sun_i = nat_optnum(4, sun_i, "w3d.sun");
+            }
+            if (vm_raised == 0) { nat_retn(sun_x); nat_retn(sun_y); nat_retn(sun_z); nat_retn(sun_i); }
+        }
+        case N_W3D_LIGHT: {
+            // light(obj [, range [, power]]) for point-light objects
+            local o = w3_arg_ob(1, "light", 0);
+            if (vm_raised == 0) {
+                if (nat_argc >= 2) { ob_lrange[o] = nat_num(2, "light"); }
+                if (nat_argc >= 3) { ob_lpow[o] = nat_num(3, "light"); }
+                nat_retn(ob_lrange[o]);
+                nat_retn(ob_lpow[o]);
+            }
+        }
+        // --- screen and HUD ---------------------------------------------------------
+        case N_W3D_SCREEN: { nat_retn(game_w); nat_retn(game_h); }
+        case N_W3D_TEXT: {
+            local x = nat_num(1, "w3d.text");
+            local y = nat_num(2, "w3d.text");
+            local t = nat_str(3, "w3d.text");
+            local c = 16777215;
+            if (nat_argc >= 4 && nat_t(4) != TNIL) { c = w3_arg_col(4, "w3d.text"); }
+            local sc = nat_optnum(5, 1, "w3d.text");
+            if (vm_raised == 0) { hud_add(1, x, y, 0, 0, t, c, sc); }
+        }
+        case N_W3D_RECT: {
+            local x = nat_num(1, "w3d.rect");
+            local y = nat_num(2, "w3d.rect");
+            local w = nat_num(3, "w3d.rect");
+            local h = nat_num(4, "w3d.rect");
+            local c = w3_arg_col(5, "w3d.rect");
+            local a = nat_optnum(6, 0, "w3d.rect");
+            if (vm_raised == 0) { hud_add(2, x, y, w, h, "", c, a); }
+        }
+        case N_W3D_LINE: {
+            local x = nat_num(1, "w3d.line");
+            local y = nat_num(2, "w3d.line");
+            local x2 = nat_num(3, "w3d.line");
+            local y2 = nat_num(4, "w3d.line");
+            local c = w3_arg_col(5, "w3d.line");
+            local sz = nat_optnum(6, 2, "w3d.line");
+            if (vm_raised == 0) { hud_add(3, x, y, x2, y2, "", c, sz); }
+        }
+        case N_W3D_PROJECT: {
+            // world point -> game pixel (nil if behind the camera)
+            local x = nat_num(1, "w3d.project");
+            local y = nat_num(2, "w3d.project");
+            local z = nat_num(3, "w3d.project");
+            if (vm_raised == 0) {
+                game_camera();
+                if (r3_project(x, y, z) == 1) {
+                    nat_retn((r3_sx - vp_x) / vp_scale);
+                    nat_retn((r3_sy - vp_y) / vp_scale);
+                    nat_retn(r3_z);
+                } else { nat_retnil(); }
+            }
+        }
+        // --- time, scenes, shared values -----------------------------------------
+        case N_W3D_TIME: { nat_retn(g_t); }
+        case N_W3D_FPS: { nat_retn(g_fps); }
+        case N_W3D_LOAD: {
+            local p = nat_str(1, "w3d.load");
+            if (vm_raised == 0) {
+                if (substr(p, 1, 7) != "scenes/" && !contains(p, "/")) { p = "scenes/" .. p; }
+                if (!contains(p, ".")) { p = p .. ".scene"; }
+                pj_read(p);
+                if (w3_ino == 0) { vm_raise("bad argument #1 to 'w3d.load' (no scene " .. p .. ")"); }
+                else { g_next = p; }
+            }
+        }
+        case N_W3D_SCENE: { nat_rets(sc_name); nat_rets(sc_path); }
+        case N_W3D_QUIT: { g_quit = 1; }
+        case N_W3D_SET: {
+            local k = nat_str(1, "w3d.set");
+            if (vm_raised == 0 && w3_plain(2, "w3d.set") == 1) {
+                local i = index(sv_k, k);
+                if (i == 0) { add(sv_k, k); add(sv_v, nat_v(2)); add(sv_t, nat_t(2)); }
+                else { sv_v[i] = nat_v(2); sv_t[i] = nat_t(2); }
+            }
+        }
+        case N_W3D_GET: {
+            local k = nat_str(1, "w3d.get");
+            if (vm_raised == 0) {
+                local i = index(sv_k, k);
+                if (i == 0) {
+                    if (nat_argc >= 2) { nat_ret(nat_v(2), nat_t(2)); } else { nat_retnil(); }
+                } else { nat_ret(sv_v[i], sv_t[i]); }
+            }
+        }
+        default: { vm_raise("native " .. nat_names[id] .. " not implemented"); }
+    }
+}
+
+proc clamp255(v) {
+    if (v < 0) { return 0; }
+    if (v > 255) { return 255; }
+    return v;
+}
+
+// angles kept in -180 .. 180
+proc ang_wrap(a) {
+    local r = a % 360;
+    if (r > 180) { r -= 360; }
+    return r;
+}
+
+// a message for object `to`; args: (target,) msg, data at positions first..
+proc mq_add(to, first) {
+    add(mq_to, to);
+    add(mq_msg, nat_v(first));
+    add(mq_mt, nat_t(first));
+    add(mq_v, nat_v(first + 1));
+    add(mq_t, nat_t(first + 1));
+}
+
+// --- input -------------------------------------------------------------------------------
+
+// Scratch key names, with short aliases
+proc key_name(k) {
+    local s = str_lower(k);
+    if (s == "up" || s == "down" || s == "left" || s == "right") { return s .. " arrow"; }
+    if (s == "return") { return "enter"; }
+    if (s == " ") { return "space"; }
+    return s;
+}
+
+// tracked keys: pressed / released are edges between frames
+proc ik_track(name) {
+    local i = index(ik_name, name);
+    if (i == 0) {
+        add(ik_name, name);
+        add(ik_prev, 0);
+        local d = 0;
+        if (key(name)) { d = 1; }
+        add(ik_now, d);
+        i = len(ik_name);
+    }
+    return i;
+}
+
+proc nat_input(id) {
+    switch (id) {
+        case N_INPUT_KEY: {
+            local k = key_name(nat_str(1, "input.key"));
+            if (vm_raised == 0) { if (key(k)) { nat_retb(1); } else { nat_retb(0); } }
+        }
+        case N_INPUT_PRESSED, N_INPUT_RELEASED: {
+            local k = key_name(nat_str(1, "input.pressed"));
+            if (vm_raised == 0) {
+                local i = ik_track(k);
+                local r = 0;
+                if (id == N_INPUT_PRESSED) { if (ik_now[i] == 1 && ik_prev[i] == 0) { r = 1; } }
+                else { if (ik_now[i] == 0 && ik_prev[i] == 1) { r = 1; } }
+                nat_retb(r);
+            }
+        }
+        case N_INPUT_MOUSE: {
+            nat_retn((mouse_x() + HALF_W - vp_x) / vp_scale);
+            nat_retn((HALF_H - mouse_y() - vp_y) / vp_scale);
+        }
+        case N_INPUT_MOUSEDOWN: { if (mouse_down()) { nat_retb(1); } else { nat_retb(0); } }
+        case N_INPUT_CLICKED: { if (m_now == 1 && m_prev == 0) { nat_retb(1); } else { nat_retb(0); } }
+        case N_INPUT_AXIS: {
+            // "horizontal": right/D minus left/A; "vertical": up/W minus down/S
+            local a = str_lower(nat_str(1, "input.axis"));
+            if (vm_raised == 0) {
+                local v = 0;
+                if (a == "horizontal" || a == "x") {
+                    if (key("right arrow") || key("d")) { v += 1; }
+                    if (key("left arrow") || key("a")) { v -= 1; }
+                } else if (a == "vertical" || a == "y") {
+                    if (key("up arrow") || key("w")) { v += 1; }
+                    if (key("down arrow") || key("s")) { v -= 1; }
+                } else { vm_raise("bad argument #1 to 'input.axis' (\"horizontal\" or \"vertical\" expected)"); }
+                if (vm_raised == 0) { nat_retn(v); }
+            }
+        }
+        default: { vm_raise("native " .. nat_names[id] .. " not implemented"); }
+    }
+}
+
+// --- sound -------------------------------------------------------------------------------
+
+proc nat_sound(id) {
+    switch (id) {
+        case N_SOUND_PLAY: {
+            local nm = nat_str(1, "sound.play");
+            local v = nat_optnum(2, 100, "sound.play");
+            local p = nat_optnum(3, 0, "sound.play");
+            if (vm_raised == 0) {
+                if (index(snd_names, nm) == 0) { vm_raise("bad argument #1 to 'sound.play' (no sound called '" .. nm .. "'; see sound.list())"); }
+                else { snd_queue(1, nm, v, p, 0); }
+            }
+        }
+        case N_SOUND_STOP: { snd_queue(9, "", 0, 0, 0); }
+        case N_SOUND_LIST: {
+            local h = table_new(p_pid[vm_slot]);
+            for i = 1 to len(snd_names) { table_append(h, snd_names[i], TSTR); }
+            nat_rett(h);
+        }
+        case N_SOUND_NOTE: {
+            // note(note, beats [, instrument [, voice]])
+            local n = nat_num(1, "sound.note");
+            local b = nat_num(2, "sound.note");
+            local ins = nat_optnum(3, 0, "sound.note");
+            local vc = nat_optnum(4, 1, "sound.note");
+            if (vm_raised == 0) { snd_queue(2, n, b, ins, vc); }
+        }
+        case N_SOUND_DRUM: {
+            local d = nat_num(1, "sound.drum");
+            local b = nat_num(2, "sound.drum");
+            local vc = nat_optnum(3, 4, "sound.drum");
+            if (vm_raised == 0) { snd_queue(3, d, b, 0, vc); }
+        }
+        case N_SOUND_REST: {
+            local b = nat_num(1, "sound.rest");
+            local vc = nat_optnum(2, 1, "sound.rest");
+            if (vm_raised == 0) { snd_queue(4, 0, b, 0, vc); }
+        }
+        case N_SOUND_TEMPO: {
+            local t = nat_num(1, "sound.tempo");
+            if (vm_raised == 0) { snd_queue(5, t, 0, 0, 0); }
+        }
+        case N_SOUND_VOLUME: {
+            local v = nat_num(1, "sound.volume");
+            if (vm_raised == 0) { snd_queue(6, v, 0, 0, 0); }
+        }
+        default: { vm_raise("native " .. nat_names[id] .. " not implemented"); }
+    }
+}

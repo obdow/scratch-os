@@ -1,0 +1,98 @@
+-- The starter scene: walk with the arrows or WASD, jump with Space.
+scene "Main"
+sky #5d86e6 #d9ebff
+ambient 0.35
+sun -0.4 -1 0.6 0.8
+fog 25 60 #d9ebff
+gravity -22
+
+object "Ground" mesh
+  mesh plane
+  scale 30 1 30
+  color #5aa864
+  body static
+  collider box
+
+object "Player" mesh
+  mesh capsule
+  pos 0 1 0
+  scale 1 1.6 1
+  color #ff8a3d
+  tag player
+  script scripts/player.wsk
+  body dynamic
+  collider box
+
+object "Block" mesh
+  mesh cube
+  pos 4 0.5 4
+  color #8d6e63
+  body static
+  collider box
+
+object "Ramp" mesh
+  mesh wedge
+  pos -4 0.75 3
+  scale 3 1.5 4
+  color #90a4ae
+  body static
+  collider box
+
+object "Ledge" mesh
+  mesh cube
+  pos -4 0.75 7
+  scale 3 1.5 4
+  color #90a4ae
+  body static
+  collider box
+
+object "Coin" mesh
+  mesh cylinder
+  pos 4 1.6 4
+  rot 90 0 0
+  scale 0.7 0.12 0.7
+  color #ffd54f
+  unlit
+  tag coin
+  script scripts/coin.wsk
+  collider box
+  trigger
+
+object "Coin 2" mesh
+  mesh cylinder
+  pos -4 2.2 7
+  rot 90 0 0
+  scale 0.7 0.12 0.7
+  color #ffd54f
+  unlit
+  tag coin
+  script scripts/coin.wsk
+  collider box
+  trigger
+
+object "Coin 3" mesh
+  mesh cylinder
+  pos 6 0.8 -3
+  rot 90 0 0
+  scale 0.7 0.12 0.7
+  color #ffd54f
+  unlit
+  tag coin
+  script scripts/coin.wsk
+  collider box
+  trigger
+
+object "Lamp" light
+  pos 0 3 3
+  range 8
+  power 0.8
+
+object "Game" empty
+  pos 0 0 0
+  script scripts/hud.wsk
+
+object "Camera" camera
+  pos 0 5 -9
+  rot 20 0 0
+  fov 60
+  script scripts/camera.wsk

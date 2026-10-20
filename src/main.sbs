@@ -29,6 +29,7 @@ sprite Kernel {
     include "shell.sbs";
     include "boot.sbs";
     include "heap.sbs";
+    include "wcore.sbs";
     include "wcomp.sbs";
     include "vm.sbs";
     include "natives.sbs";
@@ -36,6 +37,7 @@ sprite Kernel {
     include "caps.sbs";
     include "image.sbs";
     include "net.sbs";            // networking over cloud variables
+    include "w3d_stub.sbs";       // Whisker 3D natives (not available here)
     include "wm.sbs";
     include "ide/ide.sbs";          // the Whisker IDE, as a desktop app
     include "ide/textview.sbs";

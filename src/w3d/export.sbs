@@ -1,0 +1,142 @@
+// ===========================================================================
+// export.sbs - compiling a Whisker 3D project for the game players
+// (included inside sprite Kernel in the engine only)
+//
+// The players have no Whisker compiler (it would not fit in a Scratch
+// project), so exporting compiles every object script, with the loop that
+// runs it (GAME_FOOTER), into .build/<script path>, and every module those
+// scripts require into .build/req/<n>.  A module's code depends on the
+// global names its requirer already has, so modules are compiled in the
+// order the scripts' require("...") calls appear: depth first, each module
+// once per script, as they run.
+// ===========================================================================
+
+list xs_scripts;             // object scripts found in the scenes
+list xs_mods;                // modules already compiled for the current script
+var xs_err = "";
+var xs_nreq = 0;
+
+// every "script <path>" in every scene file
+proc export_find_scripts() {
+    clear(xs_scripts);
+    local dir = fs_lookup(w3_proj .. "/scenes", 1);
+    if (dir == 0) { return; }
+    fs_list(dir);
+    local kids = "";
+    for i = 1 to len(fs_tmp) { kids = kids .. fs_tmp[i] .. ","; }
+    local start = 1;
+    for i = 1 to len(kids) {
+        if (kids[i] == ",") {
+            local f = substr(kids, start, i - 1) * 1;
+            start = i + 1;
+            local text = fs_data[f];
+            local ls = 1;
+            for k = 1 to len(text) + 1 {
+                if (k > len(text) || text[k] == "\n") {
+                    w3_split(substr(text, ls, k - 1));
+                    ls = k + 1;
+                    if (len(w3_tok) >= 2 && w3_tok[1] == "script") {
+                        if (index(xs_scripts, w3_tok[2]) == 0) { add(xs_scripts, w3_tok[2]); }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// the module names in require("...") calls, in the order they appear
+list xs_found;
+proc export_requires(src) {
+    clear(xs_found);
+    local i = 1;
+    local n = len(src);
+    while (i <= n - 9) {
+        if (src[i] == "r" && substr(src, i, i + 7) == "require(") {
+            local j = i + 8;
+            while (j <= n && src[j] == " ") { j += 1; }
+            local q = src[j];
+            if (q == "\"" || q == "'") {
+                local name = "";
+                local k = j + 1;
+                while (k <= n && src[k] != q) { name = name .. src[k]; k += 1; }
+                add(xs_found, name);
+                i = k;
+            }
+        }
+        i += 1;
+    }
+}
+
+// where nat_require would find module `name` for a script in folder dir
+proc export_mod_file(name, dir) {
+    local ino = fs_lookup("/lib/" .. name .. ".wsk", 1);
+    if (ino == 0) { ino = fs_lookup(name .. ".wsk", dir); }
+    if (ino == 0) { ino = fs_lookup(name, dir); }
+    if (ino > 0 && fs_type[ino] == FT_DIR) { ino = 0; }
+    return ino;
+}
+
+// compile module `name` (and the modules it requires) after a program whose
+// global names are `names`; returns the names after it, or "\x02" on error
+proc export_module(name, names, dir) recursive {
+    if (index(xs_mods, name) > 0) { return names; }
+    add(xs_mods, name);
+    local ino = export_mod_file(name, dir);
+    if (ino == 0) { xs_err = "module '" .. name .. "' not found"; return "\x02"; }
+    local base = names .. "__mod_" .. name .. "\x01";
+    local src = fs_data[ino];
+    if (wcompile_ex(src, base, 1) == 0) {
+        xs_err = fs_path(ino) .. ": " .. c_errmsg;
+        return "\x02";
+    }
+    xs_nreq += 1;
+    if (pj_write(".build/req/" .. xs_nreq, wbc_text(name, base)) == 0) { xs_err = pj_err; return "\x02"; }
+    local after = gl_names_encode();
+    // its own requires run while it loads
+    export_requires(src);
+    local subs = "";
+    for i = 1 to len(xs_found) { subs = subs .. xs_found[i] .. "\x03"; }
+    local start = 1;
+    for i = 1 to len(subs) {
+        if (subs[i] == "\x03") {
+            after = export_module(substr(subs, start, i - 1), after, fs_parent[ino]);
+            start = i + 1;
+            if (after == "\x02") { return "\x02"; }
+        }
+    }
+    return after;
+}
+
+// compile the project into .build/; 1 on success, else 0 and xs_err
+proc export_compile() {
+    xs_err = "";
+    xs_nreq = 0;
+    local old = fs_lookup(w3_proj .. "/.build", 1);
+    if (old > 0) { fs_remove(old, 1); }
+    export_find_scripts();
+    for s = 1 to len(xs_scripts) {
+        local path = xs_scripts[s];
+        local src = pj_read(path);
+        if (w3_ino == 0) { xs_err = "script not found: " .. path; return 0; }
+        local dir = fs_parent[w3_ino];
+        if (wcompile(src .. GAME_FOOTER) == 0) {
+            xs_err = path .. ": " .. c_errmsg;
+            return 0;
+        }
+        if (pj_write(".build/" .. path, wbc_text("-", "")) == 0) { xs_err = pj_err; return 0; }
+        local names = gl_names_encode();
+        clear(xs_mods);
+        export_requires(src);
+        local subs = "";
+        for i = 1 to len(xs_found) { subs = subs .. xs_found[i] .. "\x03"; }
+        local start = 1;
+        for i = 1 to len(subs) {
+            if (subs[i] == "\x03") {
+                names = export_module(substr(subs, start, i - 1), names, dir);
+                start = i + 1;
+                if (names == "\x02") { return 0; }
+            }
+        }
+    }
+    return 1;
+}
