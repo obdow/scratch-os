@@ -516,6 +516,8 @@ proc w3e_prompt(kind, v) {
         if (len(v) == 0) { return 1; }
         local dir = "/projects/" .. safe_name(v);
         if (fs_lookup(dir, 1) > 0) { dialog(1, "Import", "There is already a project called " .. safe_name(v) .. ".", "", ""); return 1; }
+        clear(bl_out);
+        for i = 1 to len(w3d_import) { add(bl_out, w3d_import[i]); }
         if (bundle_import(dir) == 0) { dialog(1, "Import", pj_err, "", ""); return 1; }
         clear(w3d_import);
         hide_list(w3d_import);

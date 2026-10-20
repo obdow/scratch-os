@@ -1,0 +1,62 @@
+scene "API test"
+sky #000000
+gravity -20
+
+object "Ground" mesh
+  mesh plane
+  scale 20 1 20
+  body static
+  collider box
+
+object "Ball" mesh
+  mesh sphere
+  pos 0 3 0
+  body dynamic
+  collider sphere
+  tag falling
+
+object "Crate" mesh
+  mesh cube
+  pos 3 2 0
+  body dynamic
+  collider box
+  tag falling
+
+object "Wall" mesh
+  mesh cube
+  pos 0 1 6
+  scale 4 2 1
+  body static
+  collider box
+
+object "Zone" mesh
+  mesh cube
+  pos -3 0.5 0
+  hidden
+  collider box
+  trigger
+
+object "Pusher" mesh
+  mesh cube
+  pos -3 3 0
+  scale 0.5 0.5 0.5
+  body dynamic
+  collider box
+
+object "Arrow" mesh
+  mesh models/arrow.obj
+  pos 6 0 6
+
+object "Receiver" empty
+  script scripts/receiver.wsk
+
+object "Tester" empty
+  pos 1 2 3
+  rot 0 90 0
+  tag tester
+  script scripts/test.wsk
+
+object "Camera" camera
+  pos 0 4 -10
+  rot 15 0 0
+  fov 60

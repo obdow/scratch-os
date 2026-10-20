@@ -1,0 +1,6 @@
+name API Test
+resolution 480x360
+scene scenes/main.scene
+budget 400
+distance 80
+fill 3

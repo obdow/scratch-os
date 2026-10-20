@@ -552,6 +552,7 @@ proc nat_w3d(id) {
             local y = nat_num(2, "w3d.project");
             local z = nat_num(3, "w3d.project");
             if (vm_raised == 0) {
+                game_viewport();
                 game_camera();
                 if (r3_project(x, y, z) == 1) {
                     nat_retn((r3_sx - vp_x) / vp_scale);
@@ -633,10 +634,11 @@ proc key_name(k) {
 proc ik_track(name) {
     local i = index(ik_name, name);
     if (i == 0) {
+        // a key asked about for the first time: no press until it changes
         add(ik_name, name);
-        add(ik_prev, 0);
         local d = 0;
         if (key(name)) { d = 1; }
+        add(ik_prev, d);
         add(ik_now, d);
         i = len(ik_name);
     }

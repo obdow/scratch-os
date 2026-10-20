@@ -1,0 +1,141 @@
+-- checks the Whisker 3D library from inside a running game
+local fails = 0
+local count = 0
+local function check(name, ok, got)
+  count = count + 1
+  if ok then
+    print("PASS " .. name)
+  else
+    fails = fails + 1
+    print("FAIL " .. name .. " (got " .. tostring(got) .. ")")
+  end
+end
+local function near(a, b) return math.abs(a - b) < 0.01 end
+
+local phase = 0
+local t0 = 0
+
+function start(self)
+  -- objects
+  check("self is the Tester", self.name == "Tester", self.name)
+  check("find by name", w3d.find("Ball").name == "Ball", nil)
+  check("find by tag", w3d.find("#tester").id == self.id, nil)
+  check("missing object is nil", w3d.find("Nope") == nil, nil)
+  check("objects by tag", #w3d.objects("#falling") == 2, #w3d.objects("#falling"))
+  local x, y, z = self:pos()
+  check("pos", x == 1 and y == 2 and z == 3, x)
+  self:move(1, 0, 0)
+  x, y, z = self:pos()
+  check("move", x == 2, x)
+  local rx, ry, rz = self:rot()
+  check("rot from the scene", ry == 90, ry)
+  local fx, fy, fz = self:forward()
+  check("forward of yaw 90 is +x", near(fx, 1) and near(fz, 0), fx)
+  self:moverel(0, 0, 2)
+  x, y, z = self:pos()
+  check("moverel goes forward", near(x, 4) and near(z, 3), x)
+  self:setpos(0, 0, 0)
+  self:lookat(0, 0, 5)
+  rx, ry, rz = self:rot()
+  check("lookat +z gives yaw 0", near(ry, 0) and near(rx, 0), ry)
+  self:lookat(5, 0, 0)
+  rx, ry, rz = self:rot()
+  check("lookat +x gives yaw 90", near(ry, 90), ry)
+  self:rotate(0, 300, 0)
+  rx, ry, rz = self:rot()
+  check("rotate wraps to -180..180", near(ry, 30), ry)
+  self:setscale(2)
+  local sx, sy, sz = self:scale()
+  check("setscale with one number", sx == 2 and sy == 2 and sz == 2, sy)
+  check("distance", near(w3d.distance(w3d.find("Ball"), w3d.find("Crate")), math.sqrt(9 + 1)), nil)
+  local ball = w3d.find("Ball")
+  ball:setcolor("#ff8000")
+  check("setcolor hex", ball:color() == 16744448, ball:color())
+  ball:setcolor(1, 2, 3)
+  check("setcolor r g b", ball:color() == 1 * 65536 + 2 * 256 + 3, ball:color())
+  ball:setalpha(150)
+  check("alpha is capped at 100", ball:alpha() == 100, ball:alpha())
+  ball:setalpha(0)
+  check("visible", ball:visible() == true, nil)
+  check("tag", ball:tag() == "falling", ball:tag())
+  check("mesh name", ball:mesh() == "sphere", ball:mesh())
+  local b, c = ball:body()
+  check("body and collider", b == "dynamic" and c == "sphere", b)
+  check("model loaded with colours", w3d.find("Arrow"):mesh() == "models/arrow.obj", nil)
+  -- spawning
+  local copy = w3d.spawn("Crate", 10, 5, 10)
+  check("spawn copies an object", copy.name == "Crate" and copy:tag() == "falling", copy.name)
+  local cx, cy, cz = copy:pos()
+  check("spawn at a place", cx == 10 and cy == 5 and cz == 10, cx)
+  shape = w3d.spawn("torus", 0, 10, 0)   -- a global: the function below uses it
+  check("spawn a shape", shape:mesh() == "torus", shape:mesh())
+  w3d.destroy(shape)
+  check("destroy", w3d.alive(shape) == false, nil)
+  local ok, err = pcall(function() return shape:pos() end)
+  check("a destroyed object raises", ok == false and string.find(err, "destroyed") ~= nil, err)
+  -- shared values, screen, camera, environment
+  w3d.set("score", 5)
+  check("set / get", w3d.get("score") == 5, w3d.get("score"))
+  check("get with a default", w3d.get("nothing", 7) == 7, nil)
+  local w, h = w3d.screen()
+  check("screen is 480 x 360", w == 480 and h == 360, w)
+  check("camera", w3d.camera().name == "Camera", nil)
+  check("fov", w3d.fov() == 60, w3d.fov())
+  check("gravity", w3d.gravity() == -20, w3d.gravity())
+  local px, py = w3d.project(0, 0, 0)
+  check("project the origin onto the screen", px ~= nil and px > 200 and px < 280, px)
+  -- raycast at the wall
+  local hit, d, hx, hy, hz, nx, ny, nz = w3d.raycast(0, 1, 0, 0, 0, 1)
+  check("raycast hits the wall", hit ~= nil and hit.name == "Wall", hit)
+  check("raycast distance", d ~= nil and near(d, 5.5), d)
+  check("raycast normal faces back", nz == -1, nz)
+  local miss = w3d.raycast(0, 1, 0, 0, 0, -1, 5)
+  check("raycast can miss", miss == nil, miss)
+  -- sound
+  local names = sound.list()
+  local has = {}
+  for i, n in ipairs(names) do has[n] = true end
+  check("sound effects are built in", has["coin"] and has["jump"] and has["explosion"], #names)
+  local sok = pcall(function() sound.play("no such sound") end)
+  check("an unknown sound raises", sok == false, sok)
+  sound.play("coin", 50, 2)
+  sound.tempo(140)
+  sound.note(60, 0.25)
+  sound.note(64, 0.25, 1, 2)
+  sound.drum(1, 0.25)
+  -- messages to another script
+  w3d.send(w3d.find("Receiver"), "hello", 42)
+  t0 = w3d.time()
+  phase = 1
+end
+
+function update(self, dt)
+  if phase == 1 then
+    check("dt is a small positive number", dt > 0 and dt <= 0.1, dt)
+    phase = 2
+  elseif phase == 2 and w3d.time() - t0 > 2 then
+    check("a message arrived", w3d.get("got") == "hello:42", w3d.get("got"))
+    local ball = w3d.find("Ball")
+    local x, y, z = ball:pos()
+    check("the ball fell and rests on the ground", near(y, 0.51) or (y > 0.45 and y < 0.56), y)
+    check("the ball is grounded", ball:grounded(), nil)
+    local crate = w3d.find("Crate")
+    local cx, cy, cz = crate:pos()
+    check("the crate rests on the ground", cy > 0.45 and cy < 0.56, cy)
+    local p = w3d.find("Pusher")
+    check("the pusher fell into the trigger zone", p:touching("Zone"), nil)
+    local px, py, pz = p:pos()
+    check("a trigger does not block", py < 0.5, py)
+    check("touching by tag", not ball:touching("#tester"), nil)
+    check("contacts list", #w3d.contacts(ball) >= 1, #w3d.contacts(ball))
+    check("fps is counted", w3d.fps() > 0, w3d.fps())
+    -- the test runner holds W down
+    check("input.key", input.key("w") and not input.key("x"), nil)
+    check("input.axis", input.axis("vertical") == 1 and input.axis("horizontal") == 0, input.axis("vertical"))
+    check("input.pressed is only the first frame", not input.pressed("w"), nil)
+    local mx, my = input.mouse()
+    check("input.mouse gives game pixels", mx ~= nil and my ~= nil, mx)
+    print("DONE " .. count .. " checks, " .. fails .. " failed")
+    phase = 3
+  end
+end

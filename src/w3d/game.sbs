@@ -81,7 +81,14 @@ proc game_start(path, parent, out_k, out_i) {
     g_quit = 0;
     g_next = "";
     clear(sv_k); clear(sv_v); clear(sv_t);
+    // the usual keys are watched from the start, so input.pressed sees the
+    // first press even before a script has asked about that key
     clear(ik_name); clear(ik_prev); clear(ik_now);
+    local keys = "abcdefghijklmnopqrstuvwxyz0123456789";
+    for i = 1 to len(keys) { ik_track(keys[i]); }
+    ik_track("space"); ik_track("enter");
+    ik_track("up arrow"); ik_track("down arrow"); ik_track("left arrow"); ik_track("right arrow");
+    for i = 1 to len(ik_name) { ik_prev[i] = ik_now[i]; }
     if (game_scene(path) == 0) { return 0; }
     g_on = 1;
     g_t = 0;
@@ -230,7 +237,8 @@ proc game_tick() {
     local now = now_secs();
     g_dt = now - g_last;
     if (g_dt > 0.1) { g_dt = 0.1; }
-    if (g_dt < 0) { g_dt = 0; }
+    // never 0 (the first frame comes right after the start)
+    if (g_dt < 0.001) { g_dt = 1 / 60; }
     g_last = now;
     g_t += g_dt;
     g_fcount += 1;

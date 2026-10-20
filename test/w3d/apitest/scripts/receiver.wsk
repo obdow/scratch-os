@@ -1,0 +1,3 @@
+function on_message(self, msg, data)
+  w3d.set("got", msg .. ":" .. tostring(data))
+end
