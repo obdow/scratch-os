@@ -1,0 +1,19 @@
+-- A little bass line on voice 1 and a beat on voice 4, with the Music
+-- extension.  More notes are queued when the last ones have been played.
+local BASS = {45, 45, 52, 48, 45, 45, 55, 52}
+local next_time = 0
+
+function start(self)
+  sound.tempo(132)
+end
+
+function update(self, dt)
+  if w3d.time() >= next_time then
+    for i, n in ipairs(BASS) do
+      sound.note(n, 0.5, 6, 1)
+      if i % 2 == 1 then sound.drum(1, 0.5) else sound.drum(3, 0.5) end
+    end
+    -- 8 half beats at 132 beats a minute
+    next_time = w3d.time() + 4 * 60 / 132
+  end
+end

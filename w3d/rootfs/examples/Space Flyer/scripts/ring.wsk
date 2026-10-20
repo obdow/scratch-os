@@ -1,0 +1,19 @@
+-- Rings: fly through for points; each one moves on ahead when passed.
+function start(self)
+  self.base = 40
+end
+
+function update(self, dt)
+  self:rotate(0, 0, 40 * dt)
+  local x, y, z = self:pos()
+  local shipz = w3d.get("ship_z", 0)
+  if self:touching("#ship") then
+    sound.play("powerup")
+    w3d.set("score", w3d.get("score", 0) + 10)
+    w3d.set("rings", w3d.get("rings", 0) + 1)
+    self:setpos(math.random(-8, 8), math.random(-5, 5), shipz + 60)
+  elseif z < shipz - 10 then
+    -- missed it
+    self:setpos(math.random(-8, 8), math.random(-5, 5), shipz + 60)
+  end
+end

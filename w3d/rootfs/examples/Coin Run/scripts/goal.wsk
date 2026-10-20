@@ -1,0 +1,19 @@
+-- The goal: open once every coin is collected; touching it goes on.
+function update(self, dt)
+  local open = #w3d.objects("#coin") == 0
+  if open then
+    self:setcolor("#66ff6a")
+    self:rotate(0, 90 * dt, 0)
+  else
+    self:setcolor("#3d6b40")
+  end
+  if open and self:touching("#player") then
+    sound.play("win")
+    local name = w3d.scene()
+    if name == "Level 1" then
+      w3d.load("level2")
+    else
+      w3d.set("finished", true)
+    end
+  end
+end

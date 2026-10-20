@@ -1,0 +1,14 @@
+-- Coins left and messages.
+function update(self, dt)
+  local left = #w3d.objects("#coin")
+  local w, h = w3d.screen()
+  w3d.rect(12, 12, 300, 34, "#000000", 55)
+  w3d.text(24, 21, w3d.scene() .. "   coins left: " .. left, "#ffd54f")
+  if left == 0 and not w3d.get("finished") then
+    w3d.text(w / 2 - 152, 70, "The goal is open!", "#ffffff", 2)
+  end
+  if w3d.get("finished") then
+    w3d.rect(w / 2 - 220, h / 2 - 40, 440, 80, "#000000", 40)
+    w3d.text(w / 2 - 136, h / 2 - 16, "You did it!", "#ffffff", 2)
+  end
+end

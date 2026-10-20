@@ -1,0 +1,21 @@
+-- The camera stays behind the ship; the HUD is drawn here too.
+function update(self, dt)
+  local ship = w3d.find("Ship")
+  local x, y, z = ship:pos()
+  local cx, cy, cz = self:pos()
+  local k = math.min(1, dt * 5)
+  self:setpos(cx + (x - cx) * k, cy + (y + 2 - cy) * k, z - 9)
+  local w, h = w3d.screen()
+  w3d.text(24, 20, "Score " .. w3d.get("score", 0), "#ffffff", 2)
+  w3d.text(24, 60, "Rings " .. w3d.get("rings", 0) .. "   rocks " .. w3d.get("rocks", 0), "#90caf9")
+  -- a laser beam for a moment after firing
+  local shot = w3d.get("shot", 0)
+  if shot > 0 then
+    w3d.set("shot", shot - dt)
+    local sx, sy = w3d.project(x, y, z + 1.5)
+    local ex, ey = w3d.project(x, y, z + 60)
+    if sx and ex then w3d.line(sx, sy, ex, ey, "#ff5252", 3) end
+  end
+  w3d.line(w / 2 - 8, h / 2, w / 2 + 8, h / 2, "#ffffff", 1)
+  w3d.line(w / 2, h / 2 - 8, w / 2, h / 2 + 8, "#ffffff", 1)
+end

@@ -1,0 +1,22 @@
+-- Click a shape to make it jump.  The ray from the camera through the
+-- pointer finds what is under it.
+local picked = ""
+local picked_time = -10
+
+function update(self, dt)
+  if input.clicked() then
+    local mx, my = input.mouse()
+    local x, y, z, dx, dy, dz = w3d.screenray(mx, my)
+    local hit = w3d.raycast(x, y, z, dx, dy, dz, 100)
+    if hit and hit:tag() == "shape" then
+      w3d.send(hit, "jump")
+      picked = hit.name
+      picked_time = w3d.time()
+    end
+  end
+  w3d.rect(8, 8, 220, 22, "#000000", 50)
+  w3d.text(14, 11, "Click a shape to make it jump", "#ffffff")
+  if w3d.time() - picked_time < 1.5 then
+    w3d.text(14, 36, picked .. "!", "#ffd54f")
+  end
+end

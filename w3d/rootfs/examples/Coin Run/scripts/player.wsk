@@ -1,0 +1,35 @@
+-- Walk with the arrow keys or WASD, jump with Space.
+local SPEED = 6.5
+local JUMP = 10
+
+function start(self)
+  self.home_x, self.home_y, self.home_z = self:pos()
+end
+
+function update(self, dt)
+  local h = input.axis("horizontal")
+  local v = input.axis("vertical")
+  local cam = w3d.camera()
+  local fx, fy, fz = cam:forward()
+  local rx, ry, rz = cam:right()
+  local l = math.sqrt(fx * fx + fz * fz)
+  if l > 0 then
+    fx = fx / l
+    fz = fz / l
+  end
+  local vx = (rx * h + fx * v) * SPEED
+  local vz = (rz * h + fz * v) * SPEED
+  local ox, vy, oz = self:velocity()
+  if self:grounded() and input.pressed("space") then
+    vy = JUMP
+    sound.play("jump")
+  end
+  self:setvelocity(vx, vy, vz)
+  local x, y, z = self:pos()
+  if h ~= 0 or v ~= 0 then self:lookat(x + vx, y, z + vz) end
+  if y < -8 then
+    sound.play("hurt")
+    self:setpos(self.home_x, self.home_y, self.home_z)
+    self:setvelocity(0, 0, 0)
+  end
+end

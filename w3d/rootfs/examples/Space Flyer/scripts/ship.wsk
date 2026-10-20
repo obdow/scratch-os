@@ -1,0 +1,35 @@
+-- The ship flies forward by itself; steer with the arrows or WASD.
+local SPEED = 18
+local TURN = 9
+
+function start(self)
+  self.score = 0
+  self.cool = 0
+end
+
+function update(self, dt)
+  local h = input.axis("horizontal")
+  local v = input.axis("vertical")
+  self:move(h * TURN * dt, v * TURN * dt, SPEED * dt)
+  -- bank into turns
+  self:setrot(90 - v * 15, 0, -h * 25)
+  -- keep inside the play area
+  local x, y, z = self:pos()
+  if x > 12 then x = 12 end
+  if x < -12 then x = -12 end
+  if y > 8 then y = 8 end
+  if y < -8 then y = -8 end
+  self:setpos(x, y, z)
+  w3d.set("ship_z", z)
+  -- fire: the first rock straight ahead is hit
+  self.cool = self.cool - dt
+  if input.key("space") and self.cool <= 0 then
+    self.cool = 0.25
+    sound.play("laser", 60)
+    local hit, d = w3d.raycast(x, y, z + 1.5, 0, 0, 1, 80, self)
+    if hit and hit:tag() == "rock" then
+      w3d.send(hit, "hit", d)
+    end
+    w3d.set("shot", 0.08)
+  end
+end

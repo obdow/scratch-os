@@ -1,0 +1,11 @@
+-- Shapes jump when they are told to (see click.wsk), and turn while in the air.
+function on_message(self, msg, data)
+  if msg == "jump" and self:grounded() then
+    self:push(math.random(-2, 2), 8, math.random(-1, 1))
+    sound.play("bounce")
+  end
+end
+
+function update(self, dt)
+  if not self:grounded() then self:rotate(0, 180 * dt, 0) end
+end

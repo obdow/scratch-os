@@ -1,0 +1,6 @@
+name Space Flyer
+resolution 1280x720
+scene scenes/space.scene
+budget 500
+distance 120
+fill 2

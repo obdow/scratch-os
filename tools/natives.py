@@ -74,6 +74,8 @@ NATIVES = [
     # -- sound
     'sound.play', 'sound.stop', 'sound.list', 'sound.note', 'sound.drum', 'sound.rest',
     'sound.tempo', 'sound.volume',
+    # -- added later (keep appending here)
+    'w3d.screenray',
 ]
 
 

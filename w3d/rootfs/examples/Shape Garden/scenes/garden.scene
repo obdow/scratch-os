@@ -1,0 +1,131 @@
+-- Shape Garden: every built-in shape, two moving lights, models, and
+-- clicking.  Click a shape to make it jump.
+scene "Garden"
+sky #87a8f0 #f3e7d3
+ambient 0.3
+sun -0.3 -1 0.6 0.6
+fog 25 55 #f3e7d3
+gravity -18
+
+object "Lawn" mesh
+  mesh plane
+  scale 24 1 24
+  color #6dbb63
+  body static
+  collider box
+
+object "Cube" mesh
+  mesh cube
+  pos -6 0.5 4
+  color #ef5350
+  tag shape
+  script scripts/shape.wsk
+  body dynamic
+  collider box
+  bounce 0.3
+
+object "Sphere" mesh
+  mesh sphere
+  pos -3 0.5 4
+  color #ffa726
+  tag shape
+  script scripts/shape.wsk
+  body dynamic
+  collider sphere
+  bounce 0.6
+
+object "Cylinder" mesh
+  mesh cylinder
+  pos 0 0.5 4
+  color #ffee58
+  tag shape
+  script scripts/shape.wsk
+  body dynamic
+  collider box
+  bounce 0.3
+
+object "Cone" mesh
+  mesh cone
+  pos 3 0.5 4
+  color #66bb6a
+  tag shape
+  script scripts/shape.wsk
+  body dynamic
+  collider box
+  bounce 0.3
+
+object "Pyramid" mesh
+  mesh pyramid
+  pos 6 0.5 4
+  color #42a5f5
+  tag shape
+  script scripts/shape.wsk
+  body dynamic
+  collider box
+  bounce 0.3
+
+object "Torus" mesh
+  mesh torus
+  pos -4.5 1.2 8
+  rot 90 0 0
+  scale 2 2 2
+  color #ab47bc
+  script scripts/spin.wsk
+
+object "Capsule" mesh
+  mesh capsule
+  pos 0 0.8 8
+  scale 1 1.6 1
+  color #26a69a
+  tag shape
+  script scripts/shape.wsk
+  body dynamic
+  collider box
+  bounce 0.3
+
+object "Wedge" mesh
+  mesh wedge
+  pos 4.5 0.5 8
+  rot 0 180 0
+  color #8d6e63
+  body static
+  collider box
+
+object "Glass" mesh
+  mesh cube
+  pos 0 1 -2
+  scale 6 2 0.2
+  color #b3e5fc
+  alpha 60
+  twosided
+
+object "Tree" mesh
+  mesh models/tree.obj
+  pos -8 0 10
+  scale 1.5 1.5 1.5
+
+object "Tree 2" mesh
+  mesh models/tree.obj
+  pos 8 0 11
+  scale 1.8 1.8 1.8
+
+object "Red light" light
+  pos 0 2 6
+  range 7
+  power 1.2
+  script scripts/orbit.wsk
+
+object "Blue light" light
+  pos 0 2 6
+  range 6
+  power 1
+  tag reverse
+  script scripts/orbit.wsk
+
+object "Clicker" empty
+  script scripts/click.wsk
+
+object "Camera" camera
+  pos 0 6 -8
+  rot 25 0 0
+  fov 60

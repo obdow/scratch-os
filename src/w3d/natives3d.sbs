@@ -112,7 +112,7 @@ proc w3_plain(i, fname) {
 proc nat_w3d(id) {
     local s = vm_slot;
     if (id >= N_INPUT_KEY && id < N_SOUND_PLAY) { nat_input(id); return; }
-    if (id >= N_SOUND_PLAY) { nat_sound(id); return; }
+    if (id >= N_SOUND_PLAY && id <= N_SOUND_VOLUME) { nat_sound(id); return; }
     switch (id) {
         // --- objects and scenes ---------------------------------------------------
         case N_W3D_FIND: {
@@ -559,6 +559,23 @@ proc nat_w3d(id) {
                     nat_retn((r3_sy - vp_y) / vp_scale);
                     nat_retn(r3_z);
                 } else { nat_retnil(); }
+            }
+        }
+        case N_W3D_SCREENRAY: {
+            // the ray from the camera through a game pixel: x, y, z, dx, dy, dz
+            local sx = nat_num(1, "w3d.screenray");
+            local sy = nat_num(2, "w3d.screenray");
+            if (vm_raised == 0) {
+                game_viewport();
+                game_camera();
+                local dx = (vp_x + sx * vp_scale - vp_cx) / vp_f;
+                local dy = (vp_cy - vp_y - sy * vp_scale) / vp_f;
+                local wx = rc00 * dx + rc01 * dy + rc02;
+                local wy = rc10 * dx + rc11 * dy + rc12;
+                local wz = rc20 * dx + rc21 * dy + rc22;
+                local l = sqrt(wx * wx + wy * wy + wz * wz);
+                nat_retn(rc_x); nat_retn(rc_y); nat_retn(rc_z);
+                nat_retn(wx / l); nat_retn(wy / l); nat_retn(wz / l);
             }
         }
         // --- time, scenes, shared values -----------------------------------------

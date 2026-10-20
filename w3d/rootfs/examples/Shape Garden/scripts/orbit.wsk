@@ -1,0 +1,10 @@
+-- Lights circle the middle of the garden.
+function update(self, dt)
+  local a = w3d.time() * 60
+  if self:tag() == "reverse" then a = -a + 180 end
+  local r = 5
+  -- math.sin and math.cos take radians
+  local x = math.sin(a * math.pi / 180) * r
+  local z = 6 + math.cos(a * math.pi / 180) * r
+  self:setpos(x, 2, z)
+end

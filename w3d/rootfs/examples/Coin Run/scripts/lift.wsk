@@ -1,0 +1,22 @@
+-- A lift that goes up and down between two heights.
+local LOW = 1
+local HIGH = 3.6
+local SPEED = 1.2
+
+function start(self)
+  self.dir = 1
+end
+
+function update(self, dt)
+  local x, y, z = self:pos()
+  y = y + self.dir * SPEED * dt
+  if y > HIGH then
+    y = HIGH
+    self.dir = -1
+  elseif y < LOW then
+    y = LOW
+    self.dir = 1
+  end
+  -- a kinematic body: moving it pushes the player standing on it
+  self:setpos(x, y, z)
+end

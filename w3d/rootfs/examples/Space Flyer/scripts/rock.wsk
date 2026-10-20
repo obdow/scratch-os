@@ -1,0 +1,29 @@
+-- Rocks drift towards the ship, tumbling; shoot them before they hit.
+function start(self)
+  self.spin = math.random(30, 90)
+end
+
+function update(self, dt)
+  self:rotate(self.spin * dt, self.spin * dt * 0.5, 0)
+  self:move(0, 0, -4 * dt)
+  local x, y, z = self:pos()
+  local shipz = w3d.get("ship_z", 0)
+  if z < shipz - 10 then
+    self:setpos(math.random(-10, 10), math.random(-6, 6), shipz + 90)
+  end
+  if self:touching("#ship") then
+    sound.play("hurt")
+    w3d.set("score", math.max(0, w3d.get("score", 0) - 20))
+    self:setpos(math.random(-10, 10), math.random(-6, 6), shipz + 90)
+  end
+end
+
+function on_message(self, msg, data)
+  if msg == "hit" then
+    sound.play("explosion")
+    w3d.set("score", w3d.get("score", 0) + 25)
+    w3d.set("rocks", w3d.get("rocks", 0) + 1)
+    local shipz = w3d.get("ship_z", 0)
+    self:setpos(math.random(-10, 10), math.random(-6, 6), shipz + 90)
+  end
+end

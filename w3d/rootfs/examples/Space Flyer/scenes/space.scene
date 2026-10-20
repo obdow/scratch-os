@@ -1,0 +1,50 @@
+-- Fly through the rings and shoot the rocks.  Arrows / WASD steer, Space fires.
+scene "Space"
+sky #05060f #1b1f3a
+ambient 0.3
+sun 0.3 -0.5 1 0.9
+fog 60 120 #1b1f3a
+gravity 0
+
+object "Ship" mesh
+  mesh pyramid
+  pos 0 0 0
+  rot 90 0 0
+  scale 1.2 2 0.5
+  color #e0e0e0
+  tag ship
+  script scripts/ship.wsk
+  collider sphere
+
+object "Ring" mesh
+  mesh torus
+  pos 0 0 40
+  rot 90 0 0
+  scale 6 6 6
+  color #26c6da
+  unlit
+  tag ring
+  script scripts/ring.wsk
+  collider sphere
+  trigger
+
+object "Rock" mesh
+  mesh sphere
+  pos 6 2 70
+  scale 3 3 3
+  color #8d6e63
+  tag rock
+  script scripts/rock.wsk
+  collider sphere
+
+object "Stars" empty
+  script scripts/stars.wsk
+
+object "Music" empty
+  script scripts/music.wsk
+
+object "Camera" camera
+  pos 0 2 -9
+  rot 8 0 0
+  fov 70
+  script scripts/chase.wsk

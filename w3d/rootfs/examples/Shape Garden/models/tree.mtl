@@ -1,0 +1,4 @@
+newmtl bark
+Kd 0.45 0.3 0.2
+newmtl leaves
+Kd 0.25 0.65 0.3

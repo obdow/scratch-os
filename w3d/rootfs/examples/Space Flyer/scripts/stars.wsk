@@ -1,0 +1,19 @@
+-- A field of small squares (quads face the camera) that keeps up with the ship.
+local stars = {}
+
+function start(self)
+  for i = 1, 40 do
+    local s = w3d.spawn("quad", math.random(-40, 40), math.random(-25, 25), math.random(0, 120))
+    s:setscale(0.2)
+    s:setcolor("#ffffff")
+    stars[#stars + 1] = s
+  end
+end
+
+function update(self, dt)
+  local shipz = w3d.get("ship_z", 0)
+  for i, s in ipairs(stars) do
+    local x, y, z = s:pos()
+    if z < shipz - 10 then s:setpos(x, y, z + 130) end
+  end
+end

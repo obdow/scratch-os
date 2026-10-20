@@ -1,0 +1,6 @@
+name Coin Run
+resolution 1280x720
+scene scenes/level1.scene
+budget 600
+distance 90
+fill 2

@@ -1,0 +1,6 @@
+name Shape Garden
+resolution 480x360
+scene scenes/garden.scene
+budget 450
+distance 60
+fill 2

@@ -1,0 +1,3 @@
+function update(self, dt)
+  self:rotate(0, 60 * dt, 0)
+end
