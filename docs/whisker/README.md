@@ -36,6 +36,7 @@ Hello, Whisker!
 | [Modules and libraries](libraries.md) | `require`, `load`, writing modules, and the bundled `yarn` and `sort` libraries |
 | [The Whisker IDE](ide.md) | The editor in ScratchOS and the stand-alone `WhiskerIDE.sb3`: running, errors, menus, shortcuts |
 | [Internals](internals.md) | The compiler, bytecode, VM, scheduling, memory, limits and performance |
+| [Whisker 3D](whisker3d.md) | The 3D game engine: scripts on objects, and the `w3d`, `input` and `sound` libraries (full manual in [docs/whisker3d](../whisker3d/README.md)) |
 
 New to programming in Whisker? Read [Getting started](getting-started.md),
 then the first half of [The language](language.md). If you already know
@@ -70,3 +71,4 @@ They were checked by hand on the desktop.
 * [NETWORK.md](../NETWORK.md): the ScratchOS network behind `net`.
 * [ARCHITECTURE.md](../ARCHITECTURE.md): how the whole system is built.
 * [SBS.md](../SBS.md): the language the kernel itself is written in.
+* [whisker3d/](../whisker3d/README.md): the Whisker 3D game engine manual.

@@ -14,6 +14,7 @@ include "other.sbs";             // textual include (also allowed inside a sprit
 
 sprite Kernel {
     costumes "os_glyphs";        // costume groups provided by tools/assets.py
+    sounds "w3d_sfx";            // sound groups (tools/assets.py: sound_group)
     prop visible = 1;
     var x = 0;                   // sprite variable
     list cells = [1, 2, 3];      // list with initial contents
@@ -65,8 +66,24 @@ operators keep short-circuit behaviour when the right side contains a call.
 | sensing | `key(k)` `mouse_x()` `mouse_y()` `mouse_down()` `timer()` `days2000()` `now("hour")` `username()` |
 | looks | `costume(c)` `costume_num()` `costume_name()` `effect("color", v)` `clear_effects()` `show()` `hide()` `size(s)` `front()` |
 | motion | `goto(x, y)` `set_x` `set_y` `change_x` `change_y` `x_pos()` `y_pos()` |
-| pen | `stamp()` `pen_down()` `pen_up()` `pen_clear()` `pen_color(rgb)` `pen_size(n)` |
+| pen | `stamp()` `pen_down()` `pen_up()` `pen_clear()` `pen_color(rgb)` `pen_size(n)` `pen_alpha(t)` (transparency 0..100) |
+| sound | `sound_start(name)` `sound_stop_all()` `sound_volume(v)` `sound_pitch(v)` `sound_pan(v)` |
+| music | `music_note(note, beats)` `music_drum(drum, beats)` `music_rest(beats)` `music_instrument(i)` `music_tempo(bpm)` (the Music extension is added to the project when one is used) |
 | control | `wait(s)` `wait_until(c)` `broadcast("m")` `broadcast_wait("m")` `clone_self()` `delete_clone()` `stop_all()` `stop_others()` `stop_script()` |
+
+## Constant folding
+
+Expressions made only of constants are computed by the compiler, including
+comparisons and `&&` / `||`. An `if` whose condition folds to a constant
+compiles to just the branch that runs, so build constants switch whole
+features off:
+
+```c
+const HAS_NET = 0;               // build.py sets these per target
+if (HAS_NET == 1) { net_init(); }    // no blocks at all in this build
+```
+
+Pruning then drops the procedures that only the removed branch called.
 
 ## Safety rewrite
 

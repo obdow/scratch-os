@@ -124,6 +124,10 @@ def backdrop_svg(w, h):
 # players (1280x720 for TurboWarp, 480x360 for scratch.mit.edu)
 W3D_FILES = os.path.join(ROOT, 'w3d', 'rootfs')
 W3D_PLAYER_FILES = os.path.join(ROOT, 'w3d', 'player_rootfs')
+# the Whisker quick reference, for the engine's Help > Whisker language
+W3D_MOUNTS = [
+    (os.path.join(IDE_FILES, 'docs'), '/docs/whisker', ['/docs/whisker/sort.txt']),
+]
 W3D_TARGETS = {
     'w3d': ('Whisker3D.sb3', (1280, 720), 0),
     'player720': ('Whisker3D-Player-720p.sb3', (1280, 720), 1),
@@ -134,7 +138,10 @@ W3D_TARGETS = {
 def build(main, out, rootfs_dir=None, ide=False, target=None):
     kind = 'ide' if (ide or target) else 'os'
     if target:
-        data = rootfs.build_data(rootfs_dir or (W3D_FILES if target == 'w3d' else W3D_PLAYER_FILES))
+        if target == 'w3d':
+            data = rootfs.build_data(rootfs_dir or W3D_FILES, W3D_MOUNTS)
+        else:
+            data = rootfs.build_data(rootfs_dir or W3D_PLAYER_FILES)
     elif ide:
         data = rootfs.build_data(rootfs_dir or IDE_FILES)
     else:

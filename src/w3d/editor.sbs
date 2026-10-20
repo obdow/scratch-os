@@ -30,6 +30,7 @@ var sel_what = 1;            // 0 an object, 1 the scene, 2 the project
 var tool = T_MOVE;
 var snap = 1;                // snap moves to 0.25 / rotations to 15 degrees
 var sc_dirty = 0;            // the scene has unsaved changes
+var sc_stamp = "";           // the scene file as last loaded or saved (see w3e_scene_sync)
 var ovl_was = 0;             // a menu / dialog was open last frame
 var vp_c0 = HI_W;            // viewport in cells
 var vp_c1 = 0;
@@ -161,6 +162,7 @@ proc w3e_load_scene(path) {
         return 0;
     }
     if (len(sc_err) > 0) { tty_write(ide_con, "\e[93m" .. path .. ": " .. sc_err .. "\e[0m\n"); }
+    sc_stamp = w3e_scene_file();
     clear(un_text);
     sel = 0;
     sel_what = 1;
@@ -172,8 +174,24 @@ proc w3e_load_scene(path) {
 
 proc w3e_save_scene() {
     if (len(sc_path) == 0) { return; }
-    if (scene_save(sc_path) == 1) { sc_dirty = 0; } else { ide_status(pj_err); }
+    if (scene_save(sc_path) == 1) { sc_dirty = 0; sc_stamp = w3e_scene_file(); } else { ide_status(pj_err); }
     ide_dirty = 1;
+}
+
+// the scene file's text ("" if it is missing)
+proc w3e_scene_file() {
+    if (len(sc_path) == 0) { return ""; }
+    return pj_read(sc_path);
+}
+
+// the scene file was edited as text in the code view: load it again, so
+// that saving the scene does not overwrite those edits
+proc w3e_scene_sync() {
+    if (len(sc_path) == 0) { return; }
+    local t = w3e_scene_file();
+    if (w3_ino == 0 || streq(t, sc_stamp) == 1) { return; }
+    w3e_load_scene(sc_path);
+    ide_status("Reloaded " .. sc_path .. " (edited as text)");
 }
 
 // copy a folder of the file system (templates, examples) to dest
@@ -459,7 +477,7 @@ proc w3e_cmd(cmd) {
     if (cmd == "scenesettings") { w3e_mode = 1; sel_what = 1; sel = 0; return 1; }
     if (cmd == "projsettings") { w3e_mode = 1; sel_what = 2; sel = 0; return 1; }
     if (cmd == "checkall") { w3e_check(); return 1; }
-    if (cmd == "vscene") { if (w3e_mode != 0) { if (cur_tab > 0) { save_tab(); } w3e_mode = 1; w3e_vdirty = 1; } return 1; }
+    if (cmd == "vscene") { if (w3e_mode != 0) { if (cur_tab > 0) { save_tab(); } w3e_scene_sync(); w3e_mode = 1; w3e_vdirty = 1; } return 1; }
     if (cmd == "vcode") { if (w3e_mode != 0) { w3e_mode = 2; } return 1; }
     if (substr(cmd, 1, 4) == "tool") { tool = substr(cmd, 5, 5) * 1; w3e_vdirty = 1; return 1; }
     if (cmd == "snap") { snap = 1 - snap; return 1; }
@@ -631,7 +649,8 @@ proc in_build() {
     }
     local o = sel;
     local k = ob_kind[o];
-    in_row("", kind_name(k), "");
+    local kn = kind_name(k);
+    in_row("", str_upper(substr(kn, 1, 1)) .. substr(kn, 2, len(kn)), "");
     in_row("name", "Name", ob_name[o]);
     if (k == K_MESH) { in_row("mesh", "Shape", ob_meshname[o]); }
     in_row("pos", "Position", v3(ob_px[o], ob_py[o], ob_pz[o]));
@@ -814,6 +833,7 @@ proc w3e_play() {
     if (w3e_mode == 0) { ide_status("Open a project first"); return; }
     if (g_on == 1) { return; }
     if (cur_tab > 0) { save_tab(); }
+    w3e_scene_sync();
     w3e_save_scene();
     if (len(sc_path) == 0) { return; }
     w3e_back = w3e_mode;
@@ -849,7 +869,7 @@ proc w3e_after_play() {
     sel_what = kw;
     if (sel > len(ob_name)) { sel = 0; sel_what = 1; }
     w3e_mode = w3e_back;
-    tty_write(ide_con, "\e[90m> stopped after " .. floor(g_t * 10) / 10 .. "s\e[0m\n");
+    tty_write(ide_con, "\e[90m> stopped after " .. floor(g_t * 10) / 10 .. "s (last frame: " .. r3_tris .. " triangles, " .. g_fps .. " fps)\e[0m\n");
     w3e_game_error();
     pen_clear();
     ide_full = 1;

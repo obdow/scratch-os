@@ -33,6 +33,44 @@ const stageList = (h, name) => h.page.evaluate((n) => {
   return Object.values(st.variables).find((v) => v.name === n && v.type === 'list').value.slice();
 }, name);
 
+const kernelList = (h, name) => h.page.evaluate((n) => {
+  const t = vm.runtime.getSpriteTargetByName('Kernel');
+  return Object.values(t.variables).find((v) => v.name === n && v.type === 'list').value.slice();
+}, name);
+
+// the Help pages open, and a scene edited as text is not overwritten
+async function editorChecks(h) {
+  for (const [c, file] of [['w3help', '/docs/getting-started.txt'], ['w3ref', '/docs/w3d-library.txt'],
+    ['ref', '/docs/whisker/reference.txt']]) {
+    await cmd(h, c);
+    check((await kernelList(h, 'tab_path')).includes(file), `engine: Help opens ${file}`);
+  }
+  const added = await h.page.evaluate(() => {
+    const t = vm.runtime.getSpriteTargetByName('Kernel');
+    const L = (n) => Object.values(t.variables).find((v) => v.name === n && v.type === 'list').value;
+    const name = L('fs_name');
+    const parent = L('fs_parent');
+    const data = L('fs_data');
+    for (let i = 0; i < name.length; i++) {
+      const p = parent[i] - 1;
+      if (name[i] === 'main.scene' && name[p] === 'scenes' && name[parent[p] - 1] === 'E2E 720') {
+        data[i] = data[i] + '\nobject "Typed" mesh\n  mesh cube\n  pos 1 2 3\n';
+        return true;
+      }
+    }
+    return false;
+  });
+  await cmd(h, 'vscene');
+  check(added && (await kernelList(h, 'ob_name')).includes('Typed'), 'engine: a scene edited as text is reloaded');
+  await cmd(h, 'save');
+  const text = await h.page.evaluate(() => {
+    const t = vm.runtime.getSpriteTargetByName('Kernel');
+    const L = (n) => Object.values(t.variables).find((v) => v.name === n && v.type === 'list').value;
+    return L('fs_data').find((d) => typeof d === 'string' && /object "?Typed"? mesh/.test(d)) || '';
+  });
+  check(text.includes('pos 1 2 3'), 'engine: saving keeps the text edit');
+}
+
 async function exportProject(res) {
   const h = await launch(engine);
   for (let i = 0; i < 200 && (await h.read('Stage', 'kb_ready')) != 1; i++) await h.sleep(50);
@@ -42,6 +80,7 @@ async function exportProject(res) {
   await cmd(h, 'button:create', 3000);
   check((await kernel(h, 'w3e_mode')) == 1, `engine: a ${res} project opens in the scene editor`);
   await h.shot(path.join(outdir, `editor-${res}.png`));
+  if (res === 720) await editorChecks(h);
   await cmd(h, 'exportproj', 3000);
   const lines = await stageList(h, 'w3d_export');
   check(lines.length > 20 && lines[0] === 'WHISKER3D 1', `engine: export gives a bundle (${lines.length} lines)`);

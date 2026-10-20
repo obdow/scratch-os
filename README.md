@@ -272,6 +272,39 @@ Ctrl+E text preview / edit,
 Esc opens the menu bar; arrows or a menu's first letter move through it. The browser may
 intercept a few Ctrl shortcuts; the same commands are all in the menus.
 
+## Whisker 3D
+
+`Whisker3D.sb3` is a 3D game engine built from the same kernel. You make the
+games in a scene editor and write them in Whisker, with scripts on objects
+in the style of Unity (`start(self)`, `update(self, dt)`, `on_collide`,
+`on_message`). Open it in TurboWarp, make a project at **1280×720** (for
+TurboWarp) or **480×360** (standard Scratch), and press Play.
+
+- **Renderer**: flat-shaded triangles, filled with the incircle method from
+  `Triangle Filler.sb3`. It does depth sorting, back-face culling and
+  near-plane clipping. It has a sun, up to 8 point lights, fog, a gradient
+  sky and transparency, and adjustable quality (triangle budget, draw
+  distance, fill coarseness).
+- **Scene editor**: orbit, pan and zoom; click to select; move, rotate and
+  scale tools with snapping; an inspector; undo. It has 10 built-in shapes,
+  `.obj` / `.mtl` model import, lights and cameras.
+- **Physics**: static, dynamic and kinematic bodies; box and sphere
+  colliders; triggers, bounce, grounded checks and raycasts.
+- **Input, HUD and sound**: keys and axes, the mouse, text and rectangles
+  over the view, 18 built-in sound effects, and music notes and drums
+  through the Music extension.
+- **Publishing**: File > Export project puts the whole game, its scripts
+  precompiled, in a list. Save it as a `.txt` file and import it into the
+  list `game` of `Whisker3D-Player-720p.sb3` (TurboWarp) or
+  `Whisker3D-Player-480x360.sb3`. The 480×360 player has no compiler,
+  stays under scratch.mit.edu's 5 MB limit and works with fencing.
+  Projects are imported back into the engine the same way.
+- **Examples**: Coin Run (a platformer with two levels), Space Flyer (a
+  shooter with music) and Shape Garden (shapes, a model, lights and mouse
+  picking at 480×360).
+
+The manual is [docs/whisker3d/](docs/whisker3d/README.md).
+
 ## How it is built
 
 Hand-placing tens of thousands of blocks is not practical, so the kernel is
@@ -280,11 +313,14 @@ ordinary Scratch blocks. The output is a normal project you can open and edit
 in the Scratch/TurboWarp editor, about 23,000 blocks in total.
 
 ```
-build.py            build entry point -> ScratchOS.sb3 (--ide -> WhiskerIDE.sb3)
+build.py            build entry point -> ScratchOS.sb3 (--ide -> WhiskerIDE.sb3,
+                    --w3d w3d|player720|player480 -> Whisker 3D and its players)
 src/*.sbs           the kernel (Kernel sprite) and keyboard (Keyboard sprite)
 src/ui.sbs          the shared modern look: cell attributes, decorations, themes
 src/wm.sbs          the desktop (menu bar, taskbar, Start, windows, dialogs)
 src/ide/            the Whisker IDE (an app in ScratchOS, or a project of its own)
+src/w3d/            Whisker 3D: renderer, physics, sound, game runtime, scene editor, players
+w3d/                Whisker 3D's files (templates, examples, in-engine docs)
 ide/rootfs/         the IDE's files (/projects, /examples, /docs, /lib); inside
                     ScratchOS they appear in ~/examples, ~/projects and
                     /usr/share/doc/whisker
@@ -299,7 +335,8 @@ src/net.sbs         networking over cloud variables (src/cloud.sbs declares them
 server/             the network's cloud relay and data server (Node)
 assets/font/        JetBrains Mono (OFL 1.1)
 test/               headless TurboWarp harness (Playwright) and regression test
-docs/               architecture, SBS, Yarn and network docs; docs/whisker/ is the Whisker manual
+docs/               architecture, SBS, Yarn and network docs; docs/whisker/ is the Whisker
+                    manual, docs/whisker3d/ the Whisker 3D manual
 ```
 
 Requirements: Python 3 with Pillow. To build:
@@ -307,6 +344,7 @@ Requirements: Python 3 with Pillow. To build:
 ```
 python3 build.py                 # writes ScratchOS.sb3
 python3 build.py --ide           # writes WhiskerIDE.sb3
+python3 build.py --w3d w3d       # writes Whisker3D.sb3 (and player720, player480 for the players)
 ```
 
 To test (Node 18+ and a Chromium for Playwright):
@@ -317,6 +355,7 @@ node regress.js ../ScratchOS.sb3                          # boots the OS, runs c
 node drive.js ../ScratchOS.sb3 out --text -- "ls" "ps"    # type commands, dump the screen
 node net-e2e.js ../ScratchOS.sb3                          # the network, with 3 copies at once
 node doctest.js                                           # runs the examples in docs/whisker/
+node w3d-e2e.js && node w3d-api.js && node w3d-examples.js  # Whisker 3D: engine, export, players
 ```
 
 Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the pieces fit:

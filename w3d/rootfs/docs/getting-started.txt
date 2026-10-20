@@ -1,0 +1,88 @@
+Whisker 3D - getting started
+============================
+
+Whisker 3D makes 3D games for TurboWarp and Scratch. You build scenes in
+the scene editor and write the games in Whisker, a language like Lua.
+The full manual is docs/whisker3d/ in the ScratchOS repository.
+
+Projects
+--------
+File > New project asks for a name, a screen size and a template:
+
+  1280 x 720   for TurboWarp: sharper and faster
+  480 x 360    standard Scratch, so it can be shared on scratch.mit.edu
+
+  Starter      a player to walk with, a following camera, coins, a HUD
+  Empty        ground, a light and a camera
+
+Projects are folders in /projects:
+
+  game.w3d          settings (name, resolution, first scene, quality)
+  scenes/*.scene    scenes, as text
+  scripts/*.wsk     scripts
+  models/*.obj      models (and .mtl files)
+
+Save the .sb3 (File > Save to your computer) to keep your projects.
+
+The scene editor (Ctrl+1)
+-------------------------
+  drag                 orbit the view (select tool)
+  Shift + drag         pan the view
+  wheel                zoom
+  click                select an object (empty space: the scene)
+  Q W E R              select, move, rotate, scale tools
+  G                    snap on / off
+  F                    focus on the selection
+  arrows, PgUp / PgDn  nudge the selection
+  Delete, Ctrl+D       delete, duplicate
+  Ctrl+Z               undo
+
+The Objects list (left) also has "Project" and "Scene" rows for their
+settings. The inspector (right) shows the selection's settings: click a
+row to change it. Scene > Add ... adds shapes, models, lights and cameras.
+
+Code (Ctrl+2)
+-------------
+The Whisker IDE: file tree, tabs, colours, find, error markers. Give an
+object a script in the inspector ("> New script") and write functions:
+
+  function start(self)              -- once per object
+  end
+
+  function update(self, dt)         -- every frame, dt in seconds
+    self:rotate(0, 90 * dt, 0)
+    if input.pressed("space") then self:push(0, 8, 0) end
+  end
+
+  function on_collide(self, other)  -- each object it touches
+  end
+
+  function on_message(self, msg, data)   -- from w3d.send / broadcast
+  end
+
+Help > Whisker 3D reference lists every w3d, input and sound function.
+
+Play
+----
+Ctrl+Enter (or Play in the title bar) saves and plays the game.
+Esc stops it. print() and errors appear in the output panel.
+Game > Check scripts compiles every script without playing.
+
+Physics
+-------
+Give an object a Collider (box or sphere) and a Body:
+  static      never moves; blocks dynamic bodies (ground, walls)
+  dynamic     falls and is pushed out of what it hits (player, crates)
+  kinematic   moved by scripts; pushes dynamic bodies (lifts, doors)
+Trigger: reports touches without blocking (coins, goals).
+
+Publishing
+----------
+1. File > Export project (.txt). The list w3d_export appears.
+2. Right-click it, choose "export", and save the .txt file.
+3. Open Whisker3D-Player-720p.sb3 (1280x720 games, TurboWarp) or
+   Whisker3D-Player-480x360.sb3 (480x360 games, Scratch too).
+4. Right-click its list "game", choose "import", pick the .txt file,
+   and click the green flag. Save the player to keep the game in it.
+
+File > Import project (.txt) loads an exported file back into the engine.

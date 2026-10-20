@@ -1,0 +1,115 @@
+Whisker 3D reference
+====================
+
+obj is an object (or its id). Most functions are also methods:
+obj:pos() is w3d.pos(obj). Vectors are 3 values: local x, y, z = obj:pos()
+Colours: "#rrggbb" or 0xRRGGBB. Angles in degrees. Screen: game pixels,
+from the top-left (1280 x 720 or 480 x 360).
+Axes: x right, y up, z forward. Rotation = yaw (y), pitch (x), roll (z).
+
+Script functions (all optional)
+-------------------------------
+start(self)                    once per object, before its first update
+update(self, dt)               every frame (dt: seconds)
+on_collide(self, other)        each frame, for each object it touches
+on_message(self, msg, data)    messages from w3d.send / w3d.broadcast
+self.id, self.name             fields; other fields are shared by all scripts
+
+Objects and scenes
+------------------
+w3d.find(name | "#tag")        first object, or nil
+w3d.objects([name | "#tag"])   list of objects
+w3d.spawn(what [, x, y, z])    copy of an object (or its name), or a new
+                               object with a shape ("cube", "models/a.obj")
+w3d.destroy(obj)               remove it          obj:alive()   still there?
+w3d.instances()                objects using this script
+w3d.frame()                    wait for the next frame; returns dt or nil
+w3d.name(obj)  obj:tag()  obj:settag(tag)
+w3d.load("level2")             switch to scenes/level2.scene
+w3d.scene()                    name, path         w3d.quit()    end the game
+
+Messages and shared values
+--------------------------
+w3d.send(obj, msg [, data])    to one object's on_message
+w3d.broadcast(msg [, data])    to every object with a script
+w3d.set(key, value)            kept for the whole game (across scenes)
+w3d.get(key [, default])
+
+Transform
+---------
+obj:pos()  obj:setpos(x, y, z)  obj:move(dx, dy, dz)
+obj:moverel(dx, dy, dz)        along its own right / up / forward
+obj:rot()  obj:setrot(x, y [, z])  obj:rotate(dx, dy, dz)
+obj:scale()  obj:setscale(x [, y, z])
+obj:forward()  obj:right()     unit vectors
+obj:lookat(x, y, z | other)    face a point or an object
+obj:distance(other)
+
+Looks
+-----
+obj:color()  obj:setcolor("#ff8800" | r, g, b)
+obj:alpha()  obj:setalpha(0..100)     transparency (100 = invisible)
+obj:visible()  obj:show([on])         hidden objects still collide
+obj:mesh()  obj:setmesh("sphere" | "models/a.obj")
+
+Physics
+-------
+obj:velocity()  obj:setvelocity(x, y, z)  obj:push(dx, dy, dz)
+obj:grounded()                 standing on something
+obj:touching([obj | name | "#tag"])
+obj:contacts()                 list of objects it touches
+obj:body()  obj:setbody("static" | "dynamic" | "kinematic" | "none"
+                        [, "box" | "sphere" | "none"])
+w3d.gravity([g])               default -20
+w3d.raycast(x, y, z, dx, dy, dz [, max [, ignore]])
+    -> obj, dist, hx, hy, hz, nx, ny, nz   (or nil; triggers are skipped)
+
+Camera, lights, world
+---------------------
+w3d.camera()                   the camera object (move / turn it)
+w3d.fov([deg])                 view angle, default 60
+w3d.sky(top [, horizon])
+w3d.fog(near, far [, colour])  w3d.fog(false) turns it off
+w3d.ambient([a])               default 0.35
+w3d.sun([x, y, z [, strength]])   direction the light travels
+obj:light([range [, power]])   point lights (light objects)
+
+Screen and HUD (drawn for one frame: call them in update)
+-------------------------------------------------------------
+w3d.screen()                   w, h
+w3d.text(x, y, text [, colour [, size]])     size 1 or 2
+w3d.rect(x, y, w, h, colour [, transparency])
+w3d.line(x1, y1, x2, y2, colour [, width])
+w3d.project(x, y, z)           world -> sx, sy, depth (nil if behind)
+w3d.screenray(sx, sy)          -> x, y, z, dx, dy, dz  (for raycast)
+w3d.time()  w3d.fps()
+
+input
+-----
+input.key(name)  input.pressed(name)  input.released(name)
+    names: "a", "1", "space", "enter", "up arrow" (or "up"), ...
+input.axis("horizontal" | "vertical")   -1, 0, 1 (arrows or WASD)
+input.mouse()                  x, y in game pixels
+input.mousedown()  input.clicked()
+
+sound
+-----
+sound.play(name [, volume [, pitch]])   pitch: 10 = one semitone
+    jump coin powerup hit hurt explosion laser shoot click select
+    blip pop step whoosh win lose bounce beep
+sound.stop()  sound.list()  sound.volume(0..100)
+sound.note(note, beats [, instrument [, voice]])  MIDI note (60 = C),
+    instrument 1-21, voice 1-4 (default 1)
+sound.drum(drum, beats [, voice])        drum 1-18, voice default 4
+sound.rest(beats [, voice])  sound.tempo(bpm)
+
+Scene files (scenes/*.scene)
+----------------------------
+scene "Main"          sky #5d86e6 #d9ebff     ambient 0.35
+sun -0.4 -1 0.5 0.8   fog 25 60 #d9ebff (or: fog off)     gravity -20
+object "Name" mesh | light | camera | empty
+  mesh cube   pos 0 1 0   rot 0 45 0   scale 1 2 1   color #ff8800
+  alpha 50   hidden   unlit   twosided   tag coin   script scripts/a.wsk
+  body dynamic   collider box   trigger   bounce 0.5
+  range 8   power 1  (lights)        fov 60  (cameras)
+Shapes: cube plane quad sphere cylinder cone pyramid wedge torus capsule

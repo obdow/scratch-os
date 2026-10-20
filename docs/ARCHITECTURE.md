@@ -288,6 +288,18 @@ The full protocol is in [NETWORK.md](NETWORK.md). Inside the kernel:
 * When `net_state()` changes, the taskbar is marked for redraw. Its
   indicator is three cells in front of the clock.
 
+## Whisker 3D (`src/w3d/`)
+
+The 3D game engine and its two players are further builds of the same kernel
+(`build.py --w3d w3d|player720|player480`). The engine adds a renderer, physics,
+sound, a game runtime and a scene editor to the Whisker IDE. The players
+leave out the compiler, the shell, the window manager and networking. That
+is done with build constants that `sbc` folds away (`HAS_COMPILER`, `HAS_WM`,
+`HAS_NET`), so the players run scripts that the engine compiled ahead of
+time (WBC, in `src/wcore.sbs`). The scripts are ordinary Whisker processes
+that block in `w3d.frame()` between frames. See
+[whisker3d/internals.md](whisker3d/internals.md).
+
 ## Scratch / TurboWarp quirks worked around
 
 * `"0" = " "` and `"0" = ""` are **true** in Scratch's comparison (an

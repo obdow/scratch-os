@@ -13,6 +13,7 @@ with the Whisker IDE.
 * [Writing a module](#writing-a-module)
 * [The yarn library](#the-yarn-library)
 * [The sort library](#the-sort-library)
+* [Whisker 3D's libraries](#whisker-3ds-libraries)
 * [Known issues](#known-issues)
 
 ## require(name)
@@ -938,6 +939,20 @@ The library also has internal fields: `sort.prep`, `sort.key`,
 `sort.compares`, `sort.inner` and `sort.counted`. Sorting by a field name
 stores the name in `sort.key`, so a comparison function given to one sort
 must not start another sort by a different field.
+
+## Whisker 3D's libraries
+
+The Whisker 3D game engine adds three built-in libraries, `w3d`, `input` and
+`sound`, which need no `require`. They are summarised in the
+[Whisker 3D chapter](whisker3d.md) and described in full in the
+[Whisker 3D reference](../whisker3d/reference.md). In ScratchOS and the
+Whisker IDE every call to them raises an error.
+
+`require` works the same in Whisker 3D scripts: it looks in `/lib` and next
+to the script. When a game is exported, each module it requires is compiled
+into the game, and in the players (which have no compiler) `require` loads
+that compiled module by name. `load(src)` needs the compiler, so in the
+players it returns nil and "load() is not available in an exported game".
 
 ## Known issues
 
